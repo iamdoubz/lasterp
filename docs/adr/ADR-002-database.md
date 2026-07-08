@@ -1,12 +1,12 @@
 # ADR-002: Database — PostgreSQL (server), SQLite (solo mode + clients)
 
-**Status:** Accepted · 2026-07-06 · **Amended by [ADR-015](ADR-015-database-portability.md)** (2026-07-07): Postgres is now *recommended*, not required — SQL Server, MySQL/MariaDB, Oracle, Db2 supported via tiered adapter contract; Mongo/Cassandra as read-side sinks only.
+**Status:** Accepted · 2026-07-06 · **Amended by [ADR-015](ADR-015-database-portability.md)** (2026-07-07): Postgres is now *recommended*, not required — SQL Server, MySQL/MariaDB, Oracle, Db2 supported via tiered adapter contract; Mongo/Cassandra as read-side sinks only. **Amended 2026-07-07:** version pin raised from 16+ to **18+**.
 
 ## Context
 Need: transactional integrity for financial data, row-level tenant isolation, full-text + vector search, logical replication for sync feeds, a path to 50k concurrent users, and a zero-dependency mode for tiny deployments.
 
 ## Decision
-- **PostgreSQL 16+** is the system of record for team/cluster deployments. Required extensions: `pgvector` (semantic search), built-in FTS, RLS, logical replication.
+- **PostgreSQL 18+** is the system of record for team/cluster deployments. Required extensions: `pgvector` (semantic search), built-in FTS, RLS, logical replication.
 - **SQLite** is the embedded store for solo mode and for every client replica.
 - A thin storage adapter layer covers the (small) SQL dialect gap; the event store and metadata engine target both.
 
