@@ -1,0 +1,14 @@
+{
+  "name": "lasterp",
+  "image": "mcr.microsoft.com/devcontainers/go:1-1.26-bookworm",
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": { "version": "26" },
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {}
+  },
+  "postCreateCommand": "npm install -g pnpm@9.15.0 && pnpm install",
+  "customizations": {
+    "vscode": {
+      "extensions": ["golang.go", "dbaeumer.vscode-eslint", "esbenp.prettier-vscode"]
+    }
+  }
+}

@@ -1,0 +1,8 @@
+/bin/
+/dist/
+web/dist/
+web/node_modules/
+web/*.tsbuildinfo
+node_modules/
+*.log
+.DS_Store
