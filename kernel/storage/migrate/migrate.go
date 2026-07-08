@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/iamdoubz/lasterp/kernel/storage"
 )
@@ -56,7 +57,7 @@ func Load() ([]Migration, error) {
 func Apply(ctx context.Context, db *storage.DB) error {
 	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
 		version TEXT PRIMARY KEY,
-		applied_at TIMESTAMP NOT NULL
+		applied_at TIMESTAMPTZ NOT NULL
 	)`); err != nil {
 		return fmt.Errorf("migrate: ensure schema_migrations: %w", err)
 	}
@@ -100,7 +101,12 @@ func applyOne(ctx context.Context, db *storage.DB, m Migration) error {
 	if _, err := tx.ExecContext(ctx, m.SQL); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, db.Rebind(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, CURRENT_TIMESTAMP)`), m.Version); err != nil {
+	// Bind an explicit UTC instant rather than relying on CURRENT_TIMESTAMP:
+	// on Postgres, assigning to a TIMESTAMPTZ column preserves the instant
+	// regardless of session time zone (CLAUDE.md: "Time: UTC in storage,
+	// always"), whereas a bare SQL CURRENT_TIMESTAMP cast into a
+	// TIMESTAMP-without-time-zone column would be session-timezone-dependent.
+	if _, err := tx.ExecContext(ctx, db.Rebind(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`), m.Version, time.Now().UTC()); err != nil {
 		return err
 	}
 	return tx.Commit()

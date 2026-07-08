@@ -53,6 +53,11 @@ func Open(dialect Dialect, driverName, dsn string) (*DB, error) {
 // the target dialect's placeholder syntax. Postgres uses positional "$1",
 // "$2", ...; SQLite queries pass through unchanged. Write queries with "?"
 // placeholders and call Rebind before executing on a Postgres DB.
+//
+// Rebind does a naive byte-scan substitution with no awareness of quoted
+// string literals: a query containing a literal "?" inside a string value
+// (e.g. a LIKE pattern) will be mis-rewritten on Postgres. Bind such values
+// as parameters instead of embedding them in the query text.
 func (d *DB) Rebind(query string) string {
 	if d.Dialect != Postgres {
 		return query
