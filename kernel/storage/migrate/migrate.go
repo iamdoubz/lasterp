@@ -23,31 +23,77 @@ var migrationsFS embed.FS
 
 // Migration is one forward SQL step, named after its source file.
 type Migration struct {
-	Version string // filename without extension, e.g. "0001_conformance_fixture"
+	Version string // filename without extension/dialect tag, e.g. "0001_conformance_fixture"
 	SQL     string
 }
 
-// Load reads and sorts the embedded migrations by version.
-func Load() ([]Migration, error) {
+// Load reads and sorts the embedded migrations by version, selecting the
+// dialect-specific variant of each version when one exists.
+//
+// A version's SQL comes from one of two file shapes: a dialect-neutral
+// "NNNN_name.sql" (used for both dialects), or a pair of dialect-tagged
+// files "NNNN_name.postgres.sql" / "NNNN_name.sqlite.sql" for steps whose
+// syntax genuinely diverges (e.g. Postgres RLS policies). A version must
+// not mix a neutral file with a tagged one.
+func Load(dialect storage.Dialect) ([]Migration, error) {
 	entries, err := migrationsFS.ReadDir("migrations")
 	if err != nil {
 		return nil, fmt.Errorf("migrate: read migrations dir: %w", err)
 	}
-	migrations := make([]Migration, 0, len(entries))
+
+	type candidate struct {
+		neutral, dialectSpecific string // file names
+	}
+	byVersion := make(map[string]*candidate)
+	var order []string
+
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
 		}
-		b, err := migrationsFS.ReadFile("migrations/" + e.Name())
-		if err != nil {
-			return nil, fmt.Errorf("migrate: read %s: %w", e.Name(), err)
+		name := strings.TrimSuffix(e.Name(), ".sql")
+		version := name
+		tag := ""
+		if i := strings.LastIndex(name, "."); i >= 0 {
+			tag = name[i+1:]
+			if tag == "postgres" || tag == "sqlite" {
+				version = name[:i]
+			} else {
+				tag = ""
+			}
 		}
-		migrations = append(migrations, Migration{
-			Version: strings.TrimSuffix(e.Name(), ".sql"),
-			SQL:     string(b),
-		})
+
+		c, ok := byVersion[version]
+		if !ok {
+			c = &candidate{}
+			byVersion[version] = c
+			order = append(order, version)
+		}
+		switch {
+		case tag == "":
+			c.neutral = e.Name()
+		case tag == dialect.String():
+			c.dialectSpecific = e.Name()
+		}
 	}
-	sort.Slice(migrations, func(i, j int) bool { return migrations[i].Version < migrations[j].Version })
+
+	sort.Strings(order)
+	migrations := make([]Migration, 0, len(order))
+	for _, version := range order {
+		c := byVersion[version]
+		file := c.dialectSpecific
+		if file == "" {
+			file = c.neutral
+		}
+		if file == "" {
+			return nil, fmt.Errorf("migrate: version %s has no %s or neutral variant", version, dialect)
+		}
+		b, err := migrationsFS.ReadFile("migrations/" + file)
+		if err != nil {
+			return nil, fmt.Errorf("migrate: read %s: %w", file, err)
+		}
+		migrations = append(migrations, Migration{Version: version, SQL: string(b)})
+	}
 	return migrations, nil
 }
 
@@ -62,7 +108,7 @@ func Apply(ctx context.Context, db *storage.DB) error {
 		return fmt.Errorf("migrate: ensure schema_migrations: %w", err)
 	}
 
-	migrations, err := Load()
+	migrations, err := Load(db.Dialect)
 	if err != nil {
 		return err
 	}

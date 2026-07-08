@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Dialect identifies which SQL engine a DB talks to.
@@ -75,4 +76,57 @@ func (d *DB) Rebind(query string) string {
 		b.WriteRune(r)
 	}
 	return b.String()
+}
+
+// sqliteTimeFormat matches modernc.org/sqlite's default write format
+// (time.Time.String(), unless a DSN _time_format overrides it — this
+// project doesn't set one).
+const sqliteTimeFormat = "2006-01-02 15:04:05.999999999 -0700 MST"
+
+// Time scans a TIMESTAMPTZ column into a time.Time, working around
+// modernc.org/sqlite: it only auto-parses TEXT timestamp columns declared
+// exactly DATE/DATETIME/TIMESTAMP, not TIMESTAMPTZ — the type this project
+// uses on Postgres (docs/notes/WP-0.2-decisions.md), so SQLite hands back
+// a raw string instead of a time.Time. Use *Time as the Scan destination
+// for any TIMESTAMPTZ column; pass a plain time.Time for Exec/Query args.
+type Time struct{ time.Time }
+
+func (t *Time) Scan(v any) error {
+	switch val := v.(type) {
+	case time.Time:
+		t.Time = val
+	case string:
+		parsed, err := time.Parse(sqliteTimeFormat, val)
+		if err != nil {
+			return fmt.Errorf("storage: parse time %q: %w", val, err)
+		}
+		t.Time = parsed
+	case []byte:
+		return t.Scan(string(val))
+	case nil:
+		t.Time = time.Time{}
+	default:
+		return fmt.Errorf("storage: unsupported time value type %T", v)
+	}
+	return nil
+}
+
+// NullTime is Time's nullable counterpart, for TIMESTAMPTZ columns that
+// allow NULL.
+type NullTime struct {
+	Time  time.Time
+	Valid bool
+}
+
+func (n *NullTime) Scan(v any) error {
+	if v == nil {
+		n.Time, n.Valid = time.Time{}, false
+		return nil
+	}
+	var t Time
+	if err := t.Scan(v); err != nil {
+		return err
+	}
+	n.Time, n.Valid = t.Time, true
+	return nil
 }
