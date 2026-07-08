@@ -8,9 +8,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/google/uuid"
-
 	"github.com/iamdoubz/lasterp/kernel/identity"
+	"github.com/iamdoubz/lasterp/kernel/idgen"
 	"github.com/iamdoubz/lasterp/kernel/storage"
 	"github.com/iamdoubz/lasterp/kernel/tenancy"
 )
@@ -42,7 +41,7 @@ func CreateRole(ctx context.Context, db *storage.DB, tenant tenancy.ID, name str
 	if tenant == "" || name == "" {
 		return "", errors.New("authz: tenant and name are required")
 	}
-	id := RoleID(uuid.NewString())
+	id := RoleID(idgen.New())
 	_, err := db.ExecContext(ctx, db.Rebind(`INSERT INTO roles (id, tenant_id, name, is_core) VALUES (?, ?, ?, ?)`),
 		string(id), string(tenant), name, isCore)
 	if err != nil {
@@ -63,7 +62,7 @@ func GrantPermission(ctx context.Context, db *storage.DB, tenant tenancy.ID, rol
 	_, err := db.ExecContext(ctx, db.Rebind(`
 		INSERT INTO role_permissions (id, tenant_id, role_id, object, action, condition)
 		VALUES (?, ?, ?, ?, ?, NULL)`),
-		uuid.NewString(), string(tenant), string(role), object, action)
+		idgen.New(), string(tenant), string(role), object, action)
 	if err != nil {
 		return fmt.Errorf("authz: grant permission: %w", err)
 	}

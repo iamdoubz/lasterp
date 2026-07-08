@@ -6,11 +6,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/testcontainers/testcontainers-go/wait"
 
+	"github.com/iamdoubz/lasterp/kernel/idgen"
 	"github.com/iamdoubz/lasterp/kernel/storage"
 	"github.com/iamdoubz/lasterp/kernel/storage/migrate"
 	"github.com/iamdoubz/lasterp/kernel/storage/postgres"
@@ -79,7 +79,7 @@ func testPostgresDB(t *testing.T) *storage.DB {
 
 func mustCreateTenant(t *testing.T, db *storage.DB) tenancy.ID {
 	t.Helper()
-	id := tenancy.ID(uuid.NewString())
+	id := tenancy.ID(idgen.New())
 	if err := tenancy.CreateTenant(context.Background(), db, id, "test tenant"); err != nil {
 		t.Fatalf("create tenant: %v", err)
 	}

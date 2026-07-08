@@ -13,8 +13,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/google/uuid"
-
+	"github.com/iamdoubz/lasterp/kernel/idgen"
 	"github.com/iamdoubz/lasterp/kernel/storage"
 	"github.com/iamdoubz/lasterp/kernel/tenancy"
 )
@@ -89,7 +88,7 @@ func IssueSession(ctx context.Context, db *storage.DB, tenant tenancy.ID, user U
 
 	now := time.Now().UTC()
 	issued := &IssuedSession{
-		ID:           SessionID(uuid.NewString()),
+		ID:           SessionID(idgen.New()),
 		Token:        token,
 		RefreshToken: refresh,
 		ExpiresAt:    now.Add(SessionTTL),

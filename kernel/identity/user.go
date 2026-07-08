@@ -13,8 +13,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/google/uuid"
-
+	"github.com/iamdoubz/lasterp/kernel/idgen"
 	"github.com/iamdoubz/lasterp/kernel/storage"
 	"github.com/iamdoubz/lasterp/kernel/tenancy"
 )
@@ -46,7 +45,7 @@ func CreateUser(ctx context.Context, db *storage.DB, tenant tenancy.ID, email, p
 		return nil, errors.New("identity: tenant and email are required")
 	}
 	u := &User{
-		ID:           UserID(uuid.NewString()),
+		ID:           UserID(idgen.New()),
 		TenantID:     tenant,
 		Email:        email,
 		PasswordHash: passwordHash,

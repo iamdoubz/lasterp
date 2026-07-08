@@ -6,11 +6,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/testcontainers/testcontainers-go/wait"
 
+	"github.com/iamdoubz/lasterp/kernel/idgen"
 	"github.com/iamdoubz/lasterp/kernel/storage"
 	"github.com/iamdoubz/lasterp/kernel/storage/migrate"
 	"github.com/iamdoubz/lasterp/kernel/storage/postgres"
@@ -106,7 +106,7 @@ func seedUser(t *testing.T, db *storage.DB, tenant ID) {
 		t.Fatalf("insert tenant: %v", err)
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO users (id, tenant_id, email, created_at) VALUES ($1, $2, $3, $4)`,
-		uuid.NewString(), string(tenant), "seed@example.com", time.Now().UTC()); err != nil {
+		idgen.New(), string(tenant), "seed@example.com", time.Now().UTC()); err != nil {
 		t.Fatalf("insert user: %v", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -133,7 +133,7 @@ func countUsers(t *testing.T, db *storage.DB, ctx context.Context) int {
 // tenant context set returns zero rows even though matching data exists.
 func TestNoContextZeroRows(t *testing.T) {
 	db := testPostgresDB(t)
-	seedUser(t, db, ID(uuid.NewString()))
+	seedUser(t, db, ID(idgen.New()))
 
 	if n := countUsers(t, db, context.Background()); n != 0 {
 		t.Fatalf("users visible with no tenant context set: count = %d, want 0", n)
@@ -143,8 +143,8 @@ func TestNoContextZeroRows(t *testing.T) {
 // INV-T1: tenant A's context never surfaces tenant B's rows.
 func TestCrossTenantIsolation(t *testing.T) {
 	db := testPostgresDB(t)
-	tenantA := ID(uuid.NewString())
-	tenantB := ID(uuid.NewString())
+	tenantA := ID(idgen.New())
+	tenantB := ID(idgen.New())
 	seedUser(t, db, tenantA)
 	seedUser(t, db, tenantB)
 
