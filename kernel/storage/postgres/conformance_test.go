@@ -44,7 +44,11 @@ func TestPostgresConformance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Logf("close db: %v", err)
+		}
+	})
 
 	if err := db.PingContext(ctx); err != nil {
 		t.Fatalf("ping: %v", err)

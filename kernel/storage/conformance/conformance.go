@@ -110,7 +110,9 @@ func testUniqueViolation(t *testing.T, ctx context.Context, db *storage.DB) {
 	if _, err := db.ExecContext(ctx, insert, "u-1", tenant, "gadget", ""); err != nil {
 		t.Fatalf("first insert: %v", err)
 	}
-	defer db.ExecContext(ctx, db.Rebind(`DELETE FROM storage_conformance_items WHERE id = ?`), "u-1")
+	defer func() {
+		_, _ = db.ExecContext(ctx, db.Rebind(`DELETE FROM storage_conformance_items WHERE id = ?`), "u-1")
+	}()
 
 	_, err := db.ExecContext(ctx, insert, "u-2", tenant, "gadget", "")
 	if err == nil {
@@ -148,7 +150,9 @@ func testNullRoundTrip(t *testing.T, ctx context.Context, db *storage.DB) {
 	if _, err := db.ExecContext(ctx, insert, "null-1", "tenant-null", "nullable", nil); err != nil {
 		t.Fatalf("insert with NULL note: %v", err)
 	}
-	defer db.ExecContext(ctx, db.Rebind(`DELETE FROM storage_conformance_items WHERE id = ?`), "null-1")
+	defer func() {
+		_, _ = db.ExecContext(ctx, db.Rebind(`DELETE FROM storage_conformance_items WHERE id = ?`), "null-1")
+	}()
 
 	var note sql.NullString
 	row := db.QueryRowContext(ctx, db.Rebind(`SELECT note FROM storage_conformance_items WHERE id = ?`), "null-1")
