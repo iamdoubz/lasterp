@@ -1,7 +1,7 @@
 .PHONY: dev lint test build
 
 dev:
-	@command -v pnpm >/dev/null 2>&1 || (corepack enable 2>/dev/null || npm install -g pnpm)
+	@command -v pnpm >/dev/null 2>&1 || npm install -g pnpm@9.15.0
 	pnpm install
 	go run ./cmd/lasterp dev
 

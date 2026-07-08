@@ -6,7 +6,7 @@ Interpretations made to unblock implementation. Not ADR material; revisit if wro
 
 2. **Go toolchain pin vs local env.** Local `go` is 1.26.2; CLAUDE.md pins 1.26.4. `go.mod` sets `toolchain go1.26.4` — with default `GOTOOLCHAIN=auto`, `go` auto-fetches 1.26.4 on first build. CI installs 1.26.4 explicitly via actions/setup-go.
 
-3. **pnpm not preinstalled locally.** Use Corepack (ships with Node ≥16.13, bundled in the Node 26 install here even though the `corepack` shim isn't on PATH — falls back to `npm install -g pnpm` in `make dev` if `corepack enable` fails) pinned via root `package.json` `"packageManager"` field. No new global-tool dependency beyond what Node already provides.
+3. **pnpm not preinstalled locally.** Corepack was removed from Node's default install as of Node 25+ (confirmed: `corepack enable` fails on Node 26 in CI, the devcontainer, and the Docker web-build stage). All three install pnpm directly via `npm install -g pnpm@9.15.0` instead; the version is also pinned via root `package.json`'s `"packageManager"` field for tooling that still reads it (e.g. editors). No new global-tool dependency beyond what Node already provides.
 
 4. **"Hello-world API + web shell" (AC)** = Go server exposes `GET /healthz` and `GET /api/v1/hello` (JSON), and a minimal Vite+React page fetches `/api/v1/hello` and renders the response. `lasterp dev` (invoked by `make dev`) starts both the Go server and the Vite dev server as one command. "<5 min" is measured from a cold clone including dependency install.
 
