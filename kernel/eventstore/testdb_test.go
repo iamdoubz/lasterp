@@ -1,4 +1,4 @@
-package authz
+package eventstore
 
 import (
 	"context"
@@ -19,6 +19,13 @@ import (
 	"github.com/iamdoubz/lasterp/kernel/tenancy"
 )
 
+// testDialects returns one migrated *storage.DB per dialect (CLAUDE.md:
+// "adapter conformance suite must pass on Postgres AND SQLite for
+// storage-touching code"). The Postgres connection is a non-superuser
+// app role — see kernel/tenancy's WP-0.3 lesson: the testcontainers
+// default user is a cluster superuser and always bypasses RLS/append-only
+// triggers regardless of FORCE, which would make every enforcement
+// assertion here a false positive.
 func testDialects(t *testing.T) map[string]*storage.DB {
 	t.Helper()
 	dbs := map[string]*storage.DB{"sqlite": testSQLiteDB(t)}
@@ -30,29 +37,35 @@ func testDialects(t *testing.T) map[string]*storage.DB {
 
 func testSQLiteDB(t *testing.T) *storage.DB {
 	t.Helper()
-	dsn := filepath.Join(t.TempDir(), "authz.db")
+	// _pragma=busy_timeout keeps the concurrency torture test from erroring
+	// out under SQLite's single-writer file lock instead of just queuing.
+	// No "file:" prefix: modernc.org/sqlite strips a "?query" suffix from
+	// the plain OS path before opening while still applying it as pragma
+	// params — a "file:" URI would need forward-slash escaping the
+	// temp dir's Windows path doesn't have.
+	dsn := filepath.Join(t.TempDir(), "eventstore.db") + "?_pragma=busy_timeout(30000)&_pragma=journal_mode(WAL)"
 	db, err := sqlite.Open(dsn)
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
+	// SQLite serializes all writes at the file-lock level regardless; a
+	// smaller pool means less time spent opening/closing physical
+	// connections under the torture test's 1000 goroutines, not less
+	// correctness.
+	db.SetMaxOpenConns(10)
 	if err := migrate.Apply(context.Background(), db); err != nil {
 		t.Fatalf("migrate sqlite: %v", err)
 	}
 	return db
 }
 
-// testPostgresDB migrates as the testcontainers superuser, then hands back
-// a connection as a freshly created ordinary (NOSUPERUSER NOBYPASSRLS)
-// role — see kernel/identity's identical helper and
-// docs/notes/WP-0.4-decisions.md for why testing through the superuser
-// connection would make every RLS-dependent assertion a false positive.
 func testPostgresDB(t *testing.T) *storage.DB {
 	t.Helper()
 	ctx := context.Background()
 
 	container, err := tcpostgres.Run(ctx, "postgres:18",
-		tcpostgres.WithDatabase("lasterp_authz"),
+		tcpostgres.WithDatabase("lasterp_eventstore"),
 		tcpostgres.WithUsername("lasterp"),
 		tcpostgres.WithPassword("lasterp"),
 		testcontainers.WithWaitStrategy(
@@ -89,6 +102,11 @@ func testPostgresDB(t *testing.T) *storage.DB {
 	if _, err := superDB.ExecContext(ctx, `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO `+appUser); err != nil {
 		t.Fatalf("grant to app role: %v", err)
 	}
+	// events.id is BIGSERIAL: INSERT needs USAGE on its backing sequence
+	// too, not just the table grant above.
+	if _, err := superDB.ExecContext(ctx, `GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO `+appUser); err != nil {
+		t.Fatalf("grant sequence usage to app role: %v", err)
+	}
 
 	appDSN, err := url.Parse(dsn)
 	if err != nil {
@@ -101,6 +119,11 @@ func testPostgresDB(t *testing.T) *storage.DB {
 		t.Fatalf("open postgres (app role): %v", err)
 	}
 	t.Cleanup(func() { _ = appDB.Close() })
+	// The concurrency torture test fires 1000 goroutines at once; without
+	// a cap, database/sql (MaxOpenConns defaults to unlimited) would try
+	// to open as many physical connections as Postgres's default
+	// max_connections allows headroom for, and promptly exhaust it.
+	appDB.SetMaxOpenConns(50)
 	return appDB
 }
 

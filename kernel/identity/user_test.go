@@ -5,15 +5,14 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/google/uuid"
-
+	"github.com/iamdoubz/lasterp/kernel/idgen"
 	"github.com/iamdoubz/lasterp/kernel/storage"
 	"github.com/iamdoubz/lasterp/kernel/tenancy"
 )
 
 func mustCreateTenant(t *testing.T, db *storage.DB) tenancy.ID {
 	t.Helper()
-	id := tenancy.ID(uuid.NewString())
+	id := tenancy.ID(idgen.New())
 	if err := tenancy.CreateTenant(context.Background(), db, id, "test tenant"); err != nil {
 		t.Fatalf("create tenant: %v", err)
 	}

@@ -8,10 +8,13 @@ package storage
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // Dialect identifies which SQL engine a DB talks to.
@@ -129,4 +132,38 @@ func (n *NullTime) Scan(v any) error {
 	}
 	n.Time, n.Valid = t.Time, true
 	return nil
+}
+
+// pgUniqueViolation is Postgres's SQLSTATE for unique_violation.
+const pgUniqueViolation = "23505"
+
+// IsUniqueViolation reports whether err is a unique-constraint/index
+// violation, on either dialect.
+func IsUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Code == pgUniqueViolation
+	}
+	// modernc.org/sqlite doesn't expose a typed SQLITE_CONSTRAINT_UNIQUE
+	// error the way pgx does; its error message names the violation.
+	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
+}
+
+// IsBusy reports whether err is SQLite's SQLITE_BUSY family ("database is
+// locked"): another connection holds the write lock, or (SQLITE_BUSY_SNAPSHOT,
+// extended code 517, under WAL mode) a read transaction's snapshot went
+// stale under a concurrent writer commit and needs to restart. This is
+// SQLite-only — Postgres's MVCC has no equivalent transient-lock error for
+// ordinary row writes. busy_timeout (a DSN _pragma) reduces how often the
+// base case surfaces but does not eliminate either variant under real
+// concurrent load from multiple goroutines/connections, and does not
+// apply to SQLITE_BUSY_SNAPSHOT at all (that one requires the caller to
+// retry the whole transaction, not just wait); callers doing their own
+// retry loop (e.g. kernel/tenancy.WithTenant) should treat both as
+// transient. modernc.org/sqlite formats the two variants differently
+// ("database is locked (5) (SQLITE_BUSY)" vs "database is locked (517)"
+// with no named suffix) — matching the shared "database is locked" text
+// catches both instead of relying on the SQLITE_BUSY name being present.
+func IsBusy(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "database is locked")
 }
