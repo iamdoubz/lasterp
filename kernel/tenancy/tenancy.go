@@ -61,24 +61,38 @@ func FromContext(ctx context.Context) (ID, bool) {
 // exact class of false positive) — a real app role would have broken
 // immediately.
 //
-// On SQLite, a transient storage.IsBusy (SQLITE_BUSY, "database is
-// locked") is retried a bounded number of times with a short backoff:
-// busy_timeout reduces but does not eliminate this under real concurrent
-// load from multiple goroutines/connections (kernel/eventstore's 1000-
-// writer torture test hits it routinely without this). Any other error,
-// including the caller's own business errors (e.g. eventstore's
-// ErrVersionConflict), propagates immediately without retrying.
+// On SQLite, a transient storage.IsBusy (SQLITE_BUSY / SQLITE_BUSY_SNAPSHOT,
+// "database is locked") is retried against a wall-clock budget, not a
+// fixed attempt count: busy_timeout reduces but does not eliminate this
+// under real concurrent load from multiple goroutines/connections
+// (kernel/eventstore's 1000-writer torture test hits it routinely without
+// this retry), and SQLITE_BUSY_SNAPSHOT in particular can fail near-
+// instantly rather than actually waiting out busy_timeout — so how many
+// retries a given contention level needs varies with how fast the
+// machine is (a fixed count of 50 passed locally but wasn't enough on a
+// slower CI runner). Any other error, including the caller's own business
+// errors (e.g. eventstore's ErrVersionConflict), propagates immediately
+// without retrying.
 func WithTenant(ctx context.Context, db *storage.DB, tenant ID, fn func(ctx context.Context, tx *sql.Tx) error) error {
-	const maxBusyRetries = 50
+	const busyRetryBudget = 30 * time.Second
+	const maxBackoff = 200 * time.Millisecond
+
+	deadline := time.Now().Add(busyRetryBudget)
 	var err error
-	for attempt := 0; attempt <= maxBusyRetries; attempt++ {
+	for attempt := 0; ; attempt++ {
 		err = withTenantOnce(ctx, db, tenant, fn)
 		if err == nil || !storage.IsBusy(err) {
 			return err
 		}
-		time.Sleep(time.Duration(attempt+1) * 5 * time.Millisecond)
+		if time.Now().After(deadline) {
+			return fmt.Errorf("tenancy: gave up after %s on SQLITE_BUSY: %w", busyRetryBudget, err)
+		}
+		backoff := time.Duration(attempt+1) * 5 * time.Millisecond
+		if backoff > maxBackoff {
+			backoff = maxBackoff
+		}
+		time.Sleep(backoff)
 	}
-	return fmt.Errorf("tenancy: gave up after %d retries on SQLITE_BUSY: %w", maxBusyRetries, err)
 }
 
 func withTenantOnce(ctx context.Context, db *storage.DB, tenant ID, fn func(ctx context.Context, tx *sql.Tx) error) error {
