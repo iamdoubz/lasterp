@@ -103,7 +103,7 @@ memanto memory sync --project-dir .
 3. Phases are sequential; WPs within a phase can run in parallel. Respect module boundaries: `modules/*` may import `kernel/*`, never each other. Cross-module reactions go through domain events.
 
 ## Stack (fixed — see docs/02-TECH-STACK.md)
-Go **1.26.4** pinned toolchain — track latest stable patch within 2 weeks of release (server, **no CGO** — modernc.org/sqlite, wazero), PostgreSQL 16+/SQLite behind the storage adapter, NATS JetStream (embedded lib in solo mode), React 19 + TypeScript + Vite + TanStack (web), Extism/wazero (plugins), MCP (AI surface).
+Go **1.26.4** pinned toolchain — track latest stable patch within 2 weeks of release (server, **no CGO** — modernc.org/sqlite, wazero), PostgreSQL 18+/SQLite behind the storage adapter, NATS JetStream (embedded lib in solo mode), React 19 + TypeScript + Vite + TanStack (web), Extism/wazero (plugins), MCP (AI surface).
 
 ## Hard rules
 - **Money:** integer minor units + ISO-4217 code. Never float. Rounding/allocation only through `kernel/money` helpers.

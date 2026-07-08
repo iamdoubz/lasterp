@@ -7,7 +7,7 @@ The storage adapter (already the abstraction since ADR-002) becomes a **public, 
 
 | Tier | Engines | Support level |
 |---|---|---|
-| **1 — Recommended** | **PostgreSQL 16+** (flagship), **SQLite** (solo mode + client replicas) | Full features, first CI target, perf budgets guaranteed, hosted service runs it |
+| **1 — Recommended** | **PostgreSQL 18+** (flagship), **SQLite** (solo mode + client replicas) | Full features, first CI target, perf budgets guaranteed, hosted service runs it |
 | **2 — Supported** | **Microsoft SQL Server 2019+**, **MySQL 8.4+ / MariaDB 11+** | Full core features via adapter; CI-gated conformance; noted degradations (below) |
 | **3 — Enterprise adapters** | **Oracle 19c+**, **IBM Db2 12+** | Same conformance bar; maintained with partners/community; released when the suite is green, not before |
 | **Not a system of record** | MongoDB, Cassandra | See below — supported as *read-side targets*, refused as the ledger's home |
