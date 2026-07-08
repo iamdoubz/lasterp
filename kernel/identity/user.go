@@ -51,10 +51,13 @@ func CreateUser(ctx context.Context, db *storage.DB, tenant tenancy.ID, email, p
 		PasswordHash: passwordHash,
 		CreatedAt:    time.Now().UTC(),
 	}
-	_, err := db.ExecContext(ctx, db.Rebind(`
-		INSERT INTO users (id, tenant_id, email, password_hash, totp_enabled, created_at)
-		VALUES (?, ?, ?, ?, ?, ?)`),
-		string(u.ID), string(u.TenantID), u.Email, u.PasswordHash, false, u.CreatedAt)
+	err := tenancy.WithTenant(ctx, db, tenant, func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, db.Rebind(`
+			INSERT INTO users (id, tenant_id, email, password_hash, totp_enabled, created_at)
+			VALUES (?, ?, ?, ?, ?, ?)`),
+			string(u.ID), string(u.TenantID), u.Email, u.PasswordHash, false, u.CreatedAt)
+		return err
+	})
 	if err != nil {
 		return nil, fmt.Errorf("identity: create user: %w", err)
 	}
@@ -66,18 +69,42 @@ func CreateUser(ctx context.Context, db *storage.DB, tenant tenancy.ID, email, p
 // the same email — the (tenant_id, email) unique index permits reuse of
 // an email across tenants by design).
 func GetUserByEmail(ctx context.Context, db *storage.DB, tenant tenancy.ID, email string) (*User, error) {
-	row := db.QueryRowContext(ctx, db.Rebind(`
-		SELECT id, tenant_id, email, password_hash, totp_secret, totp_enabled, totp_last_counter, created_at
-		FROM users WHERE tenant_id = ? AND email = ?`), string(tenant), email)
-	return scanUser(row)
+	var u *User
+	err := tenancy.WithTenant(ctx, db, tenant, func(ctx context.Context, tx *sql.Tx) error {
+		row := tx.QueryRowContext(ctx, db.Rebind(`
+			SELECT id, tenant_id, email, password_hash, totp_secret, totp_enabled, totp_last_counter, created_at
+			FROM users WHERE tenant_id = ? AND email = ?`), string(tenant), email)
+		got, err := scanUser(row)
+		if err != nil {
+			return err
+		}
+		u = got
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return u, nil
 }
 
 // GetUserByID looks up a user scoped to tenant.
 func GetUserByID(ctx context.Context, db *storage.DB, tenant tenancy.ID, id UserID) (*User, error) {
-	row := db.QueryRowContext(ctx, db.Rebind(`
-		SELECT id, tenant_id, email, password_hash, totp_secret, totp_enabled, totp_last_counter, created_at
-		FROM users WHERE tenant_id = ? AND id = ?`), string(tenant), string(id))
-	return scanUser(row)
+	var u *User
+	err := tenancy.WithTenant(ctx, db, tenant, func(ctx context.Context, tx *sql.Tx) error {
+		row := tx.QueryRowContext(ctx, db.Rebind(`
+			SELECT id, tenant_id, email, password_hash, totp_secret, totp_enabled, totp_last_counter, created_at
+			FROM users WHERE tenant_id = ? AND id = ?`), string(tenant), string(id))
+		got, err := scanUser(row)
+		if err != nil {
+			return err
+		}
+		u = got
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return u, nil
 }
 
 func scanUser(row *sql.Row) (*User, error) {
@@ -108,9 +135,12 @@ func EnableTOTP(ctx context.Context, db *storage.DB, tenant tenancy.ID, id UserI
 	if tenant == "" || id == "" {
 		return errors.New("identity: tenant and user id are required")
 	}
-	_, err := db.ExecContext(ctx, db.Rebind(`
-		UPDATE users SET totp_secret = ?, totp_enabled = ? WHERE tenant_id = ? AND id = ?`),
-		secret, true, string(tenant), string(id))
+	err := tenancy.WithTenant(ctx, db, tenant, func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, db.Rebind(`
+			UPDATE users SET totp_secret = ?, totp_enabled = ? WHERE tenant_id = ? AND id = ?`),
+			secret, true, string(tenant), string(id))
+		return err
+	})
 	if err != nil {
 		return fmt.Errorf("identity: enable TOTP: %w", err)
 	}
@@ -123,9 +153,12 @@ func SetTOTPLastCounter(ctx context.Context, db *storage.DB, tenant tenancy.ID, 
 	if tenant == "" || id == "" {
 		return errors.New("identity: tenant and user id are required")
 	}
-	_, err := db.ExecContext(ctx, db.Rebind(`
-		UPDATE users SET totp_last_counter = ? WHERE tenant_id = ? AND id = ?`),
-		counter, string(tenant), string(id))
+	err := tenancy.WithTenant(ctx, db, tenant, func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, db.Rebind(`
+			UPDATE users SET totp_last_counter = ? WHERE tenant_id = ? AND id = ?`),
+			counter, string(tenant), string(id))
+		return err
+	})
 	if err != nil {
 		return fmt.Errorf("identity: set TOTP last counter: %w", err)
 	}

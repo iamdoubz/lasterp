@@ -44,6 +44,63 @@ func FromContext(ctx context.Context) (ID, bool) {
 	return tenant, ok
 }
 
+// WithTenant runs fn inside a transaction with tenant bound via
+// SetContext, committing on success and rolling back on error.
+//
+// This is the correct way to run any tenant-scoped query — every
+// exported function in kernel/identity, kernel/authz, and
+// kernel/eventstore goes through it. A bare statement issued straight
+// against the pooled *storage.DB (db.ExecContext/QueryRowContext) grabs
+// whatever connection is free from the pool with no tenant context set on
+// it: RLS's USING clause doubles as WITH CHECK on Postgres, so with no
+// context that's `tenant_id = NULL`, which matches nothing — every read
+// silently returns zero rows and every write is rejected, for a
+// non-superuser role. It only worked in early testing because the test
+// harness connected as the cluster superuser, which always bypasses RLS
+// regardless (see kernel/tenancy's own WP-0.3 RLS tests, which caught this
+// exact class of false positive) — a real app role would have broken
+// immediately.
+//
+// On SQLite, a transient storage.IsBusy (SQLITE_BUSY, "database is
+// locked") is retried a bounded number of times with a short backoff:
+// busy_timeout reduces but does not eliminate this under real concurrent
+// load from multiple goroutines/connections (kernel/eventstore's 1000-
+// writer torture test hits it routinely without this). Any other error,
+// including the caller's own business errors (e.g. eventstore's
+// ErrVersionConflict), propagates immediately without retrying.
+func WithTenant(ctx context.Context, db *storage.DB, tenant ID, fn func(ctx context.Context, tx *sql.Tx) error) error {
+	const maxBusyRetries = 50
+	var err error
+	for attempt := 0; attempt <= maxBusyRetries; attempt++ {
+		err = withTenantOnce(ctx, db, tenant, fn)
+		if err == nil || !storage.IsBusy(err) {
+			return err
+		}
+		time.Sleep(time.Duration(attempt+1) * 5 * time.Millisecond)
+	}
+	return fmt.Errorf("tenancy: gave up after %d retries on SQLITE_BUSY: %w", maxBusyRetries, err)
+}
+
+func withTenantOnce(ctx context.Context, db *storage.DB, tenant ID, fn func(ctx context.Context, tx *sql.Tx) error) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("tenancy: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	ctx, err = SetContext(ctx, tx, db.Dialect, tenant)
+	if err != nil {
+		return err
+	}
+	if err := fn(ctx, tx); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("tenancy: commit: %w", err)
+	}
+	return nil
+}
+
 // CreateTenant provisions a new tenant row. tenants is the one table that
 // is not itself tenant-scoped (ADR-005) — every other table's tenant_id
 // foreign-keys into this one.

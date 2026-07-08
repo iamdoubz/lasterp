@@ -42,8 +42,11 @@ func CreateRole(ctx context.Context, db *storage.DB, tenant tenancy.ID, name str
 		return "", errors.New("authz: tenant and name are required")
 	}
 	id := RoleID(idgen.New())
-	_, err := db.ExecContext(ctx, db.Rebind(`INSERT INTO roles (id, tenant_id, name, is_core) VALUES (?, ?, ?, ?)`),
-		string(id), string(tenant), name, isCore)
+	err := tenancy.WithTenant(ctx, db, tenant, func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, db.Rebind(`INSERT INTO roles (id, tenant_id, name, is_core) VALUES (?, ?, ?, ?)`),
+			string(id), string(tenant), name, isCore)
+		return err
+	})
 	if err != nil {
 		return "", fmt.Errorf("authz: create role: %w", err)
 	}
@@ -59,10 +62,13 @@ func GrantPermission(ctx context.Context, db *storage.DB, tenant tenancy.ID, rol
 	if tenant == "" || role == "" || object == "" || action == "" {
 		return errors.New("authz: tenant, role, object and action are required")
 	}
-	_, err := db.ExecContext(ctx, db.Rebind(`
-		INSERT INTO role_permissions (id, tenant_id, role_id, object, action, condition)
-		VALUES (?, ?, ?, ?, ?, NULL)`),
-		idgen.New(), string(tenant), string(role), object, action)
+	err := tenancy.WithTenant(ctx, db, tenant, func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, db.Rebind(`
+			INSERT INTO role_permissions (id, tenant_id, role_id, object, action, condition)
+			VALUES (?, ?, ?, ?, ?, NULL)`),
+			idgen.New(), string(tenant), string(role), object, action)
+		return err
+	})
 	if err != nil {
 		return fmt.Errorf("authz: grant permission: %w", err)
 	}
@@ -72,24 +78,27 @@ func GrantPermission(ctx context.Context, db *storage.DB, tenant tenancy.ID, rol
 // RevokePermission removes a grant, unless role is a core role
 // (ErrCorePermissionFloor).
 func RevokePermission(ctx context.Context, db *storage.DB, tenant tenancy.ID, role RoleID, object, action string) error {
-	var isCore bool
-	row := db.QueryRowContext(ctx, db.Rebind(`SELECT is_core FROM roles WHERE tenant_id = ? AND id = ?`), string(tenant), string(role))
-	if err := row.Scan(&isCore); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil
+	err := tenancy.WithTenant(ctx, db, tenant, func(ctx context.Context, tx *sql.Tx) error {
+		var isCore bool
+		row := tx.QueryRowContext(ctx, db.Rebind(`SELECT is_core FROM roles WHERE tenant_id = ? AND id = ?`), string(tenant), string(role))
+		if err := row.Scan(&isCore); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil
+			}
+			return fmt.Errorf("authz: lookup role: %w", err)
 		}
-		return fmt.Errorf("authz: lookup role: %w", err)
-	}
-	if isCore {
-		return ErrCorePermissionFloor
-	}
-	_, err := db.ExecContext(ctx, db.Rebind(`
-		DELETE FROM role_permissions WHERE tenant_id = ? AND role_id = ? AND object = ? AND action = ?`),
-		string(tenant), string(role), object, action)
-	if err != nil {
-		return fmt.Errorf("authz: revoke permission: %w", err)
-	}
-	return nil
+		if isCore {
+			return ErrCorePermissionFloor
+		}
+		_, err := tx.ExecContext(ctx, db.Rebind(`
+			DELETE FROM role_permissions WHERE tenant_id = ? AND role_id = ? AND object = ? AND action = ?`),
+			string(tenant), string(role), object, action)
+		if err != nil {
+			return fmt.Errorf("authz: revoke permission: %w", err)
+		}
+		return nil
+	})
+	return err
 }
 
 // AssignRole grants role to user.
@@ -97,8 +106,11 @@ func AssignRole(ctx context.Context, db *storage.DB, tenant tenancy.ID, user ide
 	if tenant == "" || user == "" || role == "" {
 		return errors.New("authz: tenant, user and role are required")
 	}
-	_, err := db.ExecContext(ctx, db.Rebind(`INSERT INTO user_roles (tenant_id, user_id, role_id) VALUES (?, ?, ?)`),
-		string(tenant), string(user), string(role))
+	err := tenancy.WithTenant(ctx, db, tenant, func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, db.Rebind(`INSERT INTO user_roles (tenant_id, user_id, role_id) VALUES (?, ?, ?)`),
+			string(tenant), string(user), string(role))
+		return err
+	})
 	if err != nil {
 		return fmt.Errorf("authz: assign role: %w", err)
 	}
@@ -112,12 +124,15 @@ func Can(ctx context.Context, db *storage.DB, actor Actor, object, action string
 		return false, ErrNoActor
 	}
 	var n int
-	row := db.QueryRowContext(ctx, db.Rebind(`
-		SELECT COUNT(*) FROM role_permissions rp
-		JOIN user_roles ur ON ur.role_id = rp.role_id AND ur.tenant_id = rp.tenant_id
-		WHERE rp.tenant_id = ? AND ur.user_id = ? AND rp.object = ? AND rp.action = ?`),
-		string(actor.TenantID), string(actor.UserID), object, action)
-	if err := row.Scan(&n); err != nil {
+	err := tenancy.WithTenant(ctx, db, actor.TenantID, func(ctx context.Context, tx *sql.Tx) error {
+		row := tx.QueryRowContext(ctx, db.Rebind(`
+			SELECT COUNT(*) FROM role_permissions rp
+			JOIN user_roles ur ON ur.role_id = rp.role_id AND ur.tenant_id = rp.tenant_id
+			WHERE rp.tenant_id = ? AND ur.user_id = ? AND rp.object = ? AND rp.action = ?`),
+			string(actor.TenantID), string(actor.UserID), object, action)
+		return row.Scan(&n)
+	})
+	if err != nil {
 		return false, fmt.Errorf("authz: check permission: %w", err)
 	}
 	return n > 0, nil
