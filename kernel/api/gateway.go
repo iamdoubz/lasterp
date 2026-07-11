@@ -149,8 +149,17 @@ func (g *Gateway) guard(h apiHandler) http.HandlerFunc {
 			writeProblem(w, Problem{Status: http.StatusUnauthorized, Title: "authentication required", Detail: err.Error(), Instance: r.URL.Path})
 			return
 		}
+		// Single source of truth for the tenant a write lands in: authz
+		// filters on actor.TenantID, so the CRUD call must use the same value
+		// (below). A divergent (actor, tenant) pair from a buggy/hostile
+		// Authenticator would otherwise authorize against one tenant and write
+		// to another (INV-T1/INV-T2 hole) — reject it outright, fail closed.
+		if actor.TenantID != tenant {
+			writeProblem(w, Problem{Status: http.StatusForbidden, Title: "tenant mismatch", Instance: r.URL.Path})
+			return
+		}
 
-		d := g.limiter.allow(rateKey(tenant, actor))
+		d := g.limiter.allow(rateKey(actor.TenantID, actor))
 		setRateLimitHeaders(w, d)
 		if d.limited {
 			w.Header().Set("Retry-After", strconv.Itoa(d.resetSecs))
@@ -159,7 +168,7 @@ func (g *Gateway) guard(h apiHandler) http.HandlerFunc {
 		}
 
 		ctx := authz.WithActor(r.Context(), actor)
-		h(w, r.WithContext(ctx), tenant)
+		h(w, r.WithContext(ctx), actor.TenantID)
 	}
 }
 

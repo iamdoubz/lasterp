@@ -247,6 +247,36 @@ func TestUnauthenticatedIsRejected(t *testing.T) {
 	_ = tenant
 }
 
+// TestTenantMismatchRejected: an Authenticator returning an actor whose
+// TenantID diverges from the returned tenant must be rejected (403), never
+// authorized against one tenant and written to another (INV-T1/INV-T2).
+func TestTenantMismatchRejected(t *testing.T) {
+	db := testSQLiteDB(t)
+	tenant := mustCreateTenant(t, db)
+	actor := seedActor(t, db, tenant, "create", "read")
+	other := tenancy.ID("some-other-tenant")
+
+	g := NewGateway(Config{
+		DB:      db,
+		Objects: []*metadata.EffectiveSchema{contactSchema(t, db)},
+		Authenticator: AuthenticatorFunc(func(_ *http.Request) (authz.Actor, tenancy.ID, error) {
+			return actor, other, nil // actor.TenantID != returned tenant
+		}),
+	})
+
+	rr := do(t, g, http.MethodGet, "/api/v1/contact", "", nil)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("read status = %d, want 403", rr.Code)
+	}
+	assertProblem(t, rr)
+
+	rr = do(t, g, http.MethodPost, "/api/v1/contact", "k-mismatch", map[string]any{"full_name": "X"})
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("write status = %d, want 403", rr.Code)
+	}
+	assertProblem(t, rr)
+}
+
 func TestRateLimitReturns429(t *testing.T) {
 	db := testSQLiteDB(t)
 	tenant := mustCreateTenant(t, db)

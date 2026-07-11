@@ -86,6 +86,27 @@ metadata engine (`kernel/metadata`: `EffectiveSchema` + `CRUD`).
    returns the full non-archived set in a `{"data":[...]}` envelope that
    leaves room for a `next_cursor` sibling without a breaking change.
 
+## Threat model / security notes
+
+This WP sits on the authn/authz/tenancy request path, so per CLAUDE.md's DoD
+here is the explicit threat model. The gateway is the single choke point
+(ADR-009) and fails closed on every branch.
+
+| Threat | Vector | Mitigation |
+|---|---|---|
+| **Spoofed / forged principal** | Request arrives with no or a bogus identity | The `guard` middleware requires an `Authenticator`; a `nil` authenticator or any `Authenticate` error returns 401 and never reaches the CRUD engine. Actor identity is never derived from request parameters — only from what the Authenticator returns (which, once real, is a verified token — WP-3.7). No anonymous writes reach `authz.Authorize` (INV-T4). |
+| **Cross-tenant access** | Read/write another tenant's rows | Every CRUD call runs through `tenancy.WithTenant` (RLS backstop on Postgres, explicit `tenant_id` filter on SQLite — INV-T1) and `authz.Authorize` (INV-T2). The tenant the write lands in is taken from `actor.TenantID`, the *same* value authz filters on — see the next row. |
+| **Tenant-consistency confusion** | A buggy/hostile `Authenticator` returns an `(actor, tenant)` pair whose `actor.TenantID` differs from the returned `tenant`, so authz checks tenant A but the write lands in tenant B | `guard` rejects `actor.TenantID != tenant` with a 403 before doing anything, and passes `actor.TenantID` (not the separately-returned value) to the CRUD engine, so the authorization tenant and the storage tenant are provably the same. Covered by `TestTenantMismatchRejected`. |
+| **Replay / duplicate submission** | Network retry or malicious resend double-executes a write (double invoice, double payment) | Idempotency keys (ADR-009): reserve-first `idempotency_keys` row means a duplicate observes the reservation and replays the stored response instead of re-executing. Fingerprint mismatch on a reused key → 409, never a silent wrong replay. Proven by `TestIdempotentReplayReturnsIdenticalResult` (no double-insert). |
+| **Rate-limit DoS** | A caller floods the gateway to exhaust CPU/DB | Per-`(tenant, actor)` token bucket returns 429 + `Retry-After` past the burst; `RateLimit-*` headers advertise the budget. Keyed after authentication so one tenant/token cannot spend another's budget. |
+| **Idempotency-reservation spam** | A caller inserts many pending keys to bloat the table, or wedges a key by never completing | Reservations are tenant-scoped (RLS) and bounded by the same rate limiter as any other write. A write that fails (non-2xx) *discards* its reservation so it cannot wedge a key; a key stuck pending only blocks that one client's own key (409 in-progress), not others. Idle-row GC is future work (noted below), not a correctness gap. |
+
+Residual/accepted (future work, not blockers): the rate-limit bucket map and
+the idempotency table are unbounded in-memory / on-disk respectively (no idle
+eviction / TTL GC yet); the limiter is per-process (not shared across a
+horizontally-scaled gateway tier); the 401 body echoes the Authenticator's
+error text. None widen an invariant; all are deferred refinements.
+
 ## Invariants
 
 The invariant registry-as-code is WP-0.8 (not yet built), so tests are
