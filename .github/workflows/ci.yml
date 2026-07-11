@@ -45,6 +45,22 @@ jobs:
       - run: go test ./...
       - run: pnpm --dir web run test
 
+  # The Integrity Gauntlet (docs/19 §3): a dedicated, non-skippable gate for
+  # data-integrity enforcement. v1 runs the invariant registry gate (every
+  # required INV-* has a tagged test) and the adversarial writer suite
+  # (append-only role separation + triggers, RLS cross-tenant, optimistic
+  # concurrency) on Postgres AND SQLite. The heavier nightly tiers named in
+  # docs/19 — mutation, chaos, fuzz — are WP-6.7. No green gauntlet, no merge.
+  integrity-gauntlet:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.4"
+      - name: run integrity gauntlet
+        run: go test -count=1 ./kernel/integrity/...
+
   build:
     runs-on: ubuntu-latest
     steps:
