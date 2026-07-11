@@ -26,6 +26,7 @@ jobs:
           version: v2.12.2
       - run: pnpm --dir web run lint
       - run: ./scripts/spdx-lint.sh
+      - run: ./scripts/i18n-lint.sh
       - run: ./scripts/dco-check.sh origin/${{ github.base_ref || 'main' }} HEAD
         if: github.event_name == 'pull_request'
 
