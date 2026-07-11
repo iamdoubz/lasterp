@@ -19,7 +19,10 @@ One pack format bundles everything a jurisdiction needs: CoA template, tax rules
 - The AI surface is an accessibility feature: every workflow drivable by natural language via MCP (docs/06) is inherently an alternative input path.
 
 ## Build plan
-- **WP-0.7 (added to Phase 0):** i18n kernel — string layer, ICU, locale formatting, lint rules, RTL-safe UI kit foundations. AC: pseudo-locale (ÀççéñţéÐ + RTL) build renders correctly; hardcoded-string lint gate green.
+- **WP-0.7 (added to Phase 0) — done:** i18n kernel — string layer, ICU, locale formatting, lint rules, RTL-safe UI kit foundations. AC: pseudo-locale (ÀççéñţéÐ + RTL) build renders correctly; hardcoded-string lint gate green.
+  - Server string/format layer: `kernel/i18n` (message catalog + per-locale printer over `golang.org/x/text`, plural rules, locale number/currency formatting from integer minor units, pseudo-locale generation, RTL detection).
+  - Web foundation: `web/src/i18n` (`I18nProvider`/`useT`, native-`Intl` ICU-subset formatter, pseudo + RTL locales driven by `?locale=pseudo|ar`; the document `dir` attribute + CSS logical properties carry direction).
+  - Hardcoded-string lint gate: `scripts/i18n-lint.sh` (fixture-tested by `scripts/i18n-lint_test.sh`), wired into CI and `make lint`. Rationale and scope in `docs/notes/WP-0.7-decisions.md`.
 - **WP-1.7 (Phase 1):** translation-pack pipeline + first non-English pack (Spanish or German) + per-locale data fields + localized document rendering. AC: invoice e2e fully localized incl. PDF.
 - **WP-4.12 (Phase 4):** e-invoicing adapter framework + PEPPOL + two national mandates. AC: golden-file conformance against official validators.
 - Accessibility gates: axe-core in CI from WP-1.5 onward; WCAG AA audit item in every UI-touching WP's definition of done.

@@ -14,11 +14,13 @@ lint:
 	golangci-lint run ./...
 	pnpm --dir web run lint
 	./scripts/spdx-lint.sh
+	./scripts/i18n-lint.sh
 
 test:
 	go test ./...
 	pnpm --dir web run test
 	./scripts/lint-checks_test.sh
+	./scripts/i18n-lint_test.sh
 
 build:
 	go build -o bin/lasterp ./cmd/lasterp
