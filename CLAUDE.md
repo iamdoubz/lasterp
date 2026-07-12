@@ -22,7 +22,7 @@ These are not suggestions. Follow each one on every turn.
 
 0. **Activate the `lasterp` agent at the start of every session, before any memory op.** Run
    `memanto agent activate lasterp` first thing. This machine hosts multiple projects and the
-   session-start sync may activate a *different* project's agent (e.g. `whispassist`), so the
+   session-start sync may activate a *different* project's agent (e.g. `lasterp`), so the
    auto-synced `MEMORY.md` can belong to the wrong project — do not trust it as LastERP context
    until you've activated `lasterp` and re-synced. Confirm with `memanto agent list` (the
    active one is marked). All `recall`/`remember`/`answer` calls read and write the *active*
