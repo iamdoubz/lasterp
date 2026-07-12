@@ -21,6 +21,8 @@ Use only what you want: each module ships a **capability manifest** (provides/re
 | Tax engine | tax.engine | — | rates-lookup-only |
 | Contacts (shared) | contacts | — | — |
 
+This table ships as code: the manifests live in [`kernel/capability/builtin/`](../kernel/capability/) and the solver (closure, enable-preview, reverse-dep disable, reduced-mode availability, profile presets) is `kernel/capability` (WP-0.9). Scope + the pending Invoice-automation profile (needs `documents.ocr` from M3) in [docs/notes/WP-0.9-decisions.md](notes/WP-0.9-decisions.md).
+
 ## M1 — Ledger (the heart; built first, hardest gates)
 Chart of accounts (templates per country/industry as seed packs), journal entries, dimensions (cost center/project/department), fiscal years & periods with hard close, multi-currency (transaction/base/reporting currency, effective-dated rates, realized/unrealized FX gain-loss routines), reversing & recurring entries, trial balance / P&L / balance sheet / GL detail as projections. **Invariants (storage-enforced):** balanced entries, no posting to closed periods, immutable posted entries, every non-GL document that touches money posts through a template.
 

@@ -1,0 +1,6 @@
+module: kernel
+title: Kernel
+kernel: true
+# Always on, never disableable (ADR-018 §1). Surfaces the cross-module service
+# capabilities modules may build on (docs/10 "Cross-module services").
+provides: [documents, notifications, files, search, approval]

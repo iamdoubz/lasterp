@@ -1,0 +1,3 @@
+module: work
+title: Work Management
+provides: [work, docs, goals, forms, dashboards]

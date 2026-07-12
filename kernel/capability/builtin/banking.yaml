@@ -1,0 +1,6 @@
+module: banking
+title: Banking & Reconciliation
+provides: [banking, reconciliation]
+requires: [ledger.core]
+modes:
+  - name: statement_import   # statement-import-only, no payment initiation

@@ -1,0 +1,5 @@
+module: tax-engine
+title: Tax engine
+provides: [tax.engine]
+modes:
+  - name: rates_lookup   # rates-lookup-only (docs/10)

@@ -1,0 +1,9 @@
+module: payables
+title: Payables / AP
+provides: [payables, ap.aging, invoice_capture]
+requires: [contacts, ledger.core, tax.engine]
+modes:
+  # capture->export, no books. documents.ocr is provided by M3/OCR (Phase 1+);
+  # until then the solver reports this mode unavailable (WP-0.9 decisions §7).
+  - name: capture_export
+    requires: [contacts, documents.ocr]

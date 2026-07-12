@@ -4,6 +4,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,51 @@ import (
 	"github.com/iamdoubz/lasterp/kernel/storage"
 	"github.com/iamdoubz/lasterp/kernel/tenancy"
 )
+
+// stubCaps is a CapabilityChecker returning a fixed answer, so the gateway's
+// capability gate can be tested without the capability package.
+type stubCaps struct {
+	enabled bool
+	capName string
+}
+
+func (s stubCaps) Enabled(context.Context, tenancy.ID, string) (bool, string, error) {
+	return s.enabled, s.capName, nil
+}
+
+// ADR-018 §5: a request to an object whose module is disabled gets a
+// capability-disabled problem+json (not a confusing 403/404), and an enabled
+// module passes through.
+func TestCapabilityGate(t *testing.T) {
+	for dialect, db := range testDialects(t) {
+		t.Run(dialect, func(t *testing.T) {
+			tenant := mustCreateTenant(t, db)
+			actor := seedActor(t, db, tenant, "read")
+			schema := contactSchema(t, db)
+
+			disabled := NewGateway(Config{DB: db, Objects: []*metadata.EffectiveSchema{schema},
+				Authenticator: fixedAuth(actor, tenant), Capabilities: stubCaps{enabled: false, capName: "crm"}})
+			rr := do(t, disabled, http.MethodGet, "/api/v1/contact", "", nil)
+			if rr.Code != http.StatusForbidden {
+				t.Fatalf("disabled status = %d, want 403; body=%s", rr.Code, rr.Body)
+			}
+			if ct := rr.Header().Get("Content-Type"); ct != "application/problem+json" {
+				t.Errorf("content-type = %q, want application/problem+json", ct)
+			}
+			var p Problem
+			mustJSON(t, rr, &p)
+			if p.Type != "capability-disabled" {
+				t.Errorf("problem type = %q, want capability-disabled", p.Type)
+			}
+
+			enabled := NewGateway(Config{DB: db, Objects: []*metadata.EffectiveSchema{schema},
+				Authenticator: fixedAuth(actor, tenant), Capabilities: stubCaps{enabled: true}})
+			if rr := do(t, enabled, http.MethodGet, "/api/v1/contact", "", nil); rr.Code != http.StatusOK {
+				t.Fatalf("enabled status = %d, want 200; body=%s", rr.Code, rr.Body)
+			}
+		})
+	}
+}
 
 // newTestGateway builds a gateway wired to db with the Contact object and an
 // authenticator presenting actor for tenant.
