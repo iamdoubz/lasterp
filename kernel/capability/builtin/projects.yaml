@@ -1,0 +1,9 @@
+module: projects
+title: Projects & Time
+provides: [projects, time]
+requires: [contacts]
+modes:
+  - name: time_tracking_only
+enhances:
+  - when: invoicing
+    adds: billable-rollup

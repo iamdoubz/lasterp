@@ -1,0 +1,5 @@
+module: payroll
+title: Payroll
+# Country pack is an enablement gate (a pack/plugin), not a capability edge.
+provides: [payroll]
+requires: [hr.core, ledger.core]

@@ -4,6 +4,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -34,6 +35,17 @@ func (f AuthenticatorFunc) Authenticate(r *http.Request) (authz.Actor, tenancy.I
 	return f(r)
 }
 
+// CapabilityChecker reports whether the module owning object is enabled for
+// tenant (ADR-018 §5). It is the gateway's composability seam: when set, a
+// request to an object whose module is disabled gets a capability-disabled
+// problem+json instead of a confusing 403/404. An object owned by no module
+// (a kernel object) reports enabled=true. Satisfied structurally by
+// capability.GatewayChecker; kept as an interface here so kernel/api does not
+// import kernel/capability.
+type CapabilityChecker interface {
+	Enabled(ctx context.Context, tenant tenancy.ID, object string) (enabled bool, capability string, err error)
+}
+
 // Config configures a Gateway. All fields are optional: with the zero value
 // the gateway still serves /healthz, /api/v1/hello and an (object-less)
 // OpenAPI document. CRUD routes exist only for registered Objects and
@@ -43,6 +55,9 @@ type Config struct {
 	Objects       []*metadata.EffectiveSchema
 	Authenticator Authenticator
 	RateLimit     RateLimit
+	// Capabilities, when set, gates object routes behind their module's
+	// enable-state (ADR-018 §5). Nil ⇒ every object is always reachable.
+	Capabilities CapabilityChecker
 	// Now overrides the clock (rate limiter, timestamps) for tests.
 	Now func() time.Time
 }
@@ -52,6 +67,7 @@ type Gateway struct {
 	mux     *http.ServeMux
 	db      *storage.DB
 	auth    Authenticator
+	caps    CapabilityChecker
 	idem    *idempotencyStore
 	limiter *rateLimiter
 	objects []*metadata.EffectiveSchema
@@ -77,6 +93,7 @@ func NewGateway(cfg Config) *Gateway {
 		mux:     http.NewServeMux(),
 		db:      cfg.DB,
 		auth:    cfg.Authenticator,
+		caps:    cfg.Capabilities,
 		limiter: newRateLimiter(rl, now),
 		objects: cfg.Objects,
 	}
@@ -122,12 +139,40 @@ func (g *Gateway) registerObject(schema *metadata.EffectiveSchema) {
 		return
 	}
 	base := "/api/v1/" + resourcePath(schema.ObjectName)
+	object := schema.ObjectName
+	gate := func(h apiHandler) http.HandlerFunc { return g.guard(g.capabilityGate(object, h)) }
 
-	g.mux.HandleFunc("GET "+base, g.guard(g.handleList(crud)))
-	g.mux.HandleFunc("POST "+base, g.guard(g.handleWrite(g.doCreate(crud))))
-	g.mux.HandleFunc("GET "+base+"/{id}", g.guard(g.handleGet(crud)))
-	g.mux.HandleFunc("PATCH "+base+"/{id}", g.guard(g.handleWrite(g.doUpdate(crud))))
-	g.mux.HandleFunc("DELETE "+base+"/{id}", g.guard(g.handleWrite(g.doDelete(crud))))
+	g.mux.HandleFunc("GET "+base, gate(g.handleList(crud)))
+	g.mux.HandleFunc("POST "+base, gate(g.handleWrite(g.doCreate(crud))))
+	g.mux.HandleFunc("GET "+base+"/{id}", gate(g.handleGet(crud)))
+	g.mux.HandleFunc("PATCH "+base+"/{id}", gate(g.handleWrite(g.doUpdate(crud))))
+	g.mux.HandleFunc("DELETE "+base+"/{id}", gate(g.handleWrite(g.doDelete(crud))))
+}
+
+// capabilityGate rejects a request for object with a capability-disabled
+// problem+json when the object's module is disabled for the tenant (ADR-018
+// §5). No checker configured ⇒ pass through.
+func (g *Gateway) capabilityGate(object string, h apiHandler) apiHandler {
+	return func(w http.ResponseWriter, r *http.Request, tenant tenancy.ID) {
+		if g.caps != nil {
+			enabled, capName, err := g.caps.Enabled(r.Context(), tenant, object)
+			if err != nil {
+				writeProblem(w, Problem{Status: http.StatusInternalServerError, Title: "internal server error", Instance: r.URL.Path})
+				return
+			}
+			if !enabled {
+				writeProblem(w, Problem{
+					Type:     "capability-disabled",
+					Status:   http.StatusForbidden,
+					Title:    "capability disabled",
+					Detail:   "the " + capName + " capability is not enabled for this tenant",
+					Instance: r.URL.Path,
+				})
+				return
+			}
+		}
+		h(w, r, tenant)
+	}
 }
 
 // apiHandler is a CRUD handler that has already been authenticated and

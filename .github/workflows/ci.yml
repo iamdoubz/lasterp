@@ -59,7 +59,9 @@ jobs:
         with:
           go-version: "1.26.4"
       - name: run integrity gauntlet
-        run: go test -count=1 ./kernel/integrity/...
+        # Includes the composability suite (ADR-018 §7): every shipped profile
+        # boots, closures resolve, disabled objects return capability-disabled.
+        run: go test -count=1 ./kernel/integrity/... ./kernel/capability/...
 
   build:
     runs-on: ubuntu-latest

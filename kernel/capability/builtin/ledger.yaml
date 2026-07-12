@@ -1,0 +1,3 @@
+module: ledger
+title: Ledger
+provides: [ledger.core, dimensions, periods]

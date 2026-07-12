@@ -1,0 +1,9 @@
+module: inventory
+title: Inventory
+provides: [inventory, stock.movements]
+requires: [contacts]
+modes:
+  - name: quantity_only   # valuation requires ledger.core (enhance below)
+enhances:
+  - when: ledger.core
+    adds: stock-valuation

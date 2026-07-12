@@ -1,0 +1,9 @@
+module: hr
+title: HR / Employee Directory
+provides: [hr.core, org.structure]
+requires: [contacts]
+enhances:
+  - when: projects
+    adds: capacity-views
+  - when: ledger.core
+    adds: department-cost

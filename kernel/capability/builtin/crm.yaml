@@ -1,0 +1,4 @@
+module: crm
+title: CRM
+provides: [crm, pipeline]
+requires: [contacts]
