@@ -1,0 +1,10 @@
+# Code owners for integrity-critical paths (phase-0-review P1 #1).
+# @iamdoubz must review changes to the invariant/authz/tenancy/event-store
+# core, CI, and the lint/DCO/SPDX scripts. Only *enforcing* if branch
+# protection requires code-owner review — see the WP-0.10 PR note.
+/kernel/integrity/  @iamdoubz
+/kernel/authz/      @iamdoubz
+/kernel/tenancy/    @iamdoubz
+/kernel/eventstore/ @iamdoubz
+/.github/           @iamdoubz
+/scripts/           @iamdoubz

@@ -59,9 +59,12 @@ jobs:
         with:
           go-version: "1.26.4"
       - name: run integrity gauntlet
-        # Includes the composability suite (ADR-018 §7): every shipped profile
-        # boots, closures resolve, disabled objects return capability-disabled.
-        run: go test -count=1 ./kernel/integrity/... ./kernel/capability/...
+        # Auto-discovery (WP-0.10): every INV/adversarial/composability test
+        # file is tagged `//go:build integrity`, so new module invariant tests
+        # join the gauntlet by adding the tag — no edit here. Includes the
+        # composability suite (ADR-018 §7): every shipped profile boots,
+        # closures resolve, disabled objects return capability-disabled.
+        run: go test -count=1 -tags integrity ./...
 
   build:
     runs-on: ubuntu-latest
