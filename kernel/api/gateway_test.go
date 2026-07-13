@@ -5,10 +5,14 @@ package api
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/iamdoubz/lasterp/kernel/authz"
 	"github.com/iamdoubz/lasterp/kernel/metadata"
@@ -200,6 +204,40 @@ func TestIdempotentReplayReturnsIdenticalResult(t *testing.T) {
 	}
 }
 
+// TestIdempotencyUsesInjectedClock: the idempotency reservation's created_at
+// must come from Config.Now, not a hard-coded time.Now() (WP-0.10 — the last
+// non-injectable clock in the gateway). Real wall-clock is 2026; a create
+// under a 2030 clock whose stored created_at reads 2030 proves the injection.
+func TestIdempotencyUsesInjectedClock(t *testing.T) {
+	db := testSQLiteDB(t)
+	tenant := mustCreateTenant(t, db)
+	actor := seedActor(t, db, tenant, "create")
+	fixed := time.Date(2030, 6, 15, 12, 0, 0, 0, time.UTC)
+	g := NewGateway(Config{
+		DB:            db,
+		Objects:       []*metadata.EffectiveSchema{contactSchema(t, db)},
+		Authenticator: fixedAuth(actor, tenant),
+		Now:           func() time.Time { return fixed },
+	})
+
+	if rr := do(t, g, http.MethodPost, "/api/v1/contact", "clock-key", map[string]any{"full_name": "Ada"}); rr.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, want 201; body=%s", rr.Code, rr.Body)
+	}
+
+	var created storage.Time
+	err := tenancy.WithTenant(context.Background(), db, tenant, func(ctx context.Context, tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, db.Rebind(
+			`SELECT created_at FROM idempotency_keys WHERE tenant_id = ? AND idem_key = ?`),
+			string(tenant), "clock-key").Scan(&created)
+	})
+	if err != nil {
+		t.Fatalf("read created_at: %v", err)
+	}
+	if !created.Equal(fixed) {
+		t.Fatalf("created_at = %s, want injected clock %s", created.Time, fixed)
+	}
+}
+
 func TestWriteRequiresIdempotencyKey(t *testing.T) {
 	db := testSQLiteDB(t)
 	tenant := mustCreateTenant(t, db)
@@ -291,6 +329,30 @@ func TestUnauthenticatedIsRejected(t *testing.T) {
 	}
 	assertProblem(t, rr)
 	_ = tenant
+}
+
+// TestAuthErrorNotLeakedIn401: the 401 body must not echo the Authenticator's
+// error text, which can carry token/session internals (WP-0.10, phase-0-review
+// WP-0.6 nit).
+func TestAuthErrorNotLeakedIn401(t *testing.T) {
+	db := testSQLiteDB(t)
+	const secret = "token sk-abc123 expired for user root@internal"
+	g := NewGateway(Config{
+		DB:      db,
+		Objects: []*metadata.EffectiveSchema{contactSchema(t, db)},
+		Authenticator: AuthenticatorFunc(func(*http.Request) (authz.Actor, tenancy.ID, error) {
+			return authz.Actor{}, "", errors.New(secret)
+		}),
+	})
+
+	rr := do(t, g, http.MethodGet, "/api/v1/contact", "", nil)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rr.Code)
+	}
+	if body := rr.Body.String(); strings.Contains(body, "sk-abc123") || strings.Contains(body, secret) {
+		t.Fatalf("401 body leaked authenticator error: %s", body)
+	}
+	assertProblem(t, rr)
 }
 
 // TestTenantMismatchRejected: an Authenticator returning an actor whose

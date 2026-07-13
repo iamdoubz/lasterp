@@ -4,6 +4,7 @@ package api
 
 import (
 	"math"
+	"slices"
 	"sync"
 	"time"
 )
@@ -16,12 +17,16 @@ type RateLimit struct {
 	Burst             float64
 }
 
+// maxBuckets caps the per-key bucket map so a caller rotating keys (distinct
+// tenant/actor pairs) can't grow it without bound — the memory-growth DoS
+// phase-0-review flagged. At capacity, a new key triggers evictLocked.
+const maxBuckets = 10_000
+
 // rateLimiter is a hand-rolled token-bucket limiter, one bucket per key
 // (we key per tenant+actor). Deliberately dependency-free: golang.org/x/
 // time/rate would need an ADR for a new runtime dependency (CLAUDE.md), and
-// a token bucket is a few lines. Buckets are kept in memory for the process
-// lifetime; a solo/kernel gateway has a bounded set of active callers, and
-// eviction of idle buckets is a future refinement, not a v1 need.
+// a token bucket is a few lines. The bucket map is bounded by maxBuckets
+// with oldest-first eviction (see allow/evictLocked).
 type rateLimiter struct {
 	mu      sync.Mutex
 	buckets map[string]*bucket
@@ -66,6 +71,9 @@ func (l *rateLimiter) allow(key string) decision {
 	now := l.now()
 	b, ok := l.buckets[key]
 	if !ok {
+		if len(l.buckets) >= maxBuckets {
+			l.evictLocked()
+		}
 		b = &bucket{tokens: l.burst, last: now}
 		l.buckets[key] = b
 	}
@@ -87,4 +95,26 @@ func (l *rateLimiter) allow(key string) decision {
 	d.remaining = 0
 	d.resetSecs = int(math.Ceil((1 - b.tokens) / l.rate))
 	return d
+}
+
+// evictLocked drops roughly the oldest 1/8 of buckets (by last-seen time) to
+// keep the map bounded. Evicting an idle bucket is behaviourally free: it
+// would have refilled to a full burst before its owner's next request, so the
+// owner gets an identical fresh bucket — active callers, touched recently,
+// are the newest and survive. Caller holds l.mu; only invoked at capacity.
+// ponytail: O(n log n) sort per eviction, amortized O(1)/insert since it fires
+// once per ~maxBuckets/8 new keys; swap for an LRU list/heap only if caller
+// churn ever outpaces the cap.
+func (l *rateLimiter) evictLocked() {
+	times := make([]time.Time, 0, len(l.buckets))
+	for _, b := range l.buckets {
+		times = append(times, b.last)
+	}
+	slices.SortFunc(times, func(a, b time.Time) int { return a.Compare(b) })
+	cutoff := times[len(times)/8]
+	for k, b := range l.buckets {
+		if !b.last.After(cutoff) {
+			delete(l.buckets, k)
+		}
+	}
 }

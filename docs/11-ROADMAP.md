@@ -4,7 +4,7 @@ Phases are sequential; work packages (WP) within a phase parallelize across agen
 
 ## Build order at a glance (start here)
 
-**Nothing is built yet. The very first task is WP-0.1.** The critical path is:
+**Status 2026-07-12: Phase 0 (WP-0.1–0.9) is COMPLETE and merged** — see [docs/notes/phase-0-review.md](notes/phase-0-review.md). Next up: WP-0.10 (review follow-ups), then Phase 1. The critical path was/is:
 
 ```
 WP-0.1 repo bootstrap
@@ -37,17 +37,20 @@ WP-0.1 repo bootstrap
 - **WP-0.7 i18n kernel** (string layer, ICU, locale formatting, RTL-safe UI kit foundations — docs/17). AC: pseudo-locale + RTL build renders; hardcoded-string lint gate.
 - **WP-0.8 Integrity foundation** (invariant registry, Integrity Gauntlet CI stage, adversarial writer suite, DB role separation, append-only enforcement — [19-DATA-INTEGRITY.md](19-DATA-INTEGRITY.md)). Blocks all module work. AC: all INV-E/T invariants have tagged tests that fail without enforcement.
 - **WP-0.9 Capability registry + composability solver** ([ADR-018](adr/ADR-018-composability.md)): module manifests, dependency closure with user-visible preview, disable-without-delete, profile presets skeleton. AC: enable/disable closure tests; disabled-module API returns capability-disabled problem+json; every shipped profile boots in CI.
+- **WP-0.10 Phase-0 review follow-ups** ([phase-0-review.md](notes/phase-0-review.md) P1/P2 items): (a) `.github/CODEOWNERS` — `kernel/integrity/ kernel/authz/ kernel/tenancy/ kernel/eventstore/ .github/ scripts/` → @iamdoubz; (b) **gauntlet auto-discovery**: tag every INV/adversarial/composability test file `//go:build integrity` and change the integrity-gauntlet CI job to `go test -count=1 -tags integrity ./...` — new module INV tests then join the gauntlet with zero ci.yml edits (keep the job on pull_request; verify tagged tests still compile+run and untagged suite still passes); (c) WP-0.6 nits: cap/LRU the rate-limit bucket map, stop echoing authenticator error text in 401 bodies, make the gateway clock injectable. AC: gauntlet job runs tagged tests across all packages (prove by adding a dummy tagged test outside kernel/integrity); CODEOWNERS active on a test PR; nits covered by tests.
 
 ## Phase 1 — Ledger + first vertical slice (usable accounting MVP)
+- **WP-1.0a Metadata DDL evolution** (closes the WP-0.5 create-only gap, blocks any overlay that alters an existing object): schema diffing, additive ALTER planning (expand-only within a version, per expand→migrate→contract discipline), plan preview + apply tracked in object_schema_migrations, both dialects. AC: add-field/widen-type overlay on an existing populated object round-trips on Postgres AND SQLite with data intact; destructive diffs are refused with a clear error.
 - **WP-1.1 Money & currency core:** money type (minor units), decimal policy, currency registry, FX rate store + ECB provider. AC: property tests on rounding/allocation (no lost cents in splits).
-- **WP-1.2 Ledger module:** accounts, journal entries, periods, posting pipeline with storage-enforced invariants. AC: unbalanced/closed-period/mutation attempts all rejected at storage layer; trial balance projection matches event fold under fuzzing.
+- **WP-1.2 Ledger module:** accounts, journal entries, periods, posting pipeline with storage-enforced invariants. **First task: extend the metadata engine with event-sourced object support** (deferred from WP-0.5 — CRUD-only today). AC: unbalanced/closed-period/mutation attempts all rejected at storage layer; trial balance projection matches event fold under fuzzing; **full DB role separation lands here** (docs/19 layer 3, deferred from WP-0.8 per kernel/integrity/grants.go) — app role provably cannot write protected tables outside pipeline-owned paths.
 - **WP-1.3 Tax engine v1:** jurisdictions, rules, effective-dated rates as data; document tax calculation; US state + EU VAT seed packs. AC: golden-file test suite of tax scenarios.
 - **WP-1.4 Invoicing/AR module** (per 10-MODULES.md M2, minus payments/dunning). AC: invoice lifecycle e2e — draft → post → GL entries correct → PDF renders.
 - **WP-1.5 Web client v1:** metadata-rendered list/form/detail, auth, navigation, LastERP UI kit foundations. AC: Playwright e2e on invoice lifecycle; p95 budget smoke.
 - **WP-1.6 Reports v1 + metrics layer** (amended per [21-REPORTING-DASHBOARDS.md](21-REPORTING-DASHBOARDS.md)): trial balance, P&L, balance sheet, AR aging from projections; CSV/XLSX export; metrics layer v1 + drill-down. AC: report/metric totals reconcile with event-fold oracle; permission-leak suite green.
 - **WP-1.8 Role dashboard packs v1** (CEO/CFO/AR/AP, KPI cards with mandatory comparisons — docs/21). AC: fresh tenant shows live role dashboard from seed data.
 - **WP-1.7 Translation packs + localized documents** (docs/17). AC: invoice e2e fully localized incl. PDF in first non-English locale.
-- **Milestone M1: "a small firm can invoice and keep books"** — dogfood tenant live.
+- **WP-1.9 OIDC AuthProvider** (deferred from WP-0.3; required before any non-dogfood user): second AuthProvider implementation behind the existing interface; **ADR-019 selects the JOSE library** (per the no-new-deps rule). AC: OIDC login e2e against a test IdP (Keycloak container); session/device semantics identical to password path; authz property tests unchanged.
+- **Milestone M1: "a small firm can invoice and keep books"** — dogfood tenant live (password+TOTP acceptable for dogfood; OIDC before external users).
 
 ## Phase 2 — Sync & offline
 - **WP-2.1 Change feed service:** logical-replication tail → NATS, scope tagging, cursored streams. AC: feed ordering + resume tests.
@@ -61,7 +64,7 @@ WP-0.1 repo bootstrap
 ## Phase 3 — Extensibility & AI
 - **WP-3.1 Plugin host:** wazero + Extism integration, manifest/capabilities, hook points, resource limits, circuit breakers. AC: hostile-plugin test suite (infinite loop, memory bomb, exfiltration attempt) all contained.
 - **WP-3.2 PDKs + registry v1:** Rust/Go/TS/Python scaffolds, typed bindings codegen, signed bundles, install flow. AC: afternoon-plugin tutorial completes; example plugins (commission calc, Slack notifier) pass.
-- **WP-3.3 Automations:** trigger/condition/action workflows as metadata; CEL expressions. AC: automation e2e suite.
+- **WP-3.3 Automations:** trigger/condition/action workflows as metadata; CEL expressions — **includes activating CEL evaluation for RBAC condition grants** (stored-but-unevaluated since WP-0.3; until then only unconditional grants are honored). AC: automation e2e suite; conditional-grant authz property tests (CEL conditions can only narrow, never widen, a grant — INV-T3).
 - **WP-3.4 MCP server:** tool generation from metadata, module task tools, agent principals, budgets, approval gates, agent audit. AC: scripted agent closes a demo month-end with approval gates exercised; access-control red-team suite.
 - **WP-3.5 Semantic layer:** pgvector embeddings pipeline, semantic search API, duplicate detection. AC: recall benchmarks on seeded data; degrades cleanly with no model configured.
 - **WP-3.6 UI extension slots + sandboxed iframe bridge.** AC: untrusted widget cannot escape bridge (security tests).

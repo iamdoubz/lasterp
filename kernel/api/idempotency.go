@@ -21,7 +21,8 @@ import (
 // before the write runs, so a concurrent duplicate observes the reservation
 // rather than double-executing.
 type idempotencyStore struct {
-	db *storage.DB
+	db  *storage.DB
+	now func() time.Time // injectable clock, shared with the gateway (WP-0.10)
 }
 
 const statusPending = 0
@@ -69,7 +70,7 @@ func (s *idempotencyStore) begin(ctx context.Context, tenant tenancy.ID, key, fp
 		_, err := tx.ExecContext(ctx, s.db.Rebind(`
 			INSERT INTO idempotency_keys (tenant_id, idem_key, request_fingerprint, response_status, response_body, created_at)
 			VALUES (?, ?, ?, ?, ?, ?)`),
-			string(tenant), key, fp, statusPending, "", time.Now().UTC())
+			string(tenant), key, fp, statusPending, "", s.now())
 		return err
 	})
 	if err == nil {

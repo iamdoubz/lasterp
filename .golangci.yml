@@ -1,1 +1,6 @@
 version: "2"
+# Lint the integrity-tagged test files too (WP-0.10); without this,
+# golangci-lint builds without the tag and silently skips them.
+run:
+  build-tags:
+    - integrity

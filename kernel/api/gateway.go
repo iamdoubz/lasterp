@@ -98,7 +98,7 @@ func NewGateway(cfg Config) *Gateway {
 		objects: cfg.Objects,
 	}
 	if cfg.DB != nil {
-		g.idem = &idempotencyStore{db: cfg.DB}
+		g.idem = &idempotencyStore{db: cfg.DB, now: now}
 	}
 
 	g.mux.HandleFunc("GET /healthz", handleHealthz)
@@ -191,7 +191,10 @@ func (g *Gateway) guard(h apiHandler) http.HandlerFunc {
 		}
 		actor, tenant, err := g.auth.Authenticate(r)
 		if err != nil {
-			writeProblem(w, Problem{Status: http.StatusUnauthorized, Title: "authentication required", Detail: err.Error(), Instance: r.URL.Path})
+			// Do not echo the Authenticator's error into the body: it can carry
+			// token/session internals (info leak, phase-0-review WP-0.6 nit).
+			// The reason belongs in server logs, not the 401 to the caller.
+			writeProblem(w, Problem{Status: http.StatusUnauthorized, Title: "authentication required", Instance: r.URL.Path})
 			return
 		}
 		// Single source of truth for the tenant a write lands in: authz

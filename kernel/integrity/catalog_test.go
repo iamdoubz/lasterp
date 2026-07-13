@@ -1,3 +1,5 @@
+//go:build integrity
+
 package integrity
 
 import (
