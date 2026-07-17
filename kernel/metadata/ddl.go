@@ -4,6 +4,8 @@ package metadata
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -96,17 +98,22 @@ func GenerateDDL(schema *EffectiveSchema, dialect storage.Dialect) (string, erro
 	return b.String(), nil
 }
 
-// ApplyDDL generates and executes schema's DDL for version, tracked in
-// object_schema_migrations so re-applying the same version is a no-op
-// (idempotent) rather than erroring on "table already exists".
+// ApplyDDL brings the object's shared physical table to schema's shape at
+// version, tracked in object_schema_migrations. It is idempotent (re-applying
+// an already-recorded version is a no-op) and evolution-aware:
 //
-// This is a global operation, not a per-tenant one: the physical table it
-// creates is shared across every tenant (that's the point of the
-// tenant_id column + RLS policy GenerateDDL adds), so there is exactly
-// one "has this object's DDL been applied yet" answer, not one per
-// tenant — the bug this fixes: an earlier version scoped the tracking row
-// by tenant, so a second tenant's first ApplyDDL call would try to
-// CREATE TABLE a table the first tenant had already created.
+//   - No prior version applied → CREATE TABLE (+ indexes + RLS), as WP-0.5.
+//   - A prior version exists → diff the last-applied schema against schema and
+//     apply the additive ALTER plan (PlanEvolution); a destructive diff is
+//     refused (ErrDestructiveDiff) and nothing is applied.
+//
+// The applied EffectiveSchema is recorded as JSON at every version so the next
+// evolution can diff against it (WP-1.0a decisions, decision 5).
+//
+// This is a global operation, not a per-tenant one: the physical table is
+// shared across every tenant (that's the point of the tenant_id column + RLS
+// policy GenerateDDL adds), so there is exactly one "what shape is this object's
+// table in" answer, not one per tenant.
 func ApplyDDL(ctx context.Context, db *storage.DB, schema *EffectiveSchema, version int) error {
 	applied, err := isDDLApplied(ctx, db, schema.ObjectName, version)
 	if err != nil {
@@ -116,9 +123,28 @@ func ApplyDDL(ctx context.Context, db *storage.DB, schema *EffectiveSchema, vers
 		return nil
 	}
 
-	ddl, err := GenerateDDL(schema, db.Dialect)
+	baseline, baselineVersion, err := lastAppliedSchema(ctx, db, schema.ObjectName)
 	if err != nil {
 		return err
+	}
+
+	var ddl string
+	if baselineVersion == 0 {
+		ddl, err = GenerateDDL(schema, db.Dialect)
+		if err != nil {
+			return err
+		}
+	} else {
+		plan, err := PlanEvolution(baseline, schema, baselineVersion, version)
+		if err != nil {
+			return err
+		}
+		ddl = plan.DDL(db.Dialect)
+	}
+
+	snapshot, err := json.Marshal(schema)
+	if err != nil {
+		return fmt.Errorf("metadata: marshal applied schema: %w", err)
 	}
 
 	tx, err := db.BeginTx(ctx, nil)
@@ -127,19 +153,47 @@ func ApplyDDL(ctx context.Context, db *storage.DB, schema *EffectiveSchema, vers
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if _, err := tx.ExecContext(ctx, ddl); err != nil {
-		return fmt.Errorf("metadata: apply DDL: %w", err)
+	// ddl is empty when an evolution is storage-equivalent (overlay-only or
+	// relabel-only diff) — the version still advances, no statements run.
+	if ddl != "" {
+		if _, err := tx.ExecContext(ctx, ddl); err != nil {
+			return fmt.Errorf("metadata: apply DDL: %w", err)
+		}
 	}
 	if _, err := tx.ExecContext(ctx, db.Rebind(`
-		INSERT INTO object_schema_migrations (object, version, applied_at)
-		VALUES (?, ?, ?)`),
-		schema.ObjectName, version, time.Now().UTC()); err != nil {
+		INSERT INTO object_schema_migrations (object, version, applied_at, applied_schema)
+		VALUES (?, ?, ?, ?)`),
+		schema.ObjectName, version, time.Now().UTC(), string(snapshot)); err != nil {
 		return fmt.Errorf("metadata: record applied DDL: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("metadata: commit: %w", err)
 	}
 	return nil
+}
+
+// lastAppliedSchema returns the highest applied version's effective schema and
+// version, or (nil, 0, nil) if the object has no applied DDL yet.
+func lastAppliedSchema(ctx context.Context, db *storage.DB, object string) (*EffectiveSchema, int, error) {
+	var version int
+	var snapshot sql.NullString
+	row := db.QueryRowContext(ctx, db.Rebind(`
+		SELECT version, applied_schema FROM object_schema_migrations
+		WHERE object = ? ORDER BY version DESC LIMIT 1`), object)
+	if err := row.Scan(&version, &snapshot); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, 0, nil
+		}
+		return nil, 0, fmt.Errorf("metadata: read applied schema: %w", err)
+	}
+	if !snapshot.Valid {
+		return nil, 0, fmt.Errorf("metadata: object %q v%d has no recorded schema snapshot; cannot plan evolution", object, version)
+	}
+	var eff EffectiveSchema
+	if err := json.Unmarshal([]byte(snapshot.String), &eff); err != nil {
+		return nil, 0, fmt.Errorf("metadata: unmarshal applied schema for %q v%d: %w", object, version, err)
+	}
+	return &eff, version, nil
 }
 
 func isDDLApplied(ctx context.Context, db *storage.DB, object string, version int) (bool, error) {
