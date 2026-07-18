@@ -1,3 +1,4 @@
 module: ledger
 title: Ledger
 provides: [ledger.core, dimensions, periods]
+objects: [Account, Period, JournalEntry]
