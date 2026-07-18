@@ -38,7 +38,7 @@ WP-1.2 ships as two PRs; the WP's AC is fully met only after **PR-B**.
   **Flips INV-F1, INV-F2, INV-F3.** In PR-A these are enforced at the **posting
   pipeline choke point** (docs/19 layer 3) plus the append-only trigger (INV-F2/E1,
   storage); on SQLite the pipeline is the storage owner (single trusted process).
-- **PR-B (follow-up):** the Postgres `SECURITY DEFINER` `append_event` +
+- **PR-B (branch `wp-1.2b`, DONE):** the Postgres `SECURITY DEFINER` `append_event` +
   `ledger_post_entry` functions that re-enforce balance/open-period **in the
   database**, revoking direct `INSERT` on `events` from the app role and routing
   `eventstore.Append` through `append_event` — **full DB role separation (INV-F5)** —

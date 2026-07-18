@@ -14,6 +14,7 @@ import (
 	"github.com/iamdoubz/lasterp/kernel/authz"
 	"github.com/iamdoubz/lasterp/kernel/identity"
 	"github.com/iamdoubz/lasterp/kernel/idgen"
+	"github.com/iamdoubz/lasterp/kernel/integrity"
 	"github.com/iamdoubz/lasterp/kernel/storage"
 	"github.com/iamdoubz/lasterp/kernel/storage/migrate"
 	"github.com/iamdoubz/lasterp/kernel/storage/postgres"
@@ -92,6 +93,16 @@ func testPostgresDB(t *testing.T) *storage.DB {
 	// events.id is a BIGSERIAL — the app role needs its sequence to INSERT.
 	if _, err := superDB.ExecContext(ctx, `GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO `+appUser); err != nil {
 		t.Fatalf("grant sequences to app role: %v", err)
+	}
+	// Run the ledger tests under the real deployment posture: the app role has
+	// no direct INSERT/UPDATE/DELETE on events — it writes only through the
+	// pipeline functions (docs/19 layer 3; INV-F5). This proves the whole
+	// ledger still works with the log locked down.
+	if err := integrity.EnforceAppendOnlyGrants(ctx, superDB, appUser); err != nil {
+		t.Fatalf("EnforceAppendOnlyGrants: %v", err)
+	}
+	if err := integrity.EnforceLedgerPipelineGrants(ctx, superDB, appUser); err != nil {
+		t.Fatalf("EnforceLedgerPipelineGrants: %v", err)
 	}
 
 	appDSN, err := url.Parse(dsn)
