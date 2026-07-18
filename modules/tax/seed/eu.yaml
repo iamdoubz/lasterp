@@ -1,0 +1,29 @@
+# EU VAT seed pack (ADR-013). Standard + reduced VAT rates for a representative
+# set of member states — NOT legal advice; reduced-rate applicability per
+# product is a rules concern beyond v1. Rates are effective-dated. Community-
+# extendable. VAT rounding is banker's (half_even) here; jurisdictions that
+# mandate otherwise override per row.
+country: EU
+jurisdictions:
+  - {code: EU-DE, name: Germany, level: country}
+  - {code: EU-FR, name: France, level: country}
+  - {code: EU-IE, name: Ireland, level: country}
+  - {code: EU-ES, name: Spain, level: country}
+rates:
+  # Germany: standard 19% (from 2007-01-01), reduced 7%.
+  - {jurisdiction: EU-DE, category: standard, rate: "0.19", as_of: "2007-01-01", name: Germany VAT standard}
+  - {jurisdiction: EU-DE, category: reduced,  rate: "0.07", as_of: "1983-07-01", name: Germany VAT reduced}
+  - {jurisdiction: EU-DE, category: zero,     rate: "0",    as_of: "1968-01-01", name: Germany VAT zero-rated}
+  # A temporary COVID cut then restoration, to exercise effective-dating with
+  # three rows for one jurisdiction+category.
+  - {jurisdiction: EU-DE, category: standard, rate: "0.16", as_of: "2020-07-01", name: Germany VAT standard (temporary cut)}
+  - {jurisdiction: EU-DE, category: standard, rate: "0.19", as_of: "2021-01-01", name: Germany VAT standard (restored)}
+  # France: standard 20%, reduced 5.5%.
+  - {jurisdiction: EU-FR, category: standard, rate: "0.20",  as_of: "2014-01-01", name: France VAT standard}
+  - {jurisdiction: EU-FR, category: reduced,  rate: "0.055", as_of: "2014-01-01", name: France VAT reduced}
+  # Ireland: standard 23%, reduced 13.5%.
+  - {jurisdiction: EU-IE, category: standard, rate: "0.23",  as_of: "2012-01-01", name: Ireland VAT standard}
+  - {jurisdiction: EU-IE, category: reduced,  rate: "0.135", as_of: "2012-01-01", name: Ireland VAT reduced}
+  # Spain: standard 21%, reduced 10%.
+  - {jurisdiction: EU-ES, category: standard, rate: "0.21", as_of: "2012-09-01", name: Spain VAT standard}
+  - {jurisdiction: EU-ES, category: reduced,  rate: "0.10", as_of: "2012-09-01", name: Spain VAT reduced}

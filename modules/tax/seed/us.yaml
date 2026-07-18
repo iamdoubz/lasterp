@@ -1,0 +1,20 @@
+# US state sales-tax seed pack (ADR-013). Example data for a representative set
+# of states — NOT legal advice, NOT district-level precision (use a certified
+# connector for that). Rates are effective-dated; a later dated row supersedes
+# an earlier one for the same jurisdiction+category. Community-extendable.
+country: US
+jurisdictions:
+  - {code: US-CA, name: California, level: state}
+  - {code: US-NY, name: New York, level: state}
+  - {code: US-TX, name: Texas, level: state}
+  - {code: US-WA, name: Washington, level: state}
+  - {code: US-OR, name: Oregon, level: state}
+rates:
+  # State-level base sales-tax rates. category "sales", rounding half_up
+  # (common US convention: round the tax half up).
+  - {jurisdiction: US-CA, category: sales, rate: "0.0725", rounding: half_up, as_of: "2017-01-01", name: California state sales tax}
+  - {jurisdiction: US-NY, category: sales, rate: "0.04",   rounding: half_up, as_of: "2005-06-01", name: New York state sales tax}
+  - {jurisdiction: US-TX, category: sales, rate: "0.0625", rounding: half_up, as_of: "1990-01-01", name: Texas state sales tax}
+  - {jurisdiction: US-WA, category: sales, rate: "0.065",  rounding: half_up, as_of: "1983-07-01", name: Washington state sales tax}
+  # Oregon has no state sales tax — a zero rate is still a real, lookup-able fact.
+  - {jurisdiction: US-OR, category: sales, rate: "0",      rounding: half_up, as_of: "1900-01-01", name: Oregon (no sales tax)}

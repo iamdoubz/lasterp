@@ -1,0 +1,15 @@
+{
+  "name": "Zero-decimal currency (JPY): tax rounds to whole yen minor units",
+  "lines": [
+    {"jurisdiction": "JP", "category": "standard", "base": {"amount": 1000, "currency": "JPY"}, "rate": "0.10", "rounding": "half_even", "inclusive": false},
+    {"jurisdiction": "JP", "category": "reduced", "base": {"amount": 333, "currency": "JPY"}, "rate": "0.08", "rounding": "half_even", "inclusive": false}
+  ],
+  "expect_lines": [
+    {"net": 1000, "tax": 100, "gross": 1100},
+    {"net": 333, "tax": 27, "gross": 360}
+  ],
+  "expect_totals": [
+    {"jurisdiction": "JP", "category": "reduced", "net": 333, "tax": 27},
+    {"jurisdiction": "JP", "category": "standard", "net": 1000, "tax": 100}
+  ]
+}

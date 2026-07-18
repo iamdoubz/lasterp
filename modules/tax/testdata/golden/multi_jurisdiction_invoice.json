@@ -1,0 +1,18 @@
+{
+  "name": "Multi-jurisdiction invoice: totals group by (jurisdiction, category), sorted",
+  "lines": [
+    {"jurisdiction": "US-CA", "category": "sales", "base": {"amount": 20000, "currency": "USD"}, "rate": "0.0725", "rounding": "half_up", "inclusive": false},
+    {"jurisdiction": "EU-DE", "category": "standard", "base": {"amount": 10000, "currency": "EUR"}, "rate": "0.19", "rounding": "half_even", "inclusive": false},
+    {"jurisdiction": "EU-DE", "category": "reduced", "base": {"amount": 5000, "currency": "EUR"}, "rate": "0.07", "rounding": "half_even", "inclusive": false}
+  ],
+  "expect_lines": [
+    {"net": 20000, "tax": 1450, "gross": 21450},
+    {"net": 10000, "tax": 1900, "gross": 11900},
+    {"net": 5000, "tax": 350, "gross": 5350}
+  ],
+  "expect_totals": [
+    {"jurisdiction": "EU-DE", "category": "reduced", "net": 5000, "tax": 350},
+    {"jurisdiction": "EU-DE", "category": "standard", "net": 10000, "tax": 1900},
+    {"jurisdiction": "US-CA", "category": "sales", "net": 20000, "tax": 1450}
+  ]
+}

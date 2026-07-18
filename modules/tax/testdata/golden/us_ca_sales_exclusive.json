@@ -1,0 +1,12 @@
+{
+  "name": "US California sales tax 7.25% exclusive on $100.00",
+  "lines": [
+    {"jurisdiction": "US-CA", "category": "sales", "base": {"amount": 10000, "currency": "USD"}, "rate": "0.0725", "rounding": "half_up", "inclusive": false}
+  ],
+  "expect_lines": [
+    {"net": 10000, "tax": 725, "gross": 10725}
+  ],
+  "expect_totals": [
+    {"jurisdiction": "US-CA", "category": "sales", "net": 10000, "tax": 725}
+  ]
+}
