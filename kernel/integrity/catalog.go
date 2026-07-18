@@ -52,9 +52,9 @@ type Invariant struct {
 // criteria (docs/19: "New modules MUST register their invariants here").
 var Catalog = []Invariant{
 	// Financial (INV-F) — Phase 1 (ledger → money → tax → inventory).
-	{ID: "INV-F1", Title: "Every journal entry balances (Σdebits = Σcredits per currency, to the minor unit)", Layer: LayerStorage, Note: "lands with WP-1.2 ledger"},
-	{ID: "INV-F2", Title: "Posted financial documents are immutable; corrections are reversing events only", Layer: LayerStorage, Note: "lands with WP-1.2 ledger"},
-	{ID: "INV-F3", Title: "No posting into a closed period; period close is monotonic", Layer: LayerPipeline, Note: "lands with WP-1.2 ledger"},
+	{ID: "INV-F1", Title: "Every journal entry balances (Σdebits = Σcredits per currency, to the minor unit)", Layer: LayerPipeline, TestRequired: true},
+	{ID: "INV-F2", Title: "Posted financial documents are immutable; corrections are reversing events only", Layer: LayerStorage, TestRequired: true},
+	{ID: "INV-F3", Title: "No posting into a closed period; period close is monotonic", Layer: LayerPipeline, TestRequired: true},
 	{ID: "INV-F4", Title: "Money is integer minor units + ISO-4217; no floats; allocation conserves every cent", Layer: LayerType, TestRequired: true},
 	{ID: "INV-F5", Title: "Financially-relevant documents post to GL only through their declared template", Layer: LayerPipeline, Note: "lands with WP-1.2 ledger"},
 	{ID: "INV-F6", Title: "Document number sequences are gapless-per-policy, assigned only at server acceptance", Layer: LayerPipeline, Note: "lands with WP-1.4 invoicing"},
