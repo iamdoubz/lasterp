@@ -126,14 +126,26 @@ func Append(ctx context.Context, db *storage.DB, tenant tenancy.ID, stream Strea
 			return nil
 		}
 
-		row := tx.QueryRowContext(ctx, db.Rebind(`
-			INSERT INTO events (tenant_id, stream_id, version, type, schema_version, payload, actor_id, command_id, occurred_at, recorded_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-			RETURNING id`),
-			string(tenant), string(stream), version, string(ev.Type), ev.SchemaVersion,
-			string(ev.Payload), ev.ActorID, commandID, occurredAt, recordedAt)
-
 		var id int64
+		var row *sql.Row
+		if db.Dialect == storage.Postgres {
+			// WP-1.2 PR-B / docs/19 layer 3: the app role has no direct INSERT
+			// on events; appends go through the SECURITY DEFINER append_event
+			// (tenant derived from the session GUC, not a caller argument). The
+			// version/command_id unique indexes still fire inside its INSERT, so
+			// the conflict handling below is unchanged.
+			row = tx.QueryRowContext(ctx, db.Rebind(`SELECT append_event(?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+				string(stream), version, string(ev.Type), ev.SchemaVersion,
+				string(ev.Payload), ev.ActorID, commandID, occurredAt, recordedAt)
+		} else {
+			// SQLite: single trusted process, no roles — direct INSERT.
+			row = tx.QueryRowContext(ctx, db.Rebind(`
+				INSERT INTO events (tenant_id, stream_id, version, type, schema_version, payload, actor_id, command_id, occurred_at, recorded_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				RETURNING id`),
+				string(tenant), string(stream), version, string(ev.Type), ev.SchemaVersion,
+				string(ev.Payload), ev.ActorID, commandID, occurredAt, recordedAt)
+		}
 		if err := row.Scan(&id); err != nil {
 			return err
 		}

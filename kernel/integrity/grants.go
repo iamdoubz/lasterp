@@ -54,3 +54,38 @@ func EnforceAppendOnlyGrants(ctx context.Context, ownerDB *storage.DB, role stri
 	}
 	return nil
 }
+
+// EnforceLedgerPipelineGrants completes docs/19 layer 3 for the event log
+// (INV-F5, deferred from WP-0.8 until the posting pipeline was modelled as DB
+// functions — WP-1.2 PR-B): it revokes direct INSERT on events from role and
+// grants EXECUTE on the pipeline-owned SECURITY DEFINER functions
+// (append_event, ledger_post_entry, from migration 0029). After this, the app
+// role can write the log ONLY through those functions — a raw
+// "INSERT INTO events" fails with insufficient_privilege (42501), so ledger
+// events cannot be forged outside the pipeline that enforces balance and
+// open-period. Call it once at bootstrap with the app role, using an owner
+// connection (the migration/superuser role).
+//
+// Postgres-only: SQLite has no roles and solo mode is a single trusted process
+// (ADR-005), so this is a no-op there — the append-only trigger and the Go
+// pipeline are the whole enforcement.
+func EnforceLedgerPipelineGrants(ctx context.Context, ownerDB *storage.DB, role string) error {
+	if ownerDB.Dialect != storage.Postgres {
+		return nil
+	}
+	if !identOK.MatchString(role) {
+		return fmt.Errorf("integrity: refusing to build grant DDL for non-identifier role %q", role)
+	}
+	for _, fn := range []string{
+		"append_event(TEXT, INT, TEXT, INT, TEXT, TEXT, TEXT, TIMESTAMPTZ, TIMESTAMPTZ)",
+		"ledger_post_entry(TEXT, TEXT, TEXT, TEXT, TEXT, TIMESTAMPTZ, TIMESTAMPTZ)",
+	} {
+		if _, err := ownerDB.ExecContext(ctx, fmt.Sprintf("GRANT EXECUTE ON FUNCTION %s TO %s", fn, role)); err != nil {
+			return fmt.Errorf("integrity: grant execute on %s to %s: %w", fn, role, err)
+		}
+	}
+	if _, err := ownerDB.ExecContext(ctx, fmt.Sprintf("REVOKE INSERT ON events FROM %s", role)); err != nil {
+		return fmt.Errorf("integrity: revoke insert on events from %s: %w", role, err)
+	}
+	return nil
+}

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/iamdoubz/lasterp/kernel/authz"
 	"github.com/iamdoubz/lasterp/kernel/eventstore"
 	"github.com/iamdoubz/lasterp/kernel/idgen"
 	"github.com/iamdoubz/lasterp/kernel/money"
@@ -127,25 +128,65 @@ func post(ctx context.Context, db *storage.DB, tenant tenancy.ID, cmd PostCmd, a
 	if err != nil {
 		return Entry{}, err
 	}
-
-	es, err := journalES()
-	if err != nil {
-		return Entry{}, err
-	}
 	entryID := idgen.New()
-	ev, err := es.Emit(ctx, db, tenant, action, eventstore.StreamID(entryID), 0, cmd.CommandID, eventstore.NewEvent{
-		Type: EventPosted, SchemaVersion: 1, Payload: payload, OccurredAt: time.Now().UTC(),
-	})
+	occurredAt := time.Now().UTC()
+
+	var ev eventstore.Event
+	if db.Dialect == storage.Postgres {
+		// Storage-enforced path (docs/19 layer 3): authorize, then post through
+		// the SECURITY DEFINER ledger_post_entry, which re-checks balance +
+		// open-period in the database and appends atomically. The app role has
+		// no direct INSERT on events (INV-F5).
+		actor, aerr := authz.Authorize(ctx, db, ObjectJournalEntry, action)
+		if aerr != nil {
+			return Entry{}, aerr
+		}
+		ev, err = postEntryPG(ctx, db, tenant, entryID, string(payload), cmd.Period, string(actor.UserID), cmd.CommandID, occurredAt)
+	} else {
+		// SQLite single trusted process: the Go pipeline above is the storage
+		// owner; append through the event-sourced choke point (authz + append).
+		es, jerr := journalES()
+		if jerr != nil {
+			return Entry{}, jerr
+		}
+		ev, err = es.Emit(ctx, db, tenant, action, eventstore.StreamID(entryID), 0, cmd.CommandID, eventstore.NewEvent{
+			Type: EventPosted, SchemaVersion: 1, Payload: payload, OccurredAt: occurredAt,
+		})
+	}
 	if err != nil {
 		return Entry{}, err
 	}
-	// On an idempotent replay (same command_id) Append returns the *original*
+
+	// On an idempotent replay (same command_id) the write returns the *original*
 	// event, whose stream is the original entry — use it, not the id we just
 	// generated, so the returned entry id is exactly-once (INV-E4).
 	return Entry{
 		ID: string(ev.StreamID), Period: cmd.Period, Currency: cmd.Currency, Memo: cmd.Memo,
 		ReversesEntryID: reversesID, Lines: cmd.Lines, Event: ev,
 	}, nil
+}
+
+// postEntryPG calls the SECURITY DEFINER ledger_post_entry and reconstructs the
+// committed (or, on replay, the original) event from what it returns.
+func postEntryPG(ctx context.Context, db *storage.DB, tenant tenancy.ID, stream, payloadJSON, period, actorID, commandID string, occurredAt time.Time) (eventstore.Event, error) {
+	var ev eventstore.Event
+	err := tenancy.WithTenant(ctx, db, tenant, func(ctx context.Context, tx *sql.Tx) error {
+		var id int64
+		var outStream string
+		row := tx.QueryRowContext(ctx, db.Rebind(
+			`SELECT out_id, out_stream FROM ledger_post_entry(?, ?, ?, ?, ?, ?, ?)`),
+			stream, period, payloadJSON, actorID, commandID, occurredAt, time.Now().UTC())
+		if err := row.Scan(&id, &outStream); err != nil {
+			return err
+		}
+		ev = eventstore.Event{
+			ID: id, TenantID: tenant, StreamID: eventstore.StreamID(outStream), Version: 1,
+			Type: EventPosted, SchemaVersion: 1, Payload: json.RawMessage(payloadJSON),
+			ActorID: actorID, CommandID: commandID, OccurredAt: occurredAt,
+		}
+		return nil
+	})
+	return ev, err
 }
 
 // validateEntry is the pure (no-DB) balance and structural check (INV-F1).

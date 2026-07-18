@@ -56,7 +56,7 @@ var Catalog = []Invariant{
 	{ID: "INV-F2", Title: "Posted financial documents are immutable; corrections are reversing events only", Layer: LayerStorage, TestRequired: true},
 	{ID: "INV-F3", Title: "No posting into a closed period; period close is monotonic", Layer: LayerPipeline, TestRequired: true},
 	{ID: "INV-F4", Title: "Money is integer minor units + ISO-4217; no floats; allocation conserves every cent", Layer: LayerType, TestRequired: true},
-	{ID: "INV-F5", Title: "Financially-relevant documents post to GL only through their declared template", Layer: LayerPipeline, Note: "lands with WP-1.2 ledger"},
+	{ID: "INV-F5", Title: "Financially-relevant documents post to GL only through their declared template", Layer: LayerPipeline, TestRequired: true},
 	{ID: "INV-F6", Title: "Document number sequences are gapless-per-policy, assigned only at server acceptance", Layer: LayerPipeline, Note: "lands with WP-1.4 invoicing"},
 	{ID: "INV-F7", Title: "Stock quantity × valuation reconciles with GL inventory accounts (bounded lag)", Layer: LayerSentinel, Note: "lands with WP-4.4 inventory"},
 
