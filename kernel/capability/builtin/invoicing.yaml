@@ -2,6 +2,7 @@ module: invoicing
 title: Invoicing / AR
 provides: [invoicing, ar.aging]
 requires: [contacts, ledger.core, tax.engine]
+objects: [Invoice]
 enhances:
   - when: inventory
     adds: stock-aware-invoicing
