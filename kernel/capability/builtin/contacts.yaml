@@ -1,3 +1,4 @@
 module: contacts
 title: Contacts (shared)
 provides: [contacts]
+objects: [Contact]
