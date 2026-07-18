@@ -1,0 +1,14 @@
+{
+  "name": "Germany VAT 19% inclusive extraction (clean and rounding lines)",
+  "lines": [
+    {"jurisdiction": "EU-DE", "category": "standard", "base": {"amount": 1190, "currency": "EUR"}, "rate": "0.19", "rounding": "half_even", "inclusive": true},
+    {"jurisdiction": "EU-DE", "category": "standard", "base": {"amount": 5000, "currency": "EUR"}, "rate": "0.19", "rounding": "half_even", "inclusive": true}
+  ],
+  "expect_lines": [
+    {"net": 1000, "tax": 190, "gross": 1190},
+    {"net": 4202, "tax": 798, "gross": 5000}
+  ],
+  "expect_totals": [
+    {"jurisdiction": "EU-DE", "category": "standard", "net": 5202, "tax": 988}
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "name": "Rounding rule as data: a .5-cent tie rounds differently under half_up vs half_even",
+  "lines": [
+    {"jurisdiction": "US-X", "category": "sales", "base": {"amount": 50, "currency": "USD"}, "rate": "0.05", "rounding": "half_up", "inclusive": false},
+    {"jurisdiction": "US-Y", "category": "sales", "base": {"amount": 50, "currency": "USD"}, "rate": "0.05", "rounding": "half_even", "inclusive": false}
+  ],
+  "expect_lines": [
+    {"net": 50, "tax": 3, "gross": 53},
+    {"net": 50, "tax": 2, "gross": 52}
+  ],
+  "expect_totals": [
+    {"jurisdiction": "US-X", "category": "sales", "net": 50, "tax": 3},
+    {"jurisdiction": "US-Y", "category": "sales", "net": 50, "tax": 2}
+  ]
+}

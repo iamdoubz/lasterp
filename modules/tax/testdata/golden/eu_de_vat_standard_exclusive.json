@@ -1,0 +1,12 @@
+{
+  "name": "Germany VAT 19% standard exclusive on EUR 100.00",
+  "lines": [
+    {"jurisdiction": "EU-DE", "category": "standard", "base": {"amount": 10000, "currency": "EUR"}, "rate": "0.19", "rounding": "half_even", "inclusive": false}
+  ],
+  "expect_lines": [
+    {"net": 10000, "tax": 1900, "gross": 11900}
+  ],
+  "expect_totals": [
+    {"jurisdiction": "EU-DE", "category": "standard", "net": 10000, "tax": 1900}
+  ]
+}
