@@ -107,7 +107,7 @@ memanto memory sync --project-dir .
 ## How to pick up work
 1. Work comes as Work Packages (WP) from [docs/11-ROADMAP.md](docs/11-ROADMAP.md). A WP is done only when its acceptance criteria pass in CI.
 2. Before coding: read the WP's linked design doc section. If the design is ambiguous, write a short `docs/notes/WP-x.y-decisions.md` stating your interpretation, then proceed — don't stall.
-3. Phases are sequential; WPs within a phase can run in parallel. Respect module boundaries: `modules/*` may import `kernel/*`, never each other. Cross-module reactions go through domain events.
+3. Phases are sequential; WPs within a phase can run in parallel. Respect module boundaries: `modules/*` may import `kernel/*`; a module may import a sibling module **only** when that dependency is declared in its capability manifest's `requires:` list (precedent: WP-1.4 invoicing → ledger/tax, see docs/notes/WP-1.4-decisions.md §1). Undeclared lateral imports are forbidden, and import cycles are never allowed. Reactions between modules that do *not* require each other go through domain events.
 
 ## Stack (fixed — see docs/02-TECH-STACK.md)
 Go **1.26.4** pinned toolchain — track latest stable patch within 2 weeks of release (server, **no CGO** — modernc.org/sqlite, wazero), PostgreSQL 18+/SQLite behind the storage adapter, NATS JetStream (embedded lib in solo mode), React 19 + TypeScript + Vite + TanStack (web), Extism/wazero (plugins), MCP (AI surface).
