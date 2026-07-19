@@ -13,11 +13,12 @@ import (
 type obj = map[string]any
 
 // OpenAPI builds an OpenAPI 3.1 document from the registered object schemas
-// (docs/15: "generated, not hand-written, from object metadata"). The result
-// is a plain map so it marshals to JSON with encoding/json and needs no spec
-// types; JSON Schema 2020-12 is the 3.1 schema dialect. Objects are emitted
-// in name order for a stable, diff-friendly spec.
-func OpenAPI(schemas ...*metadata.EffectiveSchema) obj {
+// and non-CRUD action routes (docs/15: "generated, not hand-written, from
+// object metadata"). The result is a plain map so it marshals to JSON with
+// encoding/json and needs no spec types; JSON Schema 2020-12 is the 3.1 schema
+// dialect. Objects and actions are emitted in path order for a stable,
+// diff-friendly spec.
+func OpenAPI(schemas []*metadata.EffectiveSchema, actions []Action) obj {
 	ordered := append([]*metadata.EffectiveSchema(nil), schemas...)
 	sort.Slice(ordered, func(i, j int) bool { return ordered[i].ObjectName < ordered[j].ObjectName })
 
@@ -50,6 +51,15 @@ func OpenAPI(schemas ...*metadata.EffectiveSchema) obj {
 		base := "/api/v1/" + resourcePath(name)
 		paths[base] = collectionPath(name, ref)
 		paths[base+"/{id}"] = itemPath(name, ref)
+	}
+
+	for _, a := range actions {
+		p, _ := paths[a.Path].(obj)
+		if p == nil {
+			p = obj{}
+		}
+		p[strings.ToLower(a.Method)] = actionOperation(a)
+		paths[a.Path] = p
 	}
 
 	return obj{
@@ -219,6 +229,67 @@ func itemPath(name, ref string) obj {
 			},
 		},
 	}
+}
+
+// actionOperation documents one non-CRUD Action. The request/response bodies
+// are generic objects (the action's payload shape is module-specific and not
+// derived from a single metadata object); writes require an Idempotency-Key and
+// advertise the standard write failure responses.
+func actionOperation(a Action) obj {
+	op := obj{
+		"summary":     a.Summary,
+		"operationId": operationID(a),
+		"responses": obj{
+			"200": obj{"description": a.Summary},
+			"401": problemRef(),
+			"403": problemRef(),
+			"404": problemRef(),
+			"429": problemRef(),
+		},
+	}
+	if params := pathParams(a.Path); len(params) > 0 {
+		op["parameters"] = params
+	}
+	if a.Write {
+		op["parameters"] = append(pathParams(a.Path), idempotencyRef())
+		op["requestBody"] = obj{
+			"required": false,
+			"content":  obj{"application/json": obj{"schema": obj{"type": "object"}}},
+		}
+		resp := op["responses"].(obj)
+		resp["400"] = problemRef()
+		resp["409"] = problemRef()
+		resp["422"] = problemRef()
+	}
+	return op
+}
+
+// pathParams returns OpenAPI parameter objects for each {var} in an action
+// path.
+func pathParams(path string) []any {
+	var out []any
+	for _, seg := range strings.Split(path, "/") {
+		if strings.HasPrefix(seg, "{") && strings.HasSuffix(seg, "}") {
+			out = append(out, obj{
+				"name": strings.Trim(seg, "{}"), "in": "path", "required": true,
+				"schema": obj{"type": "string"},
+			})
+		}
+	}
+	return out
+}
+
+// operationID derives a stable operationId from an action's method and path.
+func operationID(a Action) string {
+	id := strings.ToLower(a.Method)
+	for _, seg := range strings.Split(a.Path, "/") {
+		if seg == "" || seg == "api" || seg == "v1" {
+			continue
+		}
+		seg = strings.Trim(seg, "{}")
+		id += strings.ToUpper(seg[:1]) + seg[1:]
+	}
+	return id
 }
 
 func problemSchema() obj {

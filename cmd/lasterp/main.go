@@ -14,10 +14,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/iamdoubz/lasterp/kernel/api"
+	"github.com/iamdoubz/lasterp/internal/app"
 )
-
-const apiAddr = ":8080"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -40,8 +38,32 @@ func main() {
 	}
 }
 
+// addr is the listen address, overridable with LASTERP_ADDR (default :8080).
+func addr() string {
+	if a := os.Getenv("LASTERP_ADDR"); a != "" {
+		return a
+	}
+	return ":8080"
+}
+
+// buildHandler opens the database (LASTERP_DSN — Postgres URL or SQLite path,
+// default lasterp.db), migrates it, registers the modules, and returns the
+// fully-wired product API handler.
+func buildHandler(ctx context.Context) (http.Handler, error) {
+	db, err := app.Open(ctx, os.Getenv("LASTERP_DSN"))
+	if err != nil {
+		return nil, err
+	}
+	return app.Handler(db)
+}
+
 func serve(ctx context.Context) error {
-	srv := &http.Server{Addr: apiAddr, Handler: api.NewMux()}
+	handler, err := buildHandler(ctx)
+	if err != nil {
+		return err
+	}
+	listen := addr()
+	srv := &http.Server{Addr: listen, Handler: handler}
 
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -51,24 +73,29 @@ func serve(ctx context.Context) error {
 		_ = srv.Close()
 	}()
 
-	log.Printf("kernel API listening on %s", apiAddr)
+	log.Printf("LastERP API listening on %s", listen)
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return err
 	}
 	return nil
 }
 
-// dev starts the kernel API in the background and runs the web dev
-// server in the foreground; Ctrl+C stops both.
+// dev starts the API in the background and runs the web dev server in the
+// foreground; Ctrl+C stops both.
 func dev(ctx context.Context) error {
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	srv := &http.Server{Addr: apiAddr, Handler: api.NewMux()}
+	handler, err := buildHandler(ctx)
+	if err != nil {
+		return err
+	}
+	listen := addr()
+	srv := &http.Server{Addr: listen, Handler: handler}
 	go func() {
-		log.Printf("kernel API listening on %s", apiAddr)
+		log.Printf("LastERP API listening on %s", listen)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Printf("kernel API stopped: %v", err)
+			log.Printf("API stopped: %v", err)
 		}
 	}()
 	go func() {
