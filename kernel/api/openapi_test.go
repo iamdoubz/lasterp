@@ -36,7 +36,7 @@ func sampleEffective(t *testing.T) *metadata.EffectiveSchema {
 // required shape (the AC's "OpenAPI spec validates"). Full Spectral linting
 // is WP-3.7's CI gate (docs/15); this is the structural contract.
 func TestOpenAPIValidates(t *testing.T) {
-	spec := OpenAPI(sampleEffective(t))
+	spec := OpenAPI([]*metadata.EffectiveSchema{sampleEffective(t)}, nil)
 
 	if spec["openapi"] != "3.1.0" {
 		t.Fatalf("openapi = %v, want 3.1.0", spec["openapi"])
@@ -124,7 +124,7 @@ func TestOpenAPIEndpointServesSpec(t *testing.T) {
 // they add core objects. Run: go test ./kernel/api -run Golden -update
 func TestCoreSpecGolden(t *testing.T) {
 	path := filepath.Join("..", "..", "api", "openapi.json")
-	got, err := json.MarshalIndent(OpenAPI(), "", "  ")
+	got, err := json.MarshalIndent(OpenAPI(nil, nil), "", "  ")
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}

@@ -55,6 +55,15 @@ func ReopenPeriod(ctx context.Context, db *storage.DB, tenant tenancy.ID, id str
 	return transitionStatus(ctx, db, tenant, id, PeriodClosed, PeriodOpen, ErrPeriodNotClosed)
 }
 
+// GetPeriod reads a period record by id (authorized as Period "read").
+func GetPeriod(ctx context.Context, db *storage.DB, tenant tenancy.ID, id string) (metadata.Record, error) {
+	crud, err := periodCRUD()
+	if err != nil {
+		return nil, err
+	}
+	return crud.Get(ctx, db, tenant, id)
+}
+
 func transitionStatus(ctx context.Context, db *storage.DB, tenant tenancy.ID, id, from, to string, wrongState error) error {
 	crud, err := periodCRUD()
 	if err != nil {

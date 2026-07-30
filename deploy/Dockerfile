@@ -15,6 +15,8 @@ COPY go.mod go.sum* ./
 RUN go mod download
 COPY cmd/ cmd/
 COPY kernel/ kernel/
+COPY internal/ internal/
+COPY modules/ modules/
 RUN CGO_ENABLED=0 go build -o /out/lasterp ./cmd/lasterp
 
 ### runtime

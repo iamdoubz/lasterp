@@ -89,6 +89,13 @@ func effective(yaml string) (*metadata.EffectiveSchema, error) {
 	return metadata.Merge(obj)
 }
 
+// AccountSchema is the Account object's effective schema, for the gateway to
+// expose as a generic CRUD resource (arbitrary field edits on accounts are
+// safe — unlike Period, whose status transitions must go through the monotonic
+// close/reopen actions). The composition root (internal/app) passes it to
+// api.Config.Objects.
+func AccountSchema() (*metadata.EffectiveSchema, error) { return effective(accountYAML) }
+
 func accountCRUD() (*metadata.CRUD, error) {
 	eff, err := effective(accountYAML)
 	if err != nil {

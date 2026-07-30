@@ -46,6 +46,34 @@ type CapabilityChecker interface {
 	Enabled(ctx context.Context, tenant tenancy.ID, object string) (enabled bool, capability string, err error)
 }
 
+// Action is a non-CRUD gateway route: a lifecycle verb (post invoice, reverse
+// entry, close/reopen period), a read of an event-sourced object, or a
+// reference-data / capability admin write. The composition root
+// (internal/app) builds these from module funcs — kernel/api must not import
+// modules — while the gateway supplies the shared choke point (authn,
+// tenant-mismatch guard, rate limit, capability gate, idempotency) and the
+// OpenAPI documentation, exactly as it does for CRUD routes.
+//
+// Handler runs after authn: the actor is bound into r.Context() and tenant is
+// passed explicitly (== actor.TenantID). Write actions are additionally wrapped
+// with idempotency (an Idempotency-Key is required — the "all writes take
+// idempotency keys" rule), so their Handler must be safe to run against a
+// capture buffer.
+type Action struct {
+	Method  string // "GET", "POST", "PATCH"
+	Path    string // full route pattern, e.g. "/api/v1/invoices/{id}/post"
+	Object  string // metadata object for capability gating; "" ⇒ ungated
+	Summary string // OpenAPI summary
+	Write   bool   // wrap with idempotency (writes) vs. plain read
+	Handler HandlerFunc
+}
+
+// HandlerFunc is an Action handler: it runs after the gateway choke point has
+// authenticated the request (the actor is bound into r.Context()) and passes
+// the resolved tenant (== actor.TenantID) explicitly. It matches apiHandler,
+// the internal CRUD handler shape.
+type HandlerFunc = func(w http.ResponseWriter, r *http.Request, tenant tenancy.ID)
+
 // Config configures a Gateway. All fields are optional: with the zero value
 // the gateway still serves /healthz, /api/v1/hello and an (object-less)
 // OpenAPI document. CRUD routes exist only for registered Objects and
@@ -53,6 +81,7 @@ type CapabilityChecker interface {
 type Config struct {
 	DB            *storage.DB
 	Objects       []*metadata.EffectiveSchema
+	Actions       []Action
 	Authenticator Authenticator
 	RateLimit     RateLimit
 	// Capabilities, when set, gates object routes behind their module's
@@ -71,6 +100,7 @@ type Gateway struct {
 	idem    *idempotencyStore
 	limiter *rateLimiter
 	objects []*metadata.EffectiveSchema
+	actions []Action
 }
 
 // defaultRateLimit is applied when Config.RateLimit is the zero value: a
@@ -96,6 +126,7 @@ func NewGateway(cfg Config) *Gateway {
 		caps:    cfg.Capabilities,
 		limiter: newRateLimiter(rl, now),
 		objects: cfg.Objects,
+		actions: cfg.Actions,
 	}
 	if cfg.DB != nil {
 		g.idem = &idempotencyStore{db: cfg.DB, now: now}
@@ -111,6 +142,9 @@ func NewGateway(cfg Config) *Gateway {
 	for _, schema := range g.objects {
 		g.registerObject(schema)
 	}
+	for _, a := range g.actions {
+		g.registerAction(a)
+	}
 	return g
 }
 
@@ -123,7 +157,7 @@ func NewMux() http.Handler { return NewGateway(Config{}) }
 func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) { g.mux.ServeHTTP(w, r) }
 
 func (g *Gateway) handleOpenAPI(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, OpenAPI(g.objects...))
+	writeJSON(w, http.StatusOK, OpenAPI(g.objects, g.actions))
 }
 
 func (g *Gateway) handleNotFound(w http.ResponseWriter, r *http.Request) {
@@ -147,6 +181,18 @@ func (g *Gateway) registerObject(schema *metadata.EffectiveSchema) {
 	g.mux.HandleFunc("GET "+base+"/{id}", gate(g.handleGet(crud)))
 	g.mux.HandleFunc("PATCH "+base+"/{id}", gate(g.handleWrite(g.doUpdate(crud))))
 	g.mux.HandleFunc("DELETE "+base+"/{id}", gate(g.handleWrite(g.doDelete(crud))))
+}
+
+// registerAction wires one non-CRUD Action onto the mux through the same
+// choke point as CRUD routes: guard (authn → tenant-mismatch → rate limit →
+// actor bind) then the capability gate; write actions add idempotency.
+func (g *Gateway) registerAction(a Action) {
+	var h apiHandler = a.Handler
+	if a.Write {
+		h = g.handleWrite(writeExec(a.Handler))
+	}
+	handler := g.guard(g.capabilityGate(a.Object, h))
+	g.mux.HandleFunc(a.Method+" "+a.Path, handler)
 }
 
 // capabilityGate rejects a request for object with a capability-disabled

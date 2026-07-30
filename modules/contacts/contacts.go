@@ -58,6 +58,11 @@ func effective(yaml string) (*metadata.EffectiveSchema, error) {
 	return metadata.Merge(obj)
 }
 
+// ContactSchema is the Contact object's effective schema, for the gateway to
+// expose as a generic CRUD resource. The composition root (internal/app)
+// passes it to api.Config.Objects.
+func ContactSchema() (*metadata.EffectiveSchema, error) { return effective(contactYAML) }
+
 func contactCRUD() (*metadata.CRUD, error) {
 	eff, err := effective(contactYAML)
 	if err != nil {
