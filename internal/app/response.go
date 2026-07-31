@@ -92,6 +92,11 @@ func isConflict(err error) bool {
 // (validation, balance, closed period, missing reference data).
 func isUnprocessable(err error) bool {
 	return errors.Is(err, metadata.ErrValidation) ||
+		// Translating a field nobody declared localized, and every other
+		// structural complaint about a draft, is a bad request body — not a
+		// server fault.
+		errors.Is(err, metadata.ErrNotLocalized) ||
+		errors.Is(err, invoicing.ErrInvalidDraft) ||
 		// Over-applying a receipt is a well-formed request that breaks a
 		// business rule (INV-F8) — the caller needs to see which invoice and
 		// by how much, not a 500.

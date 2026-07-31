@@ -2,7 +2,16 @@
 import { describe, expect, test } from "vitest";
 import { pseudoLocalize } from "./pseudo";
 import { formatMessage, formatMoney, formatNumber } from "./format";
-import { resolveLocale, localeFromSearch } from "./i18n";
+import { initialLocale, resolveLocale } from "./i18n";
+import { messages } from "./messages";
+import de from "./packs/de.json";
+
+/** The on-disk pack shape, mirrored from kernel/i18n's Pack. */
+interface Pack {
+  locale: string;
+  version: number;
+  messages: Record<string, string>;
+}
 
 describe("pseudoLocalize", () => {
   test.each([
@@ -71,10 +80,63 @@ describe("locale resolution", () => {
     expect(resolveLocale("en").catalog["app.title"]).toBe("LastERP");
   });
 
-  test("localeFromSearch reads ?locale and defaults to en", () => {
-    expect(localeFromSearch("?locale=pseudo").id).toBe("pseudo");
-    expect(localeFromSearch("?locale=ar").id).toBe("ar");
-    expect(localeFromSearch("").id).toBe("en");
-    expect(localeFromSearch("?locale=bogus").id).toBe("en");
+  test("?locale reads the pseudo and RTL builds, and defaults to en", () => {
+    expect(initialLocale("?locale=pseudo").id).toBe("pseudo");
+    expect(initialLocale("?locale=ar").id).toBe("ar");
+    expect(initialLocale("").id).toBe("en");
+    expect(initialLocale("?locale=bogus").id).toBe("en");
+  });
+});
+
+// --- translation packs (WP-1.7) ---
+
+describe("translation packs", () => {
+  // The gate that makes a shipped locale mean something: a pack must answer
+  // every key the UI can ask for, and may not invent keys nothing reads. A
+  // future WP adding a string without translating it fails here instead of
+  // rendering half an English screen (docs/notes/WP-1.7-decisions.md §2).
+  const packs: Array<[string, Pack]> = [["de", de as Pack]];
+
+  test.each(packs)("the %s pack covers exactly the source catalog", (_id, pack) => {
+    const sourceKeys = Object.keys(messages).sort();
+    const packKeys = Object.keys(pack.messages).sort();
+    expect(packKeys).toEqual(sourceKeys);
+  });
+
+  test.each(packs)("the %s pack is versioned and non-empty", (_id, pack) => {
+    expect(pack.version).toBeGreaterThanOrEqual(1);
+    for (const [key, value] of Object.entries(pack.messages)) {
+      expect(value, `${key} is empty`).not.toBe("");
+    }
+  });
+
+  test.each(packs)("the %s pack keeps ICU placeholders intact", (_id, pack) => {
+    for (const [key, source] of Object.entries(messages)) {
+      const placeholders = (s: string) => (s.match(/\{(\w+)/g) ?? []).sort();
+      expect(placeholders(pack.messages[key]), `${key} placeholders`).toEqual(
+        placeholders(source),
+      );
+    }
+  });
+
+  test("a locale with a pack renders it; one without falls back to English", () => {
+    expect(resolveLocale("de").catalog["nav.signOut"]).toBe("Abmelden");
+    expect(resolveLocale("de").dir).toBe("ltr");
+    expect(resolveLocale("ar").catalog["nav.signOut"]).toBe("Sign out");
+    expect(resolveLocale("ar").dir).toBe("rtl");
+  });
+});
+
+describe("initialLocale", () => {
+  test.each([
+    ["an explicit query wins", "?locale=de", "en", ["en-US"], "de"],
+    ["then the remembered choice", "", "de", ["en-US"], "de"],
+    ["then the browser's language", "", null, ["de-AT", "en"], "de"],
+    ["a regional browser tag resolves to its language", "", null, ["de-CH"], "de"],
+    ["nothing recognised is English", "", null, ["fr-FR"], "en"],
+    ["a bogus stored value is ignored", "", "klingon", ["fr"], "en"],
+    ["a bogus query falls through", "?locale=nope", "de", [], "de"],
+  ])("%s", (_name, search, stored, languages, want) => {
+    expect(initialLocale(search, stored, languages).id).toBe(want);
   });
 });

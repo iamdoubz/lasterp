@@ -68,6 +68,14 @@ type Field struct {
 	Target   string    `yaml:"target,omitempty"` // link/table: the target object name
 	Index    bool      `yaml:"index,omitempty"`
 
+	// Localized marks a text field whose value may be written in several
+	// languages (docs/17: "designated fields support per-locale values"). The
+	// column keeps the canonical value; the per-locale ones travel under the
+	// record's reserved translations key and live in the custom_fields blob, so
+	// localizing a field is not a schema migration. Only localizableTypes may
+	// set it.
+	Localized bool `yaml:"localized,omitempty"`
+
 	// FromOverlay is set by Merge, never by parsing core YAML (ADR-006:
 	// "Custom fields for core objects store in a JSONB column with
 	// generated typed accessors" — different tenants can overlay the same
@@ -111,16 +119,31 @@ func (o *Object) Validate() error {
 	}
 	seen := make(map[string]bool, len(o.Fields))
 	for _, f := range o.Fields {
-		if f.Name == "" {
-			return fmt.Errorf("%w: field name is required", ErrInvalidObject)
+		if err := f.validate(); err != nil {
+			return err
 		}
 		if seen[f.Name] {
 			return fmt.Errorf("%w: duplicate field name %q", ErrInvalidObject, f.Name)
 		}
 		seen[f.Name] = true
-		if !validFieldTypes[f.Type] {
-			return fmt.Errorf("%w: field %q has unknown type %q", ErrInvalidObject, f.Name, f.Type)
-		}
+	}
+	return nil
+}
+
+// validate checks one field definition. It is shared with overlay merging, so
+// an overlay cannot introduce a field a core schema would have been refused.
+func (f Field) validate() error {
+	if f.Name == "" {
+		return fmt.Errorf("%w: field name is required", ErrInvalidObject)
+	}
+	if reservedFieldNames[f.Name] {
+		return fmt.Errorf("%w: field name %q is reserved (it collides with the translation keys)", ErrInvalidObject, f.Name)
+	}
+	if !validFieldTypes[f.Type] {
+		return fmt.Errorf("%w: field %q has unknown type %q", ErrInvalidObject, f.Name, f.Type)
+	}
+	if f.Localized && !localizableTypes[f.Type] {
+		return fmt.Errorf("%w: field %q of type %q cannot be localized (only text, long_text and rich_text can)", ErrInvalidObject, f.Name, f.Type)
 	}
 	return nil
 }

@@ -55,8 +55,8 @@ func Merge(core *Object, overlays ...Overlay) (*EffectiveSchema, error) {
 			if fieldNames[f.Name] {
 				return nil, fmt.Errorf("%w: field %q already defined", ErrOverlayConflict, f.Name)
 			}
-			if !validFieldTypes[f.Type] {
-				return nil, fmt.Errorf("%w: field %q has unknown type %q", ErrInvalidObject, f.Name, f.Type)
+			if err := f.validate(); err != nil {
+				return nil, err
 			}
 			f.FromOverlay = true
 			fieldNames[f.Name] = true

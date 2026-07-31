@@ -10,6 +10,7 @@ import (
 
 	"github.com/iamdoubz/lasterp/kernel/api"
 	"github.com/iamdoubz/lasterp/kernel/capability"
+	"github.com/iamdoubz/lasterp/kernel/i18n"
 	"github.com/iamdoubz/lasterp/kernel/idgen"
 	"github.com/iamdoubz/lasterp/kernel/storage"
 )
@@ -126,7 +127,11 @@ func allActions(t *testing.T, db *storage.DB) []api.Action {
 	if err != nil {
 		t.Fatalf("crudObjects: %v", err)
 	}
-	return actions(db, reg, objects)
+	translator, err := i18n.Load()
+	if err != nil {
+		t.Fatalf("i18n.Load: %v", err)
+	}
+	return actions(db, reg, objects, translator)
 }
 
 // concretePath substitutes a placeholder for each {param} segment.

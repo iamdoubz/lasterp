@@ -10,17 +10,35 @@ import type { ChangeEvent } from "react";
 import { SYSTEM_FIELDS, type FieldType, type MetaField, type Record_ } from "../api";
 import { Checkbox, Input, Select, Textarea } from "../ui";
 
-/**
- * labelFor turns a field name into a human label ("issue_date" → "Issue date").
- *
- * Deliberately not a translation lookup: per-object, per-tenant field labels
- * are translation-pack territory (docs/17, WP-1.7), and a catalog key per
- * module field would have to be invented here and thrown away there. Custom
- * fields added by an overlay would have no key at all.
- */
-export function labelFor(field: MetaField): string {
-  const words = field.name.replace(/_/g, " ").trim();
+/** A Labeler resolves a catalog key that may not exist, falling back to a
+ * humanized default — `useI18n().label`. */
+export type Labeler = (key: string, fallback: string) => string;
+
+/** humanize turns a field name into a readable default ("issue_date" → "Issue
+ * date"). It is the fallback, not the answer: a schema key wins when the pack
+ * has one. */
+export function humanize(name: string): string {
+  const words = name.replace(/_/g, " ").trim();
   return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/**
+ * labelFor is a field's label in the reader's language (docs/17: "metadata
+ * labels flow through the translation layer").
+ *
+ * The key is derived from the schema — `schema.field.<Object>.<field>` — so a
+ * pack can name every shipped field, while a field with no key (an overlay's
+ * custom field, a module newer than this bundle) still renders its humanized
+ * name rather than a raw key. Per-tenant relabelling is overlay work and needs
+ * labels in the object schema first (WP-1.7-decisions.md §11).
+ */
+export function labelFor(field: MetaField, object: string, label: Labeler): string {
+  return label(`schema.field.${object}.${field.name}`, humanize(field.name));
+}
+
+/** objectLabel is an object's name in the reader's language. */
+export function objectLabel(object: string, label: Labeler): string {
+  return label(`schema.object.${object}`, object);
 }
 
 /** editableFields drops the columns the server owns. A form that posted
@@ -49,8 +67,19 @@ export function formatValue(
   field: MetaField,
   value: unknown,
   record: Record_,
-  format: { money: (minor: number, currency: string) => string; number: (x: number) => string },
+  format: {
+    money: (minor: number, currency: string) => string;
+    number: (x: number) => string;
+    /** The reader's locale, for fields whose value exists in several. */
+    locale?: string;
+  },
 ): string {
+  if (field.localized && format.locale) {
+    const translated = translationFor(record, field.name, format.locale);
+    if (translated) {
+      return translated;
+    }
+  }
   if (value === null || value === undefined || value === "") {
     return "";
   }
@@ -78,6 +107,27 @@ export function formatValue(
       // ISO-formatted UTC from the server.
       return String(value);
   }
+}
+
+/**
+ * translationFor reads a record's per-locale value for a field: exact tag
+ * first, then the base language, so a "de" translation serves a "de-AT" reader.
+ * Empty when the record has none — the caller shows the canonical value.
+ *
+ * Forms deliberately do *not* use this: they edit the canonical field, so
+ * saving a form in German cannot overwrite the English value with a German one.
+ * Editing translations needs a control per locale, which is UI-descriptor work
+ * (WP-1.7-decisions.md §11).
+ */
+export function translationFor(record: Record_, field: string, locale: string): string {
+  const translations = record.translations as
+    | Record<string, Record<string, string> | undefined>
+    | undefined;
+  const byLocale = translations?.[field];
+  if (!byLocale) {
+    return "";
+  }
+  return byLocale[locale] || byLocale[locale.split("-")[0]] || "";
 }
 
 interface ControlProps {

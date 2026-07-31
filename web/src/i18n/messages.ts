@@ -18,6 +18,7 @@ export const messages = {
   "nav.signOut": "Sign out",
   "nav.skipToContent": "Skip to content",
   "nav.home": "Home",
+  "nav.language": "Language",
 
   // Authentication
   "login.title": "Sign in",
@@ -56,6 +57,23 @@ export const messages = {
   "invoice.pdf": "Download PDF",
   "invoice.posted": "Posted. Journal entry {entry} created.",
   "invoice.journalEntry": "Journal entry",
+
+  // Schema labels. Objects and fields arrive from /api/v1/meta/objects with
+  // machine names; these are what a person should read. A schema key that is
+  // absent (an overlay's custom field, a module shipped after this bundle)
+  // falls back to the humanized field name, so the renderer stays total —
+  // see meta/render.tsx labelFor.
+  "schema.object.Account": "Account",
+  "schema.object.Contact": "Contact",
+  "schema.field.Account.code": "Code",
+  "schema.field.Account.name": "Name",
+  "schema.field.Account.type": "Account type",
+  "schema.field.Account.parent": "Parent account",
+  "schema.field.Account.currency": "Currency",
+  "schema.field.Contact.name": "Name",
+  "schema.field.Contact.email": "Email",
+  "schema.field.Contact.kind": "Kind",
+  "schema.field.Contact.locale": "Language",
 
   // Shared status
   "status.loading": "Loading…",

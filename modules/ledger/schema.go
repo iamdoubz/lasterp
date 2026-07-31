@@ -24,13 +24,18 @@ const (
 	ObjectJournalEntry = "JournalEntry"
 )
 
+// Account.name is localized (WP-1.7): a chart of accounts is one of the things
+// a country pack ships translated (ADR-013), and the same account must be able
+// to read "Accounts receivable" and "Forderungen aus Lieferungen und Leistungen"
+// without becoming two accounts. The canonical name stays in the column; the
+// per-locale ones ride in the record's translations key.
 const accountYAML = `
 object: Account
 module: ledger
 persistence: crud
 fields:
   - {name: code, type: text, required: true, index: true}
-  - {name: name, type: text, required: true}
+  - {name: name, type: text, required: true, localized: true}
   - {name: type, type: enum, required: true}
   - {name: parent, type: link, target: Account}
   - {name: currency, type: currency}
@@ -120,29 +125,37 @@ func journalES() (*metadata.EventSourced, error) {
 	return metadata.NewEventSourced(eff)
 }
 
+// accountVersion is 2 because WP-1.7 localized Account.name. A schema whose
+// definition changes must advance its version — saving a different definition
+// at the same version is refused (metadata.ErrSchemaVersionConflict), and
+// silently overwriting would rewrite history for every tenant already on it.
+// Localizing a field adds no column, so the evolution plans no DDL.
+const accountVersion = 2
+
 // Register persists the ledger's object schemas (core layer) and applies the
 // DDL for the CRUD-backed objects (Account, Period). JournalEntry is
 // event-sourced, so it is registered but gets no generated table — its data
 // lives in the event log.
 func Register(ctx context.Context, db *storage.DB) error {
 	for _, s := range []struct {
-		name string
-		yaml string
-		ddl  bool
+		name    string
+		yaml    string
+		version int
+		ddl     bool
 	}{
-		{ObjectAccount, accountYAML, true},
-		{ObjectPeriod, periodYAML, true},
-		{ObjectJournalEntry, journalEntryYAML, false},
+		{ObjectAccount, accountYAML, accountVersion, true},
+		{ObjectPeriod, periodYAML, 1, true},
+		{ObjectJournalEntry, journalEntryYAML, 1, false},
 	} {
 		eff, err := effective(s.yaml)
 		if err != nil {
 			return err
 		}
-		if err := metadata.SaveObjectSchema(ctx, db, "", metadata.LayerCore, s.name, 1, []byte(s.yaml)); err != nil {
+		if err := metadata.SaveObjectSchema(ctx, db, "", metadata.LayerCore, s.name, s.version, []byte(s.yaml)); err != nil {
 			return err
 		}
 		if s.ddl {
-			if err := metadata.ApplyDDL(ctx, db, eff, 1); err != nil {
+			if err := metadata.ApplyDDL(ctx, db, eff, s.version); err != nil {
 				return err
 			}
 		}

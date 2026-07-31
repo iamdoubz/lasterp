@@ -98,7 +98,7 @@ func TestInvoiceLifecycle(t *testing.T) {
 			}
 
 			// PDF renders.
-			pdf, err := RenderInvoicePDF(posted)
+			pdf, err := RenderInvoicePDF(posted, testPrinter(t, "en"))
 			if err != nil {
 				t.Fatalf("RenderInvoicePDF: %v", err)
 			}

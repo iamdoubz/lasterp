@@ -4,8 +4,9 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, Outlet } from "@tanstack/react-router";
 
 import { listObjects, logout, type MetaObject } from "../api";
-import { useT } from "../i18n";
-import { Alert, Busy, Button } from "../ui";
+import { LOCALE_NAMES, useI18n, type LocaleId } from "../i18n";
+import { objectLabel } from "../meta/render";
+import { Alert, Busy, Button, Select } from "../ui";
 
 /** useObjects fetches the tenant's renderable schemas. Navigation is built from
  * this, so a disabled module simply has no nav entry — no dead links. */
@@ -16,7 +17,7 @@ export function useObjects() {
 /** The authenticated shell: skip link, nav built from metadata, and the routed
  * content. */
 export function Shell({ onSignedOut }: { onSignedOut: () => void }) {
-  const t = useT();
+  const { t } = useI18n();
   const queryClient = useQueryClient();
   const { data, isPending, error } = useObjects();
 
@@ -44,9 +45,12 @@ export function Shell({ onSignedOut }: { onSignedOut: () => void }) {
           <Link to="/" className="text-lg font-semibold">
             LastERP
           </Link>
-          <Button onClick={() => signOut.mutate()} disabled={signOut.isPending}>
-            {t("nav.signOut")}
-          </Button>
+          <div className="flex items-center gap-3">
+            <LocaleSwitcher />
+            <Button onClick={() => signOut.mutate()} disabled={signOut.isPending}>
+              {t("nav.signOut")}
+            </Button>
+          </div>
         </div>
 
         <nav aria-label={t("nav.label")} className="mx-auto max-w-5xl px-4 pb-3">
@@ -63,7 +67,31 @@ export function Shell({ onSignedOut }: { onSignedOut: () => void }) {
   );
 }
 
+/** LocaleSwitcher is a plain labelled <select>: a native control is keyboard-
+ * and screen-reader-correct without a line of ARIA, and the choice is
+ * remembered (see i18n.tsx's resolution chain). Language names are endonyms,
+ * so they read the same whatever the UI is currently in. */
+function LocaleSwitcher() {
+  const { t, locale, setLocale } = useI18n();
+  return (
+    <label className="flex items-center gap-2 text-sm">
+      <span className="text-slate-600 dark:text-slate-300">{t("nav.language")}</span>
+      <Select
+        value={locale.id}
+        onChange={(e) => setLocale(e.target.value as LocaleId)}
+      >
+        {(Object.keys(LOCALE_NAMES) as LocaleId[]).map((id) => (
+          <option key={id} value={id}>
+            {LOCALE_NAMES[id]}
+          </option>
+        ))}
+      </Select>
+    </label>
+  );
+}
+
 function ObjectNav({ objects }: { objects: MetaObject[] }) {
+  const { label } = useI18n();
   return (
     <ul className="flex flex-wrap gap-4">
       {objects.map((o) => (
@@ -74,7 +102,7 @@ function ObjectNav({ objects }: { objects: MetaObject[] }) {
             activeProps={{ className: "font-semibold underline" }}
             className="text-sm text-sky-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-600 dark:text-sky-400"
           >
-            {o.name}
+            {objectLabel(o.name, label)}
           </Link>
         </li>
       ))}

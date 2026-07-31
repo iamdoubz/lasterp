@@ -20,6 +20,7 @@ import (
 // value is not usable; construct one with New.
 type Translator struct {
 	builder *catalog.Builder
+	locales []language.Tag
 }
 
 // New returns an empty Translator. Register messages with Set / SetString,

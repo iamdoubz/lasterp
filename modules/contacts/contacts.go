@@ -35,6 +35,11 @@ var validKinds = map[string]bool{KindCustomer: true, KindVendor: true, KindBoth:
 // ErrInvalidKind is returned by CreateContact for a kind outside the closed set.
 var ErrInvalidKind = errors.New("contacts: invalid contact kind")
 
+// locale is the counterparty's language — a BCP-47 tag ("de", "de-AT"), blank
+// when unknown. Documents addressed to a contact render in it (docs/17: "invoice
+// to a French customer prints in French from the same record"); it is copied
+// onto a document when the draft is created, never read back at render time,
+// because a posted document's language must not change under it (INV-F2).
 const contactYAML = `
 object: Contact
 module: contacts
@@ -43,12 +48,18 @@ fields:
   - {name: name, type: text, required: true, index: true}
   - {name: email, type: email}
   - {name: kind, type: enum, required: true}
+  - {name: locale, type: text}
 permissions:
   read: [contacts.viewer]
   create: [contacts.admin]
   update: [contacts.admin]
   delete: [contacts.admin]
 `
+
+// contactVersion is 2 because WP-1.7 added the optional locale field: an
+// additive column, planned by metadata's evolution path on an existing
+// database and created inline on a fresh one.
+const contactVersion = 2
 
 func effective(yaml string) (*metadata.EffectiveSchema, error) {
 	obj, err := metadata.ParseObject([]byte(yaml))
@@ -77,10 +88,26 @@ func Register(ctx context.Context, db *storage.DB) error {
 	if err != nil {
 		return err
 	}
-	if err := metadata.SaveObjectSchema(ctx, db, "", metadata.LayerCore, ObjectContact, 1, []byte(contactYAML)); err != nil {
+	if err := metadata.SaveObjectSchema(ctx, db, "", metadata.LayerCore, ObjectContact, contactVersion, []byte(contactYAML)); err != nil {
 		return err
 	}
-	return metadata.ApplyDDL(ctx, db, eff, 1)
+	return metadata.ApplyDDL(ctx, db, eff, contactVersion)
+}
+
+// LocaleOf returns a contact's preferred language, or "" when it has none.
+// Reading it is an ordinary authorized, tenant-scoped Contact read (INV-T1/T2)
+// — there is no privileged path just because the caller only wants one field.
+func LocaleOf(ctx context.Context, db *storage.DB, tenant tenancy.ID, id string) (string, error) {
+	crud, err := contactCRUD()
+	if err != nil {
+		return "", err
+	}
+	rec, err := crud.Get(ctx, db, tenant, id)
+	if err != nil {
+		return "", err
+	}
+	locale, _ := rec["locale"].(string)
+	return locale, nil
 }
 
 // CreateContact adds a contact. kind must be one of the closed set.

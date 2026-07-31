@@ -9,10 +9,12 @@ import (
 	"github.com/iamdoubz/lasterp/kernel/api"
 	"github.com/iamdoubz/lasterp/kernel/authz"
 	"github.com/iamdoubz/lasterp/kernel/capability"
+	"github.com/iamdoubz/lasterp/kernel/i18n"
 	"github.com/iamdoubz/lasterp/kernel/metadata"
 	"github.com/iamdoubz/lasterp/kernel/money"
 	"github.com/iamdoubz/lasterp/kernel/storage"
 	"github.com/iamdoubz/lasterp/kernel/tenancy"
+	"github.com/iamdoubz/lasterp/modules/contacts"
 	"github.com/iamdoubz/lasterp/modules/invoicing"
 	"github.com/iamdoubz/lasterp/modules/ledger"
 	"github.com/iamdoubz/lasterp/modules/tax"
@@ -34,7 +36,7 @@ const dateLayout = "2006-01-02"
 // reads, reference-data + capability admin). Handlers run after authn with the
 // actor bound into r.Context(); write actions are wrapped with idempotency by
 // the gateway. See WP-1.4b-decisions.md §3 for the full table.
-func actions(db *storage.DB, reg *capability.Registry, objects []*metadata.EffectiveSchema) []api.Action {
+func actions(db *storage.DB, reg *capability.Registry, objects []*metadata.EffectiveSchema, tr *i18n.Translator) []api.Action {
 	out := append(sessionActions(db), metaActions(db, objects, reg)...)
 	out = append(out, reportActions(db)...)
 	return append(out, []api.Action{
@@ -47,7 +49,7 @@ func actions(db *storage.DB, reg *capability.Registry, objects []*metadata.Effec
 		{Method: "GET", Path: "/api/v1/invoices/{id}", Object: invoicing.ObjectInvoice,
 			Summary: "Get an invoice", Handler: getInvoice(db)},
 		{Method: "GET", Path: "/api/v1/invoices/{id}/pdf", Object: invoicing.ObjectInvoice,
-			Summary: "Render an invoice as PDF", Handler: invoicePDF(db)},
+			Summary: "Render an invoice as PDF", Handler: invoicePDF(db, tr)},
 		{Method: "POST", Path: "/api/v1/invoices/{id}/post", Object: invoicing.ObjectInvoice, Write: true,
 			Summary: "Post an invoice to the ledger", Handler: postInvoice(db)},
 		{Method: "GET", Path: "/api/v1/invoices/{id}/settlement", Object: invoicing.ObjectInvoice,
@@ -105,13 +107,14 @@ type draftReq struct {
 	IssueDate  string           `json:"issue_date"`
 	ARAccount  string           `json:"ar_account"`
 	TaxAccount string           `json:"tax_account"`
+	Locale     string           `json:"locale"`
 	Lines      []invoicing.Line `json:"lines"`
 }
 
 func (d draftReq) toInput() invoicing.DraftInput {
 	return invoicing.DraftInput{
 		ContactID: d.ContactID, Currency: d.Currency, IssueDate: d.IssueDate,
-		ARAccount: d.ARAccount, TaxAccount: d.TaxAccount, Lines: d.Lines,
+		ARAccount: d.ARAccount, TaxAccount: d.TaxAccount, Locale: d.Locale, Lines: d.Lines,
 	}
 }
 
@@ -151,7 +154,11 @@ func createInvoice(db *storage.DB) api.HandlerFunc {
 		if !decodeJSON(w, r, &req) {
 			return
 		}
-		inv, err := invoicing.CreateDraft(r.Context(), db, tenant, req.toInput())
+		input := req.toInput()
+		if input.Locale == "" {
+			input.Locale = contactLocale(r, db, tenant, input.ContactID)
+		}
+		inv, err := invoicing.CreateDraft(r.Context(), db, tenant, input)
 		if err != nil {
 			fail(w, r, err)
 			return
@@ -166,7 +173,13 @@ func updateInvoice(db *storage.DB) api.HandlerFunc {
 		if !decodeJSON(w, r, &req) {
 			return
 		}
-		inv, err := invoicing.UpdateDraft(r.Context(), db, tenant, r.PathValue("id"), req.toInput())
+		input := req.toInput()
+		if input.Locale == "" {
+			// An update replaces the draft wholesale, so an omitted locale would
+			// otherwise clear the one the draft was created with.
+			input.Locale = contactLocale(r, db, tenant, input.ContactID)
+		}
+		inv, err := invoicing.UpdateDraft(r.Context(), db, tenant, r.PathValue("id"), input)
 		if err != nil {
 			fail(w, r, err)
 			return
@@ -186,14 +199,14 @@ func getInvoice(db *storage.DB) api.HandlerFunc {
 	}
 }
 
-func invoicePDF(db *storage.DB) api.HandlerFunc {
+func invoicePDF(db *storage.DB, tr *i18n.Translator) api.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request, tenant tenancy.ID) {
 		inv, err := invoicing.GetInvoice(r.Context(), db, tenant, r.PathValue("id"))
 		if err != nil {
 			fail(w, r, err)
 			return
 		}
-		pdf, err := invoicing.RenderInvoicePDF(inv)
+		pdf, err := invoicing.RenderInvoicePDF(inv, tr.PrinterFor(documentLocalePreferences(r, inv)...))
 		if err != nil {
 			fail(w, r, err)
 			return
@@ -202,6 +215,44 @@ func invoicePDF(db *storage.DB) api.HandlerFunc {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(pdf)
 	}
+}
+
+// documentLocalePreferences orders the answers to "what language is this
+// document in", most specific first (WP-1.7-decisions.md §5):
+//
+//  1. ?locale= — an explicit override, for previewing a document in another
+//     language without changing it;
+//  2. the invoice's own locale — the counterparty's language, frozen onto the
+//     document when it was drafted, so a posted invoice keeps saying what it
+//     said when it was sent (INV-F2);
+//  3. Accept-Language — the reader's browser, for a document that predates the
+//     field or was drafted without one;
+//
+// and the translator falls back to the source locale when none of them names a
+// pack it has. An unsupported locale is never an error: a document that refuses
+// to render because someone asked for Klingon is worse than one in English.
+func documentLocalePreferences(r *http.Request, inv invoicing.Invoice) []string {
+	return []string{
+		r.URL.Query().Get("locale"),
+		inv.Locale,
+		r.Header.Get("Accept-Language"),
+	}
+}
+
+// contactLocale is the counterparty's language, for stamping onto a new draft.
+// It is best effort by design: a contact that cannot be read (gone, or the
+// invoice clerk has no Contact read grant) leaves the document on the server
+// default rather than failing invoice creation. A document's language is
+// presentation; refusing to invoice over it would be absurd.
+func contactLocale(r *http.Request, db *storage.DB, tenant tenancy.ID, contactID string) string {
+	if contactID == "" {
+		return ""
+	}
+	locale, err := contacts.LocaleOf(r.Context(), db, tenant, contactID)
+	if err != nil {
+		return ""
+	}
+	return locale
 }
 
 func postInvoice(db *storage.DB) api.HandlerFunc {

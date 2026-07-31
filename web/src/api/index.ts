@@ -43,6 +43,9 @@ export interface MetaField {
   required: boolean;
   /** link/table: the object this field points at. */
   target?: string;
+  /** The field's value may exist in several languages; the per-locale ones
+   * travel in the record's `translations` key (docs/17). */
+  localized?: boolean;
 }
 
 export interface MetaObject {
@@ -55,7 +58,16 @@ export interface MetaObject {
 
 /** Fields the kernel owns on every CRUD record. They are never rendered as form
  * inputs (the server sets them) but do appear in list and detail views. */
-export const SYSTEM_FIELDS = ["id", "tenant_id", "created_at", "updated_at", "archived_at"];
+export const SYSTEM_FIELDS = [
+  "id",
+  "tenant_id",
+  "created_at",
+  "updated_at",
+  "archived_at",
+  // Not a field: the reserved key carrying {field: {locale: value}} for
+  // localized fields. It is never a form input of its own.
+  "translations",
+];
 
 export interface SessionInfo {
   user_id: string;
