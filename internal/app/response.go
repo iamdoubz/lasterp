@@ -13,6 +13,7 @@ import (
 	"github.com/iamdoubz/lasterp/kernel/metadata"
 	"github.com/iamdoubz/lasterp/modules/invoicing"
 	"github.com/iamdoubz/lasterp/modules/ledger"
+	"github.com/iamdoubz/lasterp/modules/reporting"
 )
 
 // writeJSON renders body as application/json with status.
@@ -43,6 +44,8 @@ func fail(w http.ResponseWriter, r *http.Request, err error) {
 		writeProblem(w, http.StatusForbidden, "permission denied", "", inst)
 	case errors.Is(err, authz.ErrNoActor):
 		writeProblem(w, http.StatusUnauthorized, "authentication required", "", inst)
+	case errors.Is(err, reporting.ErrUnknownReport), errors.Is(err, reporting.ErrUnknownMetric):
+		writeProblem(w, http.StatusNotFound, "unknown report or metric", err.Error(), inst)
 	case errors.Is(err, capability.ErrUnknownModule):
 		writeProblem(w, http.StatusNotFound, "unknown module", err.Error(), inst)
 	case isNotFound(err):

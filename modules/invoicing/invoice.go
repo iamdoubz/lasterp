@@ -178,6 +178,36 @@ func GetInvoice(ctx context.Context, db *storage.DB, tenant tenancy.ID, id strin
 	return recordToInvoice(rec)
 }
 
+// ListPosted returns every posted invoice for the tenant, authorized as an
+// Invoice "read" like any other invoice read. Drafts are excluded: they carry no
+// receivable (nothing has hit the ledger), so they have no place in AR.
+//
+// It exists for the reporting module's AR aging and AR-outstanding metric —
+// which must see the same invoices, with the same permission check, as anyone
+// reading them one at a time.
+func ListPosted(ctx context.Context, db *storage.DB, tenant tenancy.ID) ([]Invoice, error) {
+	crud, err := invoiceCRUD()
+	if err != nil {
+		return nil, err
+	}
+	records, err := crud.List(ctx, db, tenant)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Invoice, 0, len(records))
+	for _, rec := range records {
+		inv, err := recordToInvoice(rec)
+		if err != nil {
+			return nil, err
+		}
+		if inv.Status != StatusPosted {
+			continue
+		}
+		out = append(out, inv)
+	}
+	return out, nil
+}
+
 // recordToInvoice decodes a CRUD Record into an Invoice. Int fields come back as
 // int64 (or nil when unset); the lines JSON is parsed.
 func recordToInvoice(rec metadata.Record) (Invoice, error) {
