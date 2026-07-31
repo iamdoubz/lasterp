@@ -1,0 +1,19 @@
+{
+  "locale": "en",
+  "version": 1,
+  "messages": {
+    "doc.date.pattern": "{y}-{m}-{d}",
+    "doc.invoice.title": "Invoice",
+    "doc.invoice.draft": "(draft)",
+    "doc.invoice.issueDate": "Issue date",
+    "doc.invoice.billTo": "Bill to",
+    "doc.invoice.currency": "Currency",
+    "doc.invoice.column.description": "Description",
+    "doc.invoice.column.quantity": "Qty",
+    "doc.invoice.column.unitPrice": "Unit price",
+    "doc.invoice.column.net": "Net",
+    "doc.invoice.total.net": "Net",
+    "doc.invoice.total.tax": "Tax",
+    "doc.invoice.total.gross": "Total"
+  }
+}

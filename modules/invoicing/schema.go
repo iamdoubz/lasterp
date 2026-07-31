@@ -48,6 +48,12 @@ const numberSeries = "invoice"
 // 3); the module (de)serializes them. Money totals are integer minor units.
 // number is blank until the invoice is posted (INV-F6: assigned only at
 // acceptance).
+//
+// locale is the language the document renders in — the counterparty's, copied
+// from the contact when the draft is created (WP-1.7). It belongs on the
+// document rather than being looked up at render time because a posted invoice
+// is immutable (INV-F2): what it said when it was sent is what it must keep
+// saying, whatever happens to the contact record afterwards.
 const invoiceYAML = `
 object: Invoice
 module: invoicing
@@ -61,6 +67,7 @@ fields:
   - {name: ar_account, type: text, required: true}
   - {name: tax_account, type: text, required: true}
   - {name: lines, type: json, required: true}
+  - {name: locale, type: text}
   - {name: net_minor, type: int}
   - {name: tax_minor, type: int}
   - {name: gross_minor, type: int}
@@ -97,20 +104,23 @@ func invoiceCRUD() (*metadata.CRUD, error) {
 // migration-created tables only).
 func Register(ctx context.Context, db *storage.DB) error {
 	for _, o := range []struct {
-		name string
-		yaml string
+		name    string
+		yaml    string
+		version int
 	}{
-		{ObjectInvoice, invoiceYAML},
-		{ObjectReceipt, receiptYAML},
+		// Invoice is at v2: WP-1.7 added the optional locale column, which the
+		// metadata engine adds by ALTER on a database that already holds v1.
+		{ObjectInvoice, invoiceYAML, 2},
+		{ObjectReceipt, receiptYAML, 1},
 	} {
 		eff, err := effective(o.yaml)
 		if err != nil {
 			return err
 		}
-		if err := metadata.SaveObjectSchema(ctx, db, "", metadata.LayerCore, o.name, 1, []byte(o.yaml)); err != nil {
+		if err := metadata.SaveObjectSchema(ctx, db, "", metadata.LayerCore, o.name, o.version, []byte(o.yaml)); err != nil {
 			return err
 		}
-		if err := metadata.ApplyDDL(ctx, db, eff, 1); err != nil {
+		if err := metadata.ApplyDDL(ctx, db, eff, o.version); err != nil {
 			return err
 		}
 		// Both are posting documents, so both are frozen once posted (INV-F2).

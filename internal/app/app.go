@@ -17,6 +17,7 @@ import (
 
 	"github.com/iamdoubz/lasterp/kernel/api"
 	"github.com/iamdoubz/lasterp/kernel/capability"
+	"github.com/iamdoubz/lasterp/kernel/i18n"
 	"github.com/iamdoubz/lasterp/kernel/metadata"
 	"github.com/iamdoubz/lasterp/kernel/storage"
 	"github.com/iamdoubz/lasterp/kernel/storage/migrate"
@@ -137,10 +138,16 @@ func gatewayConfig(db *storage.DB) (api.Config, error) {
 	if err != nil {
 		return api.Config{}, err
 	}
+	// One translator for the process: the packs are embedded, immutable data,
+	// and a Printer per request is the cheap part.
+	translator, err := i18n.Load()
+	if err != nil {
+		return api.Config{}, fmt.Errorf("app: load translation packs: %w", err)
+	}
 	return api.Config{
 		DB:            db,
 		Objects:       objects,
-		Actions:       actions(db, reg, objects),
+		Actions:       actions(db, reg, objects, translator),
 		Authenticator: sessionAuthenticator(db),
 		Capabilities:  capability.GatewayChecker{Reg: reg, DB: db},
 	}, nil

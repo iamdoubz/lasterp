@@ -12,8 +12,15 @@ import {
   type MetaObject,
   type Record_,
 } from "../api";
-import { useT } from "../i18n";
-import { FieldControl, editableFields, emptyRecord, labelFor, submittable } from "../meta/render";
+import { useI18n } from "../i18n";
+import {
+  FieldControl,
+  editableFields,
+  emptyRecord,
+  labelFor,
+  objectLabel,
+  submittable,
+} from "../meta/render";
 import { Alert, Button, Field } from "../ui";
 
 interface Props {
@@ -25,7 +32,8 @@ interface Props {
 
 /** The create/edit form for any object, rendered from its schema. */
 export function ObjectForm({ object, id, initial }: Props) {
-  const t = useT();
+  const { t, label } = useI18n();
+  const name = objectLabel(object.name, label);
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const fields = editableFields(object.fields);
@@ -64,8 +72,8 @@ export function ObjectForm({ object, id, initial }: Props) {
     <section>
       <h1 className="mb-4 text-xl font-semibold text-slate-900 dark:text-slate-100">
         {id
-          ? t("object.form.editTitle", { object: object.name })
-          : t("object.form.newTitle", { object: object.name })}
+          ? t("object.form.editTitle", { object: name })
+          : t("object.form.newTitle", { object: name })}
       </h1>
 
       {save.isError && (
@@ -74,7 +82,7 @@ export function ObjectForm({ object, id, initial }: Props) {
 
       <form onSubmit={submit} noValidate>
         {fields.map((f) => (
-          <Field key={f.name} id={`field-${f.name}`} label={labelFor(f)} required={f.required}>
+          <Field key={f.name} id={`field-${f.name}`} label={labelFor(f, object.name, label)} required={f.required}>
             <FieldControl
               field={f}
               id={`field-${f.name}`}

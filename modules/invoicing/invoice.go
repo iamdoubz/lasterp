@@ -8,6 +8,9 @@ import (
 	"errors"
 	"fmt"
 
+	"golang.org/x/text/language"
+
+	"github.com/iamdoubz/lasterp/kernel/i18n"
 	"github.com/iamdoubz/lasterp/kernel/metadata"
 	"github.com/iamdoubz/lasterp/kernel/money"
 	"github.com/iamdoubz/lasterp/kernel/storage"
@@ -25,6 +28,19 @@ type Line struct {
 	RevenueAccount  string `json:"revenue_account"`
 	TaxJurisdiction string `json:"tax_jurisdiction"`
 	TaxCategory     string `json:"tax_category"`
+
+	// DescriptionI18n holds the line's text in other languages (docs/17's
+	// per-locale data fields). It travels *inside the document* rather than
+	// being resolved from an item master at render time: the words a posted
+	// invoice showed the customer are part of the document (INV-F2), and must
+	// not change because someone edited a catalogue afterwards.
+	DescriptionI18n i18n.Localized `json:"description_i18n,omitempty"`
+}
+
+// DescriptionFor returns the line's text in tag, falling back to the canonical
+// description.
+func (l Line) DescriptionFor(tag language.Tag) string {
+	return l.DescriptionI18n.Or(tag, l.Description)
 }
 
 // netMinor is the line's pre-tax amount in minor units.
@@ -37,6 +53,7 @@ type DraftInput struct {
 	IssueDate  string // YYYY-MM-DD
 	ARAccount  string // GL accounts-receivable control account (debit side)
 	TaxAccount string // GL tax-payable account (credit side)
+	Locale     string // BCP-47; the language this document renders in, "" = the server default
 	Lines      []Line
 }
 
@@ -50,6 +67,7 @@ type Invoice struct {
 	IssueDate  string
 	ARAccount  string
 	TaxAccount string
+	Locale     string
 	Lines      []Line
 	NetMinor   int64
 	TaxMinor   int64
@@ -61,34 +79,44 @@ type Invoice struct {
 // ErrInvoiceNotFound is returned by GetInvoice for an unknown id.
 var ErrInvoiceNotFound = errors.New("invoicing: invoice not found")
 
+// ErrInvalidDraft wraps every structural complaint validateDraft can make, so
+// the API edge can answer "unprocessable" instead of the 500 an unclassified
+// error becomes (WP-1.5 found the same class of gap on ledger references).
+var ErrInvalidDraft = errors.New("invoicing: invalid invoice draft")
+
 // validateDraft checks the structural rules a draft must satisfy before it can
 // be stored (currency valid, at least one line, accounts present, non-negative
 // amounts). Tax correctness is checked at post time against the rate store.
 func validateDraft(in DraftInput) error {
 	if in.ContactID == "" {
-		return errors.New("invoicing: contact_id is required")
+		return fmt.Errorf("%w: contact_id is required", ErrInvalidDraft)
 	}
 	if _, err := money.Lookup(in.Currency); err != nil {
 		return err
 	}
 	if in.IssueDate == "" {
-		return errors.New("invoicing: issue_date is required")
+		return fmt.Errorf("%w: issue_date is required", ErrInvalidDraft)
 	}
 	if in.ARAccount == "" || in.TaxAccount == "" {
-		return errors.New("invoicing: ar_account and tax_account are required")
+		return fmt.Errorf("%w: ar_account and tax_account are required", ErrInvalidDraft)
+	}
+	if in.Locale != "" {
+		if _, err := language.Parse(in.Locale); err != nil {
+			return fmt.Errorf("%w: locale %q is not a valid BCP-47 tag: %v", ErrInvalidDraft, in.Locale, err)
+		}
 	}
 	if len(in.Lines) == 0 {
-		return errors.New("invoicing: an invoice needs at least one line")
+		return fmt.Errorf("%w: an invoice needs at least one line", ErrInvalidDraft)
 	}
 	for i, l := range in.Lines {
 		if l.RevenueAccount == "" {
-			return fmt.Errorf("invoicing: line %d: revenue_account is required", i)
+			return fmt.Errorf("%w: line %d: revenue_account is required", ErrInvalidDraft, i)
 		}
 		if l.Quantity < 0 || l.UnitPriceMinor < 0 {
-			return fmt.Errorf("invoicing: line %d: quantity and unit price must be non-negative", i)
+			return fmt.Errorf("%w: line %d: quantity and unit price must be non-negative", ErrInvalidDraft, i)
 		}
 		if l.TaxJurisdiction == "" || l.TaxCategory == "" {
-			return fmt.Errorf("invoicing: line %d: tax_jurisdiction and tax_category are required", i)
+			return fmt.Errorf("%w: line %d: tax_jurisdiction and tax_category are required", ErrInvalidDraft, i)
 		}
 	}
 	return nil
@@ -117,6 +145,7 @@ func CreateDraft(ctx context.Context, db *storage.DB, tenant tenancy.ID, in Draf
 		"issue_date":  in.IssueDate,
 		"ar_account":  in.ARAccount,
 		"tax_account": in.TaxAccount,
+		"locale":      in.Locale,
 		"lines":       string(linesJSON),
 	}
 	out, err := crud.Create(ctx, db, tenant, rec)
@@ -154,6 +183,7 @@ func UpdateDraft(ctx context.Context, db *storage.DB, tenant tenancy.ID, id stri
 		"issue_date":  in.IssueDate,
 		"ar_account":  in.ARAccount,
 		"tax_account": in.TaxAccount,
+		"locale":      in.Locale,
 		"lines":       string(linesJSON),
 	})
 	if err != nil {
@@ -220,6 +250,7 @@ func recordToInvoice(rec metadata.Record) (Invoice, error) {
 		IssueDate:  asString(rec["issue_date"]),
 		ARAccount:  asString(rec["ar_account"]),
 		TaxAccount: asString(rec["tax_account"]),
+		Locale:     asString(rec["locale"]),
 		NetMinor:   asInt64(rec["net_minor"]),
 		TaxMinor:   asInt64(rec["tax_minor"]),
 		GrossMinor: asInt64(rec["gross_minor"]),

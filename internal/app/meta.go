@@ -21,6 +21,10 @@ type metaField struct {
 	Type     metadata.FieldType `json:"type"`
 	Required bool               `json:"required"`
 	Target   string             `json:"target,omitempty"`
+	// Localized tells the renderer this field's value may exist in several
+	// languages, so it should show (and edit) the one for the current locale
+	// out of the record's translations rather than only the canonical value.
+	Localized bool `json:"localized,omitempty"`
 }
 
 // metaObject is one renderable object: its name, its resource path, and its
@@ -75,6 +79,7 @@ func toMetaObject(s *metadata.EffectiveSchema) metaObject {
 	for _, f := range s.Fields {
 		fields = append(fields, metaField{
 			Name: f.Name, Type: f.Type, Required: f.Required, Target: f.Target,
+			Localized: f.Localized,
 		})
 	}
 	return metaObject{

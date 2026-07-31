@@ -1,0 +1,19 @@
+{
+  "locale": "de",
+  "version": 1,
+  "messages": {
+    "doc.date.pattern": "{d}.{m}.{y}",
+    "doc.invoice.title": "Rechnung",
+    "doc.invoice.draft": "(Entwurf)",
+    "doc.invoice.issueDate": "Rechnungsdatum",
+    "doc.invoice.billTo": "Rechnungsempfänger",
+    "doc.invoice.currency": "Währung",
+    "doc.invoice.column.description": "Beschreibung",
+    "doc.invoice.column.quantity": "Menge",
+    "doc.invoice.column.unitPrice": "Einzelpreis",
+    "doc.invoice.column.net": "Netto",
+    "doc.invoice.total.net": "Nettobetrag",
+    "doc.invoice.total.tax": "Steuer",
+    "doc.invoice.total.gross": "Gesamtbetrag"
+  }
+}

@@ -10,7 +10,9 @@ import {
   editableFields,
   emptyRecord,
   formatValue,
+  humanize,
   labelFor,
+  objectLabel,
   submittable,
 } from "./render";
 
@@ -190,7 +192,44 @@ test("a new record starts with typed empties", () => {
   expect(emptyRecord(fields)).toEqual({ name: "", active: false });
 });
 
-test("labels humanize snake_case field names", () => {
-  expect(labelFor(field("issue_date", "date"))).toBe("Issue date");
-  expect(labelFor(field("name", "text"))).toBe("Name");
+// The catalog wins when it has a key for the field; the humanized name is the
+// fallback that keeps the renderer total for fields no pack has ever seen
+// (overlay custom fields, modules newer than this bundle).
+const catalog: Record<string, string> = { "schema.field.Contact.name": "Nombre" };
+const label = (key: string, fallback: string) => catalog[key] ?? fallback;
+
+test("labels come from the catalog, keyed by object and field", () => {
+  expect(labelFor(field("name", "text"), "Contact", label)).toBe("Nombre");
+});
+
+test("labels fall back to the humanized field name", () => {
+  expect(labelFor(field("issue_date", "date"), "Invoice", label)).toBe("Issue date");
+  expect(labelFor(field("name", "text"), "Account", label)).toBe("Name");
+  expect(humanize("issue_date")).toBe("Issue date");
+});
+
+test("object labels are translated, falling back to the schema name", () => {
+  expect(objectLabel("Contact", (k, f) => (k === "schema.object.Contact" ? "Kontakt" : f))).toBe(
+    "Kontakt",
+  );
+  expect(objectLabel("Widget", label)).toBe("Widget");
+});
+
+test("a localized field shows the reader's language, then the canonical value", () => {
+  const localized = { ...field("name", "text"), localized: true };
+  const record = {
+    name: "Accounts receivable",
+    translations: { name: { de: "Forderungen" } },
+  };
+  const fmt = { money: () => "", number: () => "" };
+
+  expect(formatValue(localized, record.name, record, { ...fmt, locale: "de" })).toBe("Forderungen");
+  // A regional reader gets the language's translation…
+  expect(formatValue(localized, record.name, record, { ...fmt, locale: "de-AT" })).toBe(
+    "Forderungen",
+  );
+  // …and an untranslated locale falls back to the stored value.
+  expect(formatValue(localized, record.name, record, { ...fmt, locale: "fr" })).toBe(
+    "Accounts receivable",
+  );
 });

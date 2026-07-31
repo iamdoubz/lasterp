@@ -43,6 +43,10 @@ func problemForError(err error, instance string) Problem {
 	switch {
 	case errors.Is(err, metadata.ErrValidation):
 		return Problem{Status: http.StatusUnprocessableEntity, Title: "validation failed", Detail: err.Error(), Instance: instance}
+	case errors.Is(err, metadata.ErrNotLocalized):
+		// Supplying translations for a field the schema does not localize is a
+		// bad request body: nothing would ever read them back.
+		return Problem{Status: http.StatusUnprocessableEntity, Title: "field is not localized", Detail: err.Error(), Instance: instance}
 	case errors.Is(err, metadata.ErrRecordNotFound):
 		return Problem{Status: http.StatusNotFound, Title: "record not found", Instance: instance}
 	case errors.Is(err, authz.ErrPermissionDenied):

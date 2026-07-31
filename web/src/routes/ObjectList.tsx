@@ -5,13 +5,14 @@ import { Link } from "@tanstack/react-router";
 
 import { listRecords, type MetaObject } from "../api";
 import { useI18n } from "../i18n";
-import { formatValue, labelFor, listFields } from "../meta/render";
+import { formatValue, labelFor, listFields, objectLabel } from "../meta/render";
 import { Alert, Busy, buttonClass, Table } from "../ui";
 
 /** The list view for any object, rendered entirely from its schema. */
 export function ObjectList({ object }: { object: MetaObject }) {
-  const { t, formatMoney, formatNumber } = useI18n();
+  const { t, label, locale, formatMoney, formatNumber } = useI18n();
   const fields = listFields(object.fields);
+  const name = objectLabel(object.name, label);
 
   const { data, isPending, error } = useQuery({
     queryKey: ["records", object.resource],
@@ -25,27 +26,30 @@ export function ObjectList({ object }: { object: MetaObject }) {
     return <Alert>{t("status.error")}</Alert>;
   }
 
-  const columns = [...fields.map(labelFor), t("object.column.actions")];
+  const columns = [
+    ...fields.map((f) => labelFor(f, object.name, label)),
+    t("object.column.actions"),
+  ];
 
   return (
     <section>
       <div className="mb-4 flex items-center justify-between gap-4">
         <h1 className="text-xl font-semibold text-slate-900 dark:text-slate-100">
-          {t("object.list.title", { object: object.name })}
+          {t("object.list.title", { object: name })}
         </h1>
         <Link
           to="/o/$resource/new"
           params={{ resource: object.resource }}
           className={buttonClass("primary")}
         >
-          {t("object.list.new", { object: object.name })}
+          {t("object.list.new", { object: name })}
         </Link>
       </div>
 
       {data.length === 0 ? (
         <p className="text-sm text-slate-500 dark:text-slate-400">{t("object.list.empty")}</p>
       ) : (
-        <Table caption={t("object.list.title", { object: object.name })} columns={columns}>
+        <Table caption={t("object.list.title", { object: name })} columns={columns}>
           {data.map((record) => {
             const id = String(record.id ?? "");
             return (
@@ -55,6 +59,7 @@ export function ObjectList({ object }: { object: MetaObject }) {
                     {formatValue(f, record[f.name], record, {
                       money: formatMoney,
                       number: formatNumber,
+                      locale: locale.tag,
                     })}
                   </td>
                 ))}

@@ -79,6 +79,11 @@ func (c *CRUD) Create(ctx context.Context, db *storage.DB, tenant tenancy.ID, re
 		return nil, err
 	}
 
+	translations, _, err := c.translationsFrom(rec)
+	if err != nil {
+		return nil, err
+	}
+
 	id := idgen.New()
 	now := time.Now().UTC()
 	table := TableName(c.schema.ObjectName)
@@ -88,6 +93,9 @@ func (c *CRUD) Create(ctx context.Context, db *storage.DB, tenant tenancy.ID, re
 		cols := []string{"id", "tenant_id"}
 		vals := []any{id, string(tenant)}
 		customFields := map[string]any{}
+		if blob := translations.blobValue(); blob != nil {
+			customFields[translationsBlobKey] = blob
+		}
 		for _, f := range c.schema.Fields {
 			if f.FromOverlay {
 				if v, ok := rec[f.Name]; ok {
@@ -124,6 +132,9 @@ func (c *CRUD) Create(ctx context.Context, db *storage.DB, tenant tenancy.ID, re
 		result["tenant_id"] = string(tenant)
 		result["created_at"] = now
 		result["updated_at"] = now
+		// Hand back the parsed shape, not whatever the caller passed, so a
+		// Record read back from Create looks like one read back from Get.
+		setTranslations(result, translations)
 		return nil
 	})
 	if err != nil {
@@ -213,6 +224,10 @@ func (c *CRUD) Update(ctx context.Context, db *storage.DB, tenant tenancy.ID, id
 	if err != nil {
 		return nil, err
 	}
+	newTranslations, translationsTouched, err := c.translationsFrom(changes)
+	if err != nil {
+		return nil, err
+	}
 
 	table := TableName(c.schema.ObjectName)
 	var result Record
@@ -235,6 +250,24 @@ func (c *CRUD) Update(ctx context.Context, db *storage.DB, tenant tenancy.ID, id
 				if v, ok := current[f.Name]; ok {
 					customFields[f.Name] = v
 				}
+			}
+		}
+		// Translations share the blob with overlay fields, so they are seeded
+		// from the current row for the same reason: an update that touches one
+		// overlay field re-marshals the whole blob and would otherwise drop
+		// every translation on the row.
+		if stored, ok := current[TranslationsKey].(Translations); ok {
+			if blob := stored.blobValue(); blob != nil {
+				customFields[translationsBlobKey] = blob
+			}
+		}
+		if translationsTouched {
+			diff[TranslationsKey] = map[string]any{"old": current[TranslationsKey], "new": newTranslations}
+			customTouched = true
+			if blob := newTranslations.blobValue(); blob != nil {
+				customFields[translationsBlobKey] = blob
+			} else {
+				delete(customFields, translationsBlobKey)
 			}
 		}
 		for _, f := range c.schema.Fields {
@@ -279,6 +312,9 @@ func (c *CRUD) Update(ctx context.Context, db *storage.DB, tenant tenancy.ID, id
 		merged := cloneRecord(current)
 		for name, v := range changes {
 			merged[name] = v
+		}
+		if translationsTouched {
+			setTranslations(merged, newTranslations)
 		}
 		merged["updated_at"] = now
 		result = merged
@@ -411,7 +447,19 @@ func scanRecord(row rowScanner, schema *EffectiveSchema) (Record, error) {
 			rec[f.Name] = v
 		}
 	}
+	setTranslations(rec, translationsFromBlob(customFields))
 	return rec, nil
+}
+
+// setTranslations puts t under the reserved key, or removes the key when there
+// is nothing to say — an empty translations object on every untranslated record
+// is noise in every API response.
+func setTranslations(rec Record, t Translations) {
+	if len(t) == 0 {
+		delete(rec, TranslationsKey)
+		return
+	}
+	rec[TranslationsKey] = t
 }
 
 func derefFieldValue(dest any) any {
