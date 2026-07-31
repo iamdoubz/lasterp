@@ -75,6 +75,30 @@ export const messages = {
   "schema.field.Contact.kind": "Kind",
   "schema.field.Contact.locale": "Language",
 
+  // Dashboards (docs/21 role packs). Pack titles and metric labels arrive
+  // from the server in English; these keys translate them, falling back to
+  // the server's own label for anything a pack adds later.
+  "nav.dashboard": "Dashboard",
+  "dashboard.period": "Period {period}",
+  "dashboard.comparison": "vs {period}",
+  "dashboard.noComparison": "No earlier period to compare with",
+  "dashboard.omitted": "{count, plural, one {# tile is hidden because you cannot access its data} other {# tiles are hidden because you cannot access their data}}",
+  "dashboard.none": "No dashboard is available for your permissions yet.",
+  "dashboard.needsPeriods": "Add a fiscal period and post something to see live figures here.",
+  "dashboard.pack.ceo": "Executive overview",
+  "dashboard.pack.cfo": "Finance overview",
+  "dashboard.pack.ar": "Accounts receivable",
+  "dashboard.pack.ap": "Accounts payable",
+  "metric.revenue": "Revenue",
+  "metric.expenses": "Expenses",
+  "metric.net_income": "Net income",
+  "metric.total_assets": "Total assets",
+  "metric.total_liabilities": "Total liabilities",
+  "metric.cash_position": "Cash position",
+  "metric.ar_outstanding": "Accounts receivable outstanding",
+  "metric.ar_overdue": "Accounts receivable overdue",
+  "metric.open_invoice_count": "Open invoices",
+
   // Shared status
   "status.loading": "Loading…",
   "status.error": "Something went wrong.",

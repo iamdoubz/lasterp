@@ -7,13 +7,11 @@
     "app.status.loading": "Wird geladen…",
     "app.status.unreachable": "Kernel-API nicht erreichbar",
     "app.items": "{count, plural, one {# Eintrag} other {# Einträge}}",
-
     "nav.label": "Hauptnavigation",
     "nav.signOut": "Abmelden",
     "nav.skipToContent": "Zum Inhalt springen",
     "nav.home": "Start",
     "nav.language": "Sprache",
-
     "login.title": "Anmelden",
     "login.tenant": "Mandant",
     "login.email": "E-Mail",
@@ -23,7 +21,6 @@
     "login.submit": "Anmelden",
     "login.pending": "Anmeldung läuft…",
     "login.failed": "Anmeldung fehlgeschlagen. Bitte Angaben prüfen und erneut versuchen.",
-
     "object.list.title": "{object}",
     "object.list.empty": "Noch nichts vorhanden.",
     "object.list.new": "Neu: {object}",
@@ -37,7 +34,6 @@
     "object.form.saving": "Wird gespeichert…",
     "object.form.cancel": "Abbrechen",
     "object.column.actions": "Aktionen",
-
     "invoice.title": "Rechnung",
     "invoice.status": "Status",
     "invoice.number": "Nummer",
@@ -48,7 +44,6 @@
     "invoice.pdf": "PDF herunterladen",
     "invoice.posted": "Gebucht. Journalbuchung {entry} wurde erstellt.",
     "invoice.journalEntry": "Journalbuchung",
-
     "schema.object.Account": "Konto",
     "schema.object.Contact": "Kontakt",
     "schema.field.Account.code": "Kontonummer",
@@ -60,9 +55,28 @@
     "schema.field.Contact.email": "E-Mail",
     "schema.field.Contact.kind": "Art",
     "schema.field.Contact.locale": "Sprache",
-
     "status.loading": "Wird geladen…",
     "status.error": "Etwas ist schiefgelaufen.",
-    "status.capabilityDisabled": "Dieses Modul ist für Ihre Organisation nicht aktiviert."
+    "status.capabilityDisabled": "Dieses Modul ist für Ihre Organisation nicht aktiviert.",
+    "nav.dashboard": "Dashboard",
+    "dashboard.period": "Periode {period}",
+    "dashboard.comparison": "ggü. {period}",
+    "dashboard.noComparison": "Keine frühere Periode zum Vergleich",
+    "dashboard.omitted": "{count, plural, one {# Kachel ist ausgeblendet, weil Sie keinen Zugriff auf die Daten haben} other {# Kacheln sind ausgeblendet, weil Sie keinen Zugriff auf die Daten haben}}",
+    "dashboard.none": "Für Ihre Berechtigungen ist noch kein Dashboard verfügbar.",
+    "dashboard.needsPeriods": "Legen Sie eine Periode an und buchen Sie etwas, um hier Live-Zahlen zu sehen.",
+    "dashboard.pack.ceo": "Geschäftsführung",
+    "dashboard.pack.cfo": "Finanzen",
+    "dashboard.pack.ar": "Debitoren",
+    "dashboard.pack.ap": "Kreditoren",
+    "metric.revenue": "Umsatz",
+    "metric.expenses": "Aufwand",
+    "metric.net_income": "Jahresüberschuss",
+    "metric.total_assets": "Summe Aktiva",
+    "metric.total_liabilities": "Summe Verbindlichkeiten",
+    "metric.cash_position": "Liquidität",
+    "metric.ar_outstanding": "Offene Forderungen",
+    "metric.ar_overdue": "Überfällige Forderungen",
+    "metric.open_invoice_count": "Offene Rechnungen"
   }
 }

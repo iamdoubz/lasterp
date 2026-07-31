@@ -1,0 +1,15 @@
+# CFO / controller pack. Headline is the cash position rather than docs/21's
+# 13-week forecast: forecasting needs payables and a cash-flow model (Phase 4+),
+# and a forecast tile with nothing behind it would be a confident lie about the
+# one number a controller acts on.
+dashboard: cfo
+title: Finance overview
+roles: [cfo, controller, finance]
+headline: cash_position
+tiles:
+  - net_income
+  - revenue
+  - expenses
+  - total_assets
+  - total_liabilities
+  - ar_outstanding

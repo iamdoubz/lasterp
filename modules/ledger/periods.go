@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/iamdoubz/lasterp/kernel/metadata"
 	"github.com/iamdoubz/lasterp/kernel/storage"
@@ -95,4 +96,54 @@ func periodStatusByCode(ctx context.Context, tx txQuerier, db *storage.DB, tenan
 		return "", err
 	}
 	return status, nil
+}
+
+// Period is a fiscal period as reporting reads it: the code entries post
+// against, and the dates that order one period against another.
+type Period struct {
+	ID        string `json:"id"`
+	Code      string `json:"code"`
+	StartDate string `json:"start_date"`
+	EndDate   string `json:"end_date"`
+	Status    string `json:"status"`
+}
+
+// ListPeriods returns the tenant's periods oldest first, ordered by start_date
+// (then code, so periods sharing a start date still order deterministically).
+//
+// Chronological order is what makes "the prior period" a fact rather than a
+// guess: period codes are free text, so sorting by code would put "2026-1"
+// after "2026-10". Dates are stored as YYYY-MM-DD text, which sorts correctly
+// as a string on both dialects (the WP-1.1 as_of precedent).
+func ListPeriods(ctx context.Context, db *storage.DB, tenant tenancy.ID) ([]Period, error) {
+	crud, err := periodCRUD()
+	if err != nil {
+		return nil, err
+	}
+	records, err := crud.List(ctx, db, tenant)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Period, 0, len(records))
+	for _, rec := range records {
+		out = append(out, Period{
+			ID:        asString(rec["id"]),
+			Code:      asString(rec["code"]),
+			StartDate: asString(rec["start_date"]),
+			EndDate:   asString(rec["end_date"]),
+			Status:    asString(rec["status"]),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].StartDate != out[j].StartDate {
+			return out[i].StartDate < out[j].StartDate
+		}
+		return out[i].Code < out[j].Code
+	})
+	return out, nil
+}
+
+func asString(v any) string {
+	s, _ := v.(string)
+	return s
 }

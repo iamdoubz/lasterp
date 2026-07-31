@@ -125,3 +125,16 @@ func CreateContact(ctx context.Context, db *storage.DB, tenant tenancy.ID, name,
 	}
 	return crud.Create(ctx, db, tenant, rec)
 }
+
+// SetLocale records a contact's preferred language (a BCP-47 tag, or "" to
+// clear it). It is an ordinary authorized Contact update — documents copy the
+// value when they are drafted, so changing it never rewrites a posted document
+// (INV-F2).
+func SetLocale(ctx context.Context, db *storage.DB, tenant tenancy.ID, id, locale string) error {
+	crud, err := contactCRUD()
+	if err != nil {
+		return err
+	}
+	_, err = crud.Update(ctx, db, tenant, id, metadata.Record{"locale": locale})
+	return err
+}

@@ -13,6 +13,7 @@ import {
 
 import { getRecord } from "./api";
 import { useT } from "./i18n";
+import { DashboardScreen } from "./routes/DashboardView";
 import { InvoiceDetail } from "./routes/InvoiceDetail";
 import { ObjectDetail } from "./routes/ObjectDetail";
 import { ObjectForm } from "./routes/ObjectForm";
@@ -66,17 +67,23 @@ function ObjectGate({
   return <>{children(object)}</>;
 }
 
+// Landing on the role dashboard is docs/21 §4's "new user logs in → their
+// role's dashboard is simply there". The screen falls back to an explanation
+// when the books are too new to have any figures.
 const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
   component: function Index() {
-    const t = useT();
-    return (
-      <>
-        <h1 className="mb-2 text-2xl font-semibold">{t("app.title")}</h1>
-        <p className="text-slate-600 dark:text-slate-300">{t("app.tagline")}</p>
-      </>
-    );
+    return <DashboardScreen />;
+  },
+});
+
+const dashboardRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/dashboards/$name",
+  component: function NamedDashboard() {
+    const { name } = useParams({ from: "/dashboards/$name" });
+    return <DashboardScreen name={name} />;
   },
 });
 
@@ -157,6 +164,7 @@ const invoiceRoute = createRoute({
 
 const routeTree = rootRoute.addChildren([
   indexRoute,
+  dashboardRoute,
   listRoute,
   newRoute,
   detailRoute,

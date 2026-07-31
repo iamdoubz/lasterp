@@ -1,0 +1,10 @@
+# AR clerk pack. Headline is overdue, not outstanding: outstanding is the size
+# of the book, overdue is the part of it that needs a phone call today.
+dashboard: ar
+title: Accounts receivable
+roles: [ar, ar_clerk, collections]
+headline: ar_overdue
+tiles:
+  - ar_outstanding
+  - open_invoice_count
+  - revenue

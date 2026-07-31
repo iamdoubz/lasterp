@@ -16,6 +16,7 @@ import {
   formatMessage,
   formatMoney,
   formatNumber,
+  formatPercent,
   type MessageValues,
 } from "./format";
 
@@ -171,6 +172,8 @@ export interface Translator {
   label: (key: string, fallback: string) => string;
   formatNumber: (x: number) => string;
   formatMoney: (minorUnits: number, currency: string) => string;
+  /** Renders a relative change carried in basis points (see format.ts). */
+  formatPercent: (basisPoints: number) => string;
 }
 
 const I18nContext = createContext<Translator | null>(null);
@@ -211,6 +214,7 @@ export function I18nProvider({
       formatNumber: (x) => formatNumber(x, locale.tag),
       formatMoney: (minorUnits, currency) =>
         formatMoney(minorUnits, currency, locale.tag),
+      formatPercent: (basisPoints) => formatPercent(basisPoints, locale.tag),
     }),
     [locale, setLocale],
   );

@@ -55,6 +55,7 @@ type Metric struct {
 	Label     string    `json:"label"`
 	Unit      Unit      `json:"unit"`
 	Direction Direction `json:"good_direction"`
+	Grain     Grain     `json:"grain"`
 	Owner     string    `json:"owner"`
 	Object    string    `json:"object"`
 	Action    string    `json:"action"`
@@ -73,6 +74,11 @@ type Metric struct {
 type Scope struct {
 	Currency string
 	AsOf     time.Time
+	// Period is the fiscal period code to scope to. Empty means all-time (the
+	// behaviour every report and the /metrics route had before dashboards
+	// existed); set, it restricts flow metrics to that period's movement and
+	// stock metrics to the balance at its end (WP-1.8-decisions.md §1).
+	Period string
 }
 
 // Value is one evaluated metric.
@@ -80,8 +86,13 @@ type Value struct {
 	Metric   string `json:"metric"`
 	Label    string `json:"label"`
 	Unit     Unit   `json:"unit"`
+	Grain    Grain  `json:"grain"`
 	Currency string `json:"currency,omitempty"`
-	Value    int64  `json:"value"`
+	// Period is the fiscal period this value covers, empty when it is all-time.
+	// A number that does not say what it covers is how a flow gets read as a
+	// stock.
+	Period string `json:"period,omitempty"`
+	Value  int64  `json:"value"`
 }
 
 // ErrUnknownMetric is returned for a name that is not in the registry.
@@ -102,7 +113,7 @@ func register(m Metric) {
 func init() {
 	register(Metric{
 		Name: "ar_outstanding", Label: "Accounts receivable outstanding",
-		Unit: UnitMoneyMinor, Direction: DirectionDown, Owner: "module.invoicing",
+		Unit: UnitMoneyMinor, Direction: DirectionDown, Grain: GrainStock, Owner: "module.invoicing",
 		Object: invoicing.ObjectInvoice, Action: "read",
 		evaluate: func(ctx context.Context, db *storage.DB, tenant tenancy.ID, s Scope) (int64, error) {
 			items, err := OpenItems(ctx, db, tenant, s.Currency, s.AsOf)
@@ -119,7 +130,7 @@ func init() {
 
 	register(Metric{
 		Name: "ar_overdue", Label: "Accounts receivable overdue",
-		Unit: UnitMoneyMinor, Direction: DirectionDown, Owner: "module.invoicing",
+		Unit: UnitMoneyMinor, Direction: DirectionDown, Grain: GrainStock, Owner: "module.invoicing",
 		Object: invoicing.ObjectInvoice, Action: "read",
 		evaluate: func(ctx context.Context, db *storage.DB, tenant tenancy.ID, s Scope) (int64, error) {
 			items, err := OpenItems(ctx, db, tenant, s.Currency, s.AsOf)
@@ -138,7 +149,7 @@ func init() {
 
 	register(Metric{
 		Name: "open_invoice_count", Label: "Open invoices",
-		Unit: UnitCount, Direction: DirectionDown, Owner: "module.invoicing",
+		Unit: UnitCount, Direction: DirectionDown, Grain: GrainStock, Owner: "module.invoicing",
 		Object: invoicing.ObjectInvoice, Action: "read",
 		evaluate: func(ctx context.Context, db *storage.DB, tenant tenancy.ID, s Scope) (int64, error) {
 			items, err := OpenItems(ctx, db, tenant, s.Currency, s.AsOf)
@@ -151,12 +162,12 @@ func init() {
 
 	// Ledger metrics all read the same Data the statements do, so a dashboard
 	// tile and the P&L can never disagree about revenue.
-	ledgerMetric := func(name, label string, dir Direction, pick func(Data) int64) Metric {
+	ledgerMetric := func(name, label string, dir Direction, grain Grain, pick func(Data) int64) Metric {
 		return Metric{
-			Name: name, Label: label, Unit: UnitMoneyMinor, Direction: dir,
+			Name: name, Label: label, Unit: UnitMoneyMinor, Direction: dir, Grain: grain,
 			Owner: "module.ledger", Object: ledger.ObjectJournalEntry, Action: "read",
 			evaluate: func(ctx context.Context, db *storage.DB, tenant tenancy.ID, s Scope) (int64, error) {
-				d, err := Load(ctx, db, tenant, s.Currency)
+				d, err := loadScoped(ctx, db, tenant, s, grain)
 				if err != nil {
 					return 0, err
 				}
@@ -164,20 +175,23 @@ func init() {
 			},
 		}
 	}
-	register(ledgerMetric("revenue", "Revenue", DirectionUp, func(d Data) int64 {
+	// Income and expense accounts measure movement, so they are flows: "revenue"
+	// on a dashboard means revenue *in the period*, not since the books opened.
+	// Balance-sheet accounts are stocks.
+	register(ledgerMetric("revenue", "Revenue", DirectionUp, GrainFlow, func(d Data) int64 {
 		return sectionTotal(d, ledger.AccountIncome)
 	}))
-	register(ledgerMetric("expenses", "Expenses", DirectionDown, func(d Data) int64 {
+	register(ledgerMetric("expenses", "Expenses", DirectionDown, GrainFlow, func(d Data) int64 {
 		return sectionTotal(d, ledger.AccountExpense)
 	}))
-	register(ledgerMetric("net_income", "Net income", DirectionUp, NetIncome))
-	register(ledgerMetric("total_assets", "Total assets", DirectionUp, func(d Data) int64 {
+	register(ledgerMetric("net_income", "Net income", DirectionUp, GrainFlow, NetIncome))
+	register(ledgerMetric("total_assets", "Total assets", DirectionUp, GrainStock, func(d Data) int64 {
 		return sectionTotal(d, ledger.AccountAsset)
 	}))
-	register(ledgerMetric("total_liabilities", "Total liabilities", DirectionDown, func(d Data) int64 {
+	register(ledgerMetric("total_liabilities", "Total liabilities", DirectionDown, GrainStock, func(d Data) int64 {
 		return sectionTotal(d, ledger.AccountLiability)
 	}))
-	register(ledgerMetric("cash_position", "Cash position", DirectionUp, func(d Data) int64 {
+	register(ledgerMetric("cash_position", "Cash position", DirectionUp, GrainStock, func(d Data) int64 {
 		return sectionTotal(d, ledger.AccountAsset)
 	}))
 }
@@ -221,7 +235,7 @@ func Evaluate(ctx context.Context, db *storage.DB, tenant tenancy.ID, name strin
 	if err != nil {
 		return Value{}, err
 	}
-	out := Value{Metric: m.Name, Label: m.Label, Unit: m.Unit, Value: v}
+	out := Value{Metric: m.Name, Label: m.Label, Unit: m.Unit, Grain: m.Grain, Period: scope.Period, Value: v}
 	if m.Unit == UnitMoneyMinor {
 		out.Currency = scope.Currency
 	}
@@ -245,4 +259,13 @@ func EvaluateAll(ctx context.Context, db *storage.DB, tenant tenancy.ID, scope S
 		out = append(out, v)
 	}
 	return out, nil
+}
+
+// lookup returns a metric definition by name.
+func lookup(name string) (Metric, error) {
+	m, ok := registry[name]
+	if !ok {
+		return Metric{}, fmt.Errorf("%w: %q", ErrUnknownMetric, name)
+	}
+	return m, nil
 }

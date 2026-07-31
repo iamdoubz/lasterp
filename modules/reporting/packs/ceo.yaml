@@ -1,0 +1,20 @@
+# CEO role pack (docs/21 §4). Headline reviewed against the five-second
+# heuristic in docs/notes/WP-1.8-decisions.md §7: revenue for the period is the
+# number a CEO is asked about first; cash is the CFO's framing and sits beneath.
+#
+# docs/21 also lists gross margin, pipeline, headcount cost and goal progress —
+# each owned by a module that does not exist yet (CRM, HR, work management).
+# Tiles are added when their metric is certified, never as an empty placeholder.
+dashboard: ceo
+title: Executive overview
+# `administrator` is listed here and on no other pack: it is the role a
+# bootstrapped tenant's first user holds, and the executive overview is the
+# right thing for a small firm's owner-operator to land on. Listing it
+# everywhere would make the default dashboard whichever pack sorts first.
+roles: [ceo, executive, administrator]
+headline: revenue
+tiles:
+  - cash_position
+  - net_income
+  - expenses
+  - ar_outstanding

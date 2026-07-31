@@ -32,20 +32,7 @@ func (tb TrialBalance) add(account, currency string, debit, credit int64) {
 // pure function of the log (INV-E5). It is the oracle the materialized
 // projection is verified against, and the fold WP-1.6 reports build on.
 func FoldTrialBalance(events []eventstore.Event) (TrialBalance, error) {
-	tb := TrialBalance{}
-	for _, ev := range events {
-		if ev.Type != EventPosted {
-			continue
-		}
-		var p entryPayload
-		if err := json.Unmarshal(ev.Payload, &p); err != nil {
-			return nil, fmt.Errorf("ledger: fold decode event %d: %w", ev.ID, err)
-		}
-		for _, l := range p.Lines {
-			tb.add(l.AccountID, p.Currency, l.Debit, l.Credit)
-		}
-	}
-	return tb, nil
+	return foldTrialBalanceWhere(events, nil)
 }
 
 // readEventsSince pages the tenant's event feed from after.
@@ -267,6 +254,49 @@ func ReadTrialBalance(ctx context.Context, db *storage.DB, tenant tenancy.ID) (T
 	})
 	if err != nil {
 		return nil, err
+	}
+	return tb, nil
+}
+
+// BalancesForPeriods folds the tenant's log into a trial balance restricted to
+// the periods `include` accepts. A nil predicate includes everything, in which
+// case the result equals the materialized projection — asserted by an INV-E5
+// property test, because two answers to "what is the balance" must agree.
+//
+// The period, not a timestamp, is the accounting grain: entries carry the period
+// they posted to and posting is gated on it being open (INV-F3), whereas
+// RecordedAt answers "when did the server write this", which drifts from the
+// books as soon as anything is posted late.
+//
+// ponytail: this reads the tenant's whole log per call, where the all-time path
+// has an incremental projection (EnsureBalances). The upgrade path when a feed
+// outgrows it is a period-grained projection table maintained by the same
+// cursor; the caller's shape does not change.
+func BalancesForPeriods(ctx context.Context, db *storage.DB, tenant tenancy.ID, include func(period string) bool) (TrialBalance, error) {
+	events, err := readEventsSince(ctx, db, tenant, 0)
+	if err != nil {
+		return nil, err
+	}
+	return foldTrialBalanceWhere(events, include)
+}
+
+// foldTrialBalanceWhere is FoldTrialBalance with a period filter.
+func foldTrialBalanceWhere(events []eventstore.Event, include func(period string) bool) (TrialBalance, error) {
+	tb := TrialBalance{}
+	for _, ev := range events {
+		if ev.Type != EventPosted {
+			continue
+		}
+		var p entryPayload
+		if err := json.Unmarshal(ev.Payload, &p); err != nil {
+			return nil, fmt.Errorf("ledger: fold decode event %d: %w", ev.ID, err)
+		}
+		if include != nil && !include(p.Period) {
+			continue
+		}
+		for _, l := range p.Lines {
+			tb.add(l.AccountID, p.Currency, l.Debit, l.Credit)
+		}
 	}
 	return tb, nil
 }

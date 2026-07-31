@@ -132,6 +132,18 @@ export function formatMoney(
   );
 }
 
+/** formatPercent renders a relative change carried as basis points (hundredths
+ * of a percent). The server keeps it as an integer so the arithmetic never
+ * touches a float on a money path; this is the display edge, where dividing by
+ * 10 000 to hand Intl a ratio is exactly what it is for. */
+export function formatPercent(basisPoints: number, locale: string): string {
+  return new Intl.NumberFormat(locale, {
+    style: "percent",
+    maximumFractionDigits: 1,
+    signDisplay: "exceptZero",
+  }).format(basisPoints / 10000);
+}
+
 export function formatDate(epochMillis: number, locale: string): string {
   return new Intl.DateTimeFormat(locale).format(new Date(epochMillis));
 }

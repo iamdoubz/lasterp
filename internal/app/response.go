@@ -3,6 +3,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log"
@@ -40,12 +41,18 @@ func writeProblem(w http.ResponseWriter, status int, title, detail, instance str
 func fail(w http.ResponseWriter, r *http.Request, err error) {
 	inst := r.URL.Path
 	switch {
+	case errors.Is(err, context.Canceled):
+		// The caller hung up mid-request (navigated away, closed the tab).
+		// Nothing was lost and nobody is reading the response; logging it as an
+		// unhandled failure buries real 500s in noise.
+		writeProblem(w, http.StatusInternalServerError, "request cancelled", "", inst)
 	case errors.Is(err, authz.ErrPermissionDenied):
 		writeProblem(w, http.StatusForbidden, "permission denied", "", inst)
 	case errors.Is(err, authz.ErrNoActor):
 		writeProblem(w, http.StatusUnauthorized, "authentication required", "", inst)
-	case errors.Is(err, reporting.ErrUnknownReport), errors.Is(err, reporting.ErrUnknownMetric):
-		writeProblem(w, http.StatusNotFound, "unknown report or metric", err.Error(), inst)
+	case errors.Is(err, reporting.ErrUnknownReport), errors.Is(err, reporting.ErrUnknownMetric),
+		errors.Is(err, reporting.ErrUnknownDashboard):
+		writeProblem(w, http.StatusNotFound, "unknown report, metric or dashboard", err.Error(), inst)
 	case errors.Is(err, capability.ErrUnknownModule):
 		writeProblem(w, http.StatusNotFound, "unknown module", err.Error(), inst)
 	case isNotFound(err):
@@ -92,6 +99,10 @@ func isConflict(err error) bool {
 // (validation, balance, closed period, missing reference data).
 func isUnprocessable(err error) bool {
 	return errors.Is(err, metadata.ErrValidation) ||
+		// A dashboard asked for a period the tenant does not have, or has no
+		// fiscal calendar at all: a well-formed request the books cannot answer.
+		errors.Is(err, reporting.ErrNoPeriods) ||
+		errors.Is(err, reporting.ErrUnknownPeriod) ||
 		// Translating a field nobody declared localized, and every other
 		// structural complaint about a draft, is a bad request body — not a
 		// server fault.

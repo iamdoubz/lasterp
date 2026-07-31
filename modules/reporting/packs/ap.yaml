@@ -1,0 +1,15 @@
+# AP clerk pack. Authored and reviewed now, gated on the payables capability so
+# it stays out of the catalog until WP-4.1 lands (ADR-018 precedent: the
+# invoice_automation_only profile pending documents.ocr). Its metrics are owned
+# by that module; this file is the pack WP-4.1 inherits, not a placeholder.
+#
+# Headline per the five-second heuristic: what leaves the bank this week.
+dashboard: ap
+title: Accounts payable
+roles: [ap, ap_clerk, payables]
+requires: [payables]
+headline: ap_due_7d
+tiles:
+  - ap_outstanding
+  - ap_overdue
+  - dpo

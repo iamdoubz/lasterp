@@ -32,5 +32,11 @@ echo "e2e: bootstrapping tenant $TENANT" >&2
 LASTERP_BOOTSTRAP_PASSWORD="$PASSWORD" \
   "$workdir/lasterp" bootstrap --tenant "$TENANT" --name "Acme Inc" --email "$EMAIL" >&2
 
+# A dashboard on an empty tenant is a grid of zeroes, so the suite seeds the
+# same demo book an operator would (WP-1.8). It writes through the ordinary
+# posting pipeline, so the e2e exercises real figures rather than fixtures.
+echo "e2e: seeding demo book" >&2
+"$workdir/lasterp" demo --tenant "$TENANT" --email "$EMAIL" >&2
+
 echo "e2e: serving on $LASTERP_ADDR" >&2
 exec "$workdir/lasterp" serve
