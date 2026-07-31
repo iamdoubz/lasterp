@@ -171,6 +171,7 @@ func fullGrants() map[string][]string {
 		ledger.ObjectJournalEntry: {"post", "reverse", "read"},
 		contacts.ObjectContact:    {"create", "read", "update", "delete"},
 		ObjectInvoice:             {"create", "read", "update", "post"},
+		ObjectReceipt:             {"create", "read", "update", "post"},
 	}
 }
 
@@ -178,13 +179,14 @@ func fullGrants() map[string][]string {
 // of accounts (AR / revenue / tax payable), an open period, a customer contact,
 // and a tax rate on file.
 type fixture struct {
-	ctx        context.Context
-	tenant     tenancy.ID
-	period     string
-	contactID  string
-	arAccount  string
-	revAccount string
-	taxAccount string
+	ctx         context.Context
+	tenant      tenancy.ID
+	period      string
+	contactID   string
+	arAccount   string
+	revAccount  string
+	taxAccount  string
+	bankAccount string
 }
 
 // setup registers ledger + contacts + invoicing schemas and seeds the fixture.
@@ -217,6 +219,10 @@ func setup(t *testing.T, db *storage.DB) fixture {
 	if err != nil {
 		t.Fatalf("CreateAccount tax payable: %v", err)
 	}
+	bank, err := ledger.CreateAccount(ctx, db, tenant, "1000", "Bank", ledger.AccountAsset, "", "")
+	if err != nil {
+		t.Fatalf("CreateAccount bank: %v", err)
+	}
 	if _, err := ledger.CreatePeriod(ctx, db, tenant, "2026-01", "2026-01-01", "2026-01-31"); err != nil {
 		t.Fatalf("CreatePeriod: %v", err)
 	}
@@ -235,10 +241,11 @@ func setup(t *testing.T, db *storage.DB) fixture {
 
 	return fixture{
 		ctx: ctx, tenant: tenant, period: "2026-01",
-		contactID:  contact["id"].(string),
-		arAccount:  ar["id"].(string),
-		revAccount: rev["id"].(string),
-		taxAccount: taxPayable["id"].(string),
+		contactID:   contact["id"].(string),
+		arAccount:   ar["id"].(string),
+		revAccount:  rev["id"].(string),
+		taxAccount:  taxPayable["id"].(string),
+		bankAccount: bank["id"].(string),
 	}
 }
 

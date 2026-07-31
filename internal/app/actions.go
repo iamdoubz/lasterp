@@ -49,6 +49,19 @@ func actions(db *storage.DB, reg *capability.Registry, objects []*metadata.Effec
 			Summary: "Render an invoice as PDF", Handler: invoicePDF(db)},
 		{Method: "POST", Path: "/api/v1/invoices/{id}/post", Object: invoicing.ObjectInvoice, Write: true,
 			Summary: "Post an invoice to the ledger", Handler: postInvoice(db)},
+		{Method: "GET", Path: "/api/v1/invoices/{id}/settlement", Object: invoicing.ObjectInvoice,
+			Summary: "Get an invoice's derived settlement position", Handler: getSettlement(db)},
+
+		// --- Receipt (bespoke for the same reason as Invoice: settling runs
+		// through the posting pipeline, INV-F5/F6/F8) ---
+		{Method: "POST", Path: "/api/v1/receipts", Object: invoicing.ObjectReceipt, Write: true,
+			Summary: "Create a draft receipt", Handler: createReceipt(db)},
+		{Method: "PATCH", Path: "/api/v1/receipts/{id}", Object: invoicing.ObjectReceipt, Write: true,
+			Summary: "Update a draft receipt", Handler: updateReceipt(db)},
+		{Method: "GET", Path: "/api/v1/receipts/{id}", Object: invoicing.ObjectReceipt,
+			Summary: "Get a receipt", Handler: getReceipt(db)},
+		{Method: "POST", Path: "/api/v1/receipts/{id}/post", Object: invoicing.ObjectReceipt, Write: true,
+			Summary: "Post a receipt to the ledger", Handler: postReceipt(db)},
 
 		// --- Period (bespoke: status transitions go through monotonic
 		// close/reopen, never a generic PATCH — INV-F3, decisions §2) ---
@@ -202,6 +215,101 @@ func postInvoice(db *storage.DB) api.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, inv)
+	}
+}
+
+// --- receipt handlers ---
+
+// receiptReq is the receipt payload. Applications name the invoices this payment
+// settles and by how much; the server enforces that they fit (INV-F8).
+type receiptReq struct {
+	ContactID    string                  `json:"contact_id"`
+	Currency     string                  `json:"currency"`
+	ReceivedDate string                  `json:"received_date"`
+	BankAccount  string                  `json:"bank_account"`
+	Applications []invoicing.Application `json:"applications"`
+}
+
+func (r receiptReq) toInput() invoicing.ReceiptInput {
+	return invoicing.ReceiptInput{
+		ContactID: r.ContactID, Currency: r.Currency, ReceivedDate: r.ReceivedDate,
+		BankAccount: r.BankAccount, Applications: r.Applications,
+	}
+}
+
+func createReceipt(db *storage.DB) api.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request, tenant tenancy.ID) {
+		var req receiptReq
+		if !decodeJSON(w, r, &req) {
+			return
+		}
+		rec, err := invoicing.CreateReceiptDraft(r.Context(), db, tenant, req.toInput())
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, rec)
+	}
+}
+
+func updateReceipt(db *storage.DB) api.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request, tenant tenancy.ID) {
+		var req receiptReq
+		if !decodeJSON(w, r, &req) {
+			return
+		}
+		rec, err := invoicing.UpdateReceiptDraft(r.Context(), db, tenant, r.PathValue("id"), req.toInput())
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, rec)
+	}
+}
+
+func getReceipt(db *storage.DB) api.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request, tenant tenancy.ID) {
+		rec, err := invoicing.GetReceipt(r.Context(), db, tenant, r.PathValue("id"))
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, rec)
+	}
+}
+
+func postReceipt(db *storage.DB) api.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request, tenant tenancy.ID) {
+		var req postReq
+		if !decodeJSON(w, r, &req) {
+			return
+		}
+		rec, err := invoicing.PostReceipt(r.Context(), db, tenant, r.PathValue("id"), req.Period)
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, rec)
+	}
+}
+
+// getSettlement returns an invoice's derived payment position. It is a separate
+// route rather than a field on the invoice because it is derived state, not
+// document content — the invoice itself is frozen once posted (INV-F2), and
+// conflating the two is what leads to someone "just updating" the status.
+func getSettlement(db *storage.DB) api.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request, tenant tenancy.ID) {
+		inv, err := invoicing.GetInvoice(r.Context(), db, tenant, r.PathValue("id"))
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		s, err := invoicing.SettlementFor(r.Context(), db, tenant, inv)
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, s)
 	}
 }
 

@@ -131,7 +131,12 @@ test("invoice lifecycle: draft → post → GL entry → PDF", async ({ page }) 
   const revenueAccount = await createRecord(page, "account", {
     code: `40${RUN}`,
     name: "Revenue",
-    type: "revenue",
+    // "income", not "revenue": the ledger's closed account-type set is
+    // {asset, liability, equity, income, expense}, and P&L/balance-sheet
+    // classification keys off it. Generic CRUD does not validate the enum yet
+    // (WP-1.6-decisions.md §5), so an out-of-set value is accepted here and
+    // then silently missing from the financial statements.
+    type: "income",
   });
   const taxAccount = await createRecord(page, "account", {
     code: `22${RUN}`,

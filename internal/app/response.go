@@ -63,6 +63,7 @@ func fail(w http.ResponseWriter, r *http.Request, err error) {
 func isNotFound(err error) bool {
 	return errors.Is(err, metadata.ErrRecordNotFound) ||
 		errors.Is(err, invoicing.ErrInvoiceNotFound) ||
+		errors.Is(err, invoicing.ErrReceiptNotFound) ||
 		errors.Is(err, ledger.ErrEntryNotFound) ||
 		errors.Is(err, ledger.ErrPeriodNotFound)
 }
@@ -88,6 +89,10 @@ func isConflict(err error) bool {
 // (validation, balance, closed period, missing reference data).
 func isUnprocessable(err error) bool {
 	return errors.Is(err, metadata.ErrValidation) ||
+		// Over-applying a receipt is a well-formed request that breaks a
+		// business rule (INV-F8) — the caller needs to see which invoice and
+		// by how much, not a 500.
+		errors.Is(err, invoicing.ErrOverApplied) ||
 		errors.Is(err, ledger.ErrAccountNotFound) ||
 		errors.Is(err, ledger.ErrClosedPeriod) ||
 		errors.Is(err, ledger.ErrUnbalanced) ||

@@ -229,7 +229,7 @@ func TestInvoiceLifecycleOverHTTP(t *testing.T) {
 			if st != http.StatusOK {
 				t.Fatalf("get journal entry status = %d: %s", st, body)
 			}
-			assertBalanced(t, entry)
+			assertBalanced(t, entry, 11000)
 
 			// PDF renders (AC2 final step).
 			st, pdf, _ := e.get("/api/v1/invoices/" + invID + "/pdf")
@@ -318,7 +318,11 @@ func TestCapabilityEndpointsOverHTTP(t *testing.T) {
 	}
 }
 
-func assertBalanced(t *testing.T, entry map[string]any) {
+// assertBalanced checks INV-F1 on an entry read back over HTTP, and that it
+// moved the amount the caller expected. wantTotal is a parameter because more
+// than one document type posts through here now (invoices and receipts) with
+// different amounts.
+func assertBalanced(t *testing.T, entry map[string]any, wantTotal int64) {
 	t.Helper()
 	lines, ok := entry["Lines"].([]any)
 	if !ok || len(lines) == 0 {
@@ -333,8 +337,8 @@ func assertBalanced(t *testing.T, entry map[string]any) {
 	if debit != credit {
 		t.Fatalf("entry not balanced (INV-F1): Σdebit=%d Σcredit=%d", debit, credit)
 	}
-	if debit != 11000 {
-		t.Fatalf("entry debit total = %d, want 11000", debit)
+	if debit != wantTotal {
+		t.Fatalf("entry debit total = %d, want %d", debit, wantTotal)
 	}
 }
 
@@ -395,6 +399,7 @@ func fullGrants() map[string][]string {
 		"Contact":      {"create", "read", "update", "delete"},
 		"Period":       {"create", "read", "update"},
 		"Invoice":      {"create", "read", "update", "post"},
+		"Receipt":      {"create", "read", "update", "post"},
 		"JournalEntry": {"post", "read", "reverse"},
 		"capability":   {"manage"},
 		"TaxRate":      {"manage"},
