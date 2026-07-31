@@ -39,6 +39,7 @@ const dateLayout = "2006-01-02"
 func actions(db *storage.DB, reg *capability.Registry, objects []*metadata.EffectiveSchema, tr *i18n.Translator) []api.Action {
 	out := append(sessionActions(db), metaActions(db, objects, reg)...)
 	out = append(out, reportActions(db)...)
+	out = append(out, dashboardActions(db)...)
 	return append(out, []api.Action{
 		// --- Invoice (bespoke, NOT generic CRUD: posting pipeline is the only
 		// path to posted/GL — INV-F2/F5/F6, decisions §2) ---

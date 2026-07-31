@@ -18,6 +18,7 @@ export {
   formatMessage,
   formatNumber,
   formatMoney,
+  formatPercent,
   formatDate,
   type MessageValues,
 } from "./format";

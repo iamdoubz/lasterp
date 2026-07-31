@@ -127,6 +127,8 @@ func assertBudget(t *testing.T, label string, durations []time.Duration, budget 
 type perfHarness struct {
 	server *httptest.Server
 	token  string
+	db     *storage.DB
+	tenant tenancy.ID
 }
 
 func (h *perfHarness) do(t *testing.T, method, path, idem string, body any) (int, []byte) {
@@ -207,7 +209,7 @@ func perfEnv(t *testing.T) *perfHarness {
 	srv := httptest.NewServer(api.NewGateway(cfg))
 	t.Cleanup(srv.Close)
 
-	ph := &perfHarness{server: srv, token: issued.Token}
+	ph := &perfHarness{server: srv, token: issued.Token, db: db, tenant: tenant}
 
 	// A list route over an empty table measures nothing interesting; seed a
 	// page's worth of rows so the read budget covers real serialization.
@@ -251,4 +253,90 @@ func perfUser(t *testing.T, db *storage.DB, tenant tenancy.ID) identity.UserID {
 		t.Fatalf("AssignRole: %v", err)
 	}
 	return user.ID
+}
+
+// A dashboard is an interactive read like any other, and it is the most
+// expensive one this build has: it evaluates several metrics twice (current
+// period and prior), and the period-scoped ones fold the tenant's event log
+// rather than reading the incremental projection (WP-1.8-decisions.md §1).
+//
+// Measuring it keeps that documented ceiling honest — the day the fold stops
+// fitting the budget, this gate says so instead of a user noticing.
+func TestDashboardMeetsP95Budget(t *testing.T) {
+	h := perfEnvWithBook(t)
+
+	measure := func() time.Duration {
+		start := time.Now()
+		status, raw := h.do(t, "GET", "/api/v1/dashboards/ceo?currency=EUR", "", nil)
+		d := time.Since(start)
+		if status != http.StatusOK {
+			t.Fatalf("dashboard = %d, want 200; body=%s", status, raw)
+		}
+		return d
+	}
+
+	for range warmup {
+		measure()
+	}
+	durations := make([]time.Duration, 0, samples)
+	for range samples {
+		durations = append(durations, measure())
+	}
+
+	assertBudget(t, "interactive read (dashboard)", durations, readBudget)
+}
+
+// perfEnvWithBook is perfEnv plus the demo book, so the dashboard has real
+// entries to fold rather than measuring an empty ledger.
+func perfEnvWithBook(t *testing.T) *perfHarness {
+	t.Helper()
+	h := perfEnv(t)
+
+	ctx := context.Background()
+	email := idgen.New() + "@example.com"
+	hash, err := identity.HashPassword("perf")
+	if err != nil {
+		t.Fatalf("HashPassword: %v", err)
+	}
+	user, err := identity.CreateUser(ctx, h.db, h.tenant, email, hash)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	role, err := authz.CreateRole(ctx, h.db, h.tenant, "perf-book-"+idgen.New(), false)
+	if err != nil {
+		t.Fatalf("CreateRole: %v", err)
+	}
+	for object, actions := range map[string][]string{
+		"Account":      {"create", "read"},
+		"Contact":      {"create", "read", "update"},
+		"Period":       {"create", "read"},
+		"Invoice":      {"create", "read", "post"},
+		"Receipt":      {"create", "read", "post"},
+		"JournalEntry": {"post", "read"},
+	} {
+		for _, action := range actions {
+			if err := authz.GrantPermission(ctx, h.db, h.tenant, role, object, action, ""); err != nil {
+				t.Fatalf("GrantPermission(%s,%s): %v", object, action, err)
+			}
+		}
+	}
+	if err := authz.AssignRole(ctx, h.db, h.tenant, user.ID, role); err != nil {
+		t.Fatalf("AssignRole: %v", err)
+	}
+	if err := SeedDemo(ctx, h.db, DemoInput{
+		Tenant: string(h.tenant), Email: email, Currency: "EUR",
+		Today: time.Date(2026, 7, 15, 0, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("SeedDemo: %v", err)
+	}
+
+	// Measure as the user who has the ledger grants: the contact-only perf user
+	// would be served a dashboard with every tile omitted, which is fast for the
+	// wrong reason.
+	issued, err := identity.IssueSession(ctx, h.db, h.tenant, user.ID, "perf-book-device")
+	if err != nil {
+		t.Fatalf("IssueSession: %v", err)
+	}
+	h.token = issued.Token
+	return h
 }

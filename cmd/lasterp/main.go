@@ -2,7 +2,9 @@
 
 // Command lasterp is the LastERP CLI: `serve` runs the product API and the
 // built web client, `dev` additionally launches the web dev server for local
-// iteration, and `bootstrap` provisions the first tenant and administrator.
+// iteration, `bootstrap` provisions the first tenant and administrator, and
+// `demo` fills a tenant with a small book so the dashboards have something real
+// to show.
 package main
 
 import (
@@ -19,7 +21,7 @@ import (
 	"github.com/iamdoubz/lasterp/internal/app"
 )
 
-const usage = "usage: lasterp <serve|dev|bootstrap>"
+const usage = "usage: lasterp <serve|dev|bootstrap|demo>"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -40,10 +42,45 @@ func main() {
 		if err := bootstrap(context.Background(), os.Args[2:]); err != nil {
 			log.Fatal(err)
 		}
+	case "demo":
+		if err := demo(context.Background(), os.Args[2:]); err != nil {
+			log.Fatal(err)
+		}
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q; %s\n", os.Args[1], usage)
 		os.Exit(1)
 	}
+}
+
+// demo seeds an existing tenant with a small demo book — a chart of accounts,
+// two fiscal periods, customers, posted invoices and a receipt — so a fresh
+// deployment shows live dashboards instead of a grid of zeroes.
+//
+// Every write goes through the same authorized module entry points the API uses
+// (INV-X5: bulk paths get batching, not bypasses), and it refuses to run against
+// a tenant that already has posted invoices.
+func demo(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("demo", flag.ExitOnError)
+	tenant := fs.String("tenant", "", "tenant id to seed")
+	email := fs.String("email", "", "existing user the seeded writes are attributed to")
+	currency := fs.String("currency", "EUR", "currency the demo book is kept in")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	db, err := app.Open(ctx, os.Getenv("LASTERP_DSN"))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = db.Close() }()
+
+	if err := app.SeedDemo(ctx, db, app.DemoInput{
+		Tenant: *tenant, Email: *email, Currency: *currency,
+	}); err != nil {
+		return err
+	}
+	log.Printf("seeded demo book for tenant %q", *tenant)
+	return nil
 }
 
 // bootstrap provisions the first tenant and administrator. A freshly migrated

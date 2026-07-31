@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/iamdoubz/lasterp/kernel/api"
+	"github.com/iamdoubz/lasterp/kernel/authz"
 	"github.com/iamdoubz/lasterp/kernel/storage"
 	"github.com/iamdoubz/lasterp/kernel/tenancy"
 	"github.com/iamdoubz/lasterp/modules/reporting"
@@ -172,5 +173,60 @@ func getMetric(db *storage.DB) api.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, v)
+	}
+}
+
+// --- dashboards (WP-1.8) ---
+
+// dashboardActions serves the role packs. Like reports these are GETs with no
+// capability object of their own: what a viewer may see is decided per tile by
+// the metric's own permission, inside the engine (docs/21 §1, INV-T1).
+func dashboardActions(db *storage.DB) []api.Action {
+	return []api.Action{
+		{Method: "GET", Path: "/api/v1/dashboards", Object: "",
+			Summary: "List role dashboards, marking which the caller can render", Handler: listDashboards(db)},
+		{Method: "GET", Path: "/api/v1/dashboards/{name}", Object: "",
+			Summary: "Render a role dashboard for a period", Handler: renderDashboard(db)},
+	}
+}
+
+func listDashboards(db *storage.DB) api.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request, tenant tenancy.ID) {
+		actor, err := authz.ActorFromContext(r.Context())
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		roles, err := authz.RolesFor(r.Context(), db, actor)
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		listings, err := reporting.List(r.Context(), db, tenant, roles)
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": listings})
+	}
+}
+
+func renderDashboard(db *storage.DB) api.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request, tenant tenancy.ID) {
+		currency := strings.ToUpper(r.URL.Query().Get("currency"))
+		if currency == "" {
+			writeProblem(w, http.StatusBadRequest, "invalid dashboard parameters",
+				errMissingCurrency.Error(), r.URL.Path)
+			return
+		}
+		// An absent period means "the current one", resolved from the tenant's
+		// own fiscal calendar rather than from the server clock.
+		rendered, err := reporting.Render(r.Context(), db, tenant,
+			r.PathValue("name"), currency, r.URL.Query().Get("period"))
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, rendered)
 	}
 }

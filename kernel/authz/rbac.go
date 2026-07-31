@@ -156,3 +156,41 @@ func Authorize(ctx context.Context, db *storage.DB, object, action string) (Acto
 	}
 	return actor, nil
 }
+
+// RolesFor lists the names of the roles assigned to actor, sorted.
+//
+// It answers "who is this person here", which is what lets the product open the
+// dashboard belonging to someone's role (docs/21 §4). It is deliberately not an
+// authorization primitive: role *names* are tenant-chosen strings, so nothing
+// may grant access on the strength of one. Can/Authorize remain the only gates
+// (INV-T2).
+func RolesFor(ctx context.Context, db *storage.DB, actor Actor) ([]string, error) {
+	if !actor.valid() {
+		return nil, ErrNoActor
+	}
+	var names []string
+	err := tenancy.WithTenant(ctx, db, actor.TenantID, func(ctx context.Context, tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, db.Rebind(`
+			SELECT r.name FROM roles r
+			JOIN user_roles ur ON ur.role_id = r.id AND ur.tenant_id = r.tenant_id
+			WHERE r.tenant_id = ? AND ur.user_id = ?
+			ORDER BY r.name`),
+			string(actor.TenantID), string(actor.UserID))
+		if err != nil {
+			return err
+		}
+		defer func() { _ = rows.Close() }()
+		for rows.Next() {
+			var name string
+			if err := rows.Scan(&name); err != nil {
+				return err
+			}
+			names = append(names, name)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, fmt.Errorf("authz: list roles: %w", err)
+	}
+	return names, nil
+}

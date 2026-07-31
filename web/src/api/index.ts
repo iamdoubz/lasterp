@@ -168,3 +168,68 @@ export function postInvoice(id: string, period: string, key?: string): Promise<I
 export function invoicePdfUrl(id: string): string {
   return `/api/v1/invoices/${id}/pdf`;
 }
+
+// --- dashboards (WP-1.8 role packs) ---
+
+/** A KPI card as the server renders it: the number plus the comparison that
+ * gives it meaning. Money is integer minor units and stays that way until the
+ * very last formatting step (INV-F4). */
+export interface Card {
+  metric: string;
+  label: string;
+  unit: "money_minor" | "days" | "count";
+  grain: "flow" | "stock";
+  currency?: string;
+  period?: string;
+  value: number;
+  good_direction: "up" | "down";
+  comparison?: {
+    basis: string;
+    period: string;
+    value: number;
+    delta_minor: number;
+    /** Hundredths of a percent; absent when the prior value was zero. */
+    delta_basis_points?: number;
+    /** Whether the move went the metric's good way; absent when unchanged. */
+    improved?: boolean;
+  };
+}
+
+export interface DashboardListing {
+  name: string;
+  title: string;
+  roles: string[];
+  requires?: string[];
+  headline: string;
+  tiles: string[];
+  /** False when this viewer cannot evaluate the headline, or the pack needs a
+   * module that is not installed. */
+  available: boolean;
+  /** True when the pack matches one of the viewer's own roles. */
+  suggested: boolean;
+}
+
+export interface Dashboard {
+  name: string;
+  title: string;
+  currency: string;
+  period: string;
+  as_of: string;
+  headline?: Card;
+  cards: Card[];
+  /** Tiles this viewer may not see. Named rather than silently dropped. */
+  omitted?: string[];
+}
+
+export async function listDashboards(): Promise<DashboardListing[]> {
+  const { data } = await request<ListResponse<DashboardListing>>("/api/v1/dashboards");
+  return data;
+}
+
+export function getDashboard(name: string, currency: string, period?: string): Promise<Dashboard> {
+  const query = new URLSearchParams({ currency });
+  if (period) {
+    query.set("period", period);
+  }
+  return request<Dashboard>(`/api/v1/dashboards/${name}?${query.toString()}`);
+}

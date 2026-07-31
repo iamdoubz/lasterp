@@ -91,9 +91,19 @@ function LocaleSwitcher() {
 }
 
 function ObjectNav({ objects }: { objects: MetaObject[] }) {
-  const { label } = useI18n();
+  const { t, label } = useI18n();
   return (
     <ul className="flex flex-wrap gap-4">
+      <li>
+        <Link
+          to="/"
+          activeProps={{ className: "font-semibold underline" }}
+          activeOptions={{ exact: true }}
+          className="text-sm text-sky-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-600 dark:text-sky-400"
+        >
+          {t("nav.dashboard")}
+        </Link>
+      </li>
       {objects.map((o) => (
         <li key={o.name}>
           <Link
