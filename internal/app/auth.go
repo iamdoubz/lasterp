@@ -20,14 +20,14 @@ import (
 var errNoBearer = errors.New("app: missing or malformed bearer token")
 
 // sessionAuthenticator resolves a request to its actor + tenant from an opaque
-// bearer session token (kernel/identity). This is the gateway's authn seam
-// wired to the real session store (WP-1.4b); HTTP login / session issuance
-// (password/TOTP, OIDC) is WP-1.5 / WP-1.9. actor.TenantID == tenant by
-// construction, so the gateway's tenant-mismatch guard always passes.
+// session token (kernel/identity). This is the gateway's authn seam wired to the
+// real session store (WP-1.4b); session issuance lands in sessions.go (WP-1.5),
+// OIDC in WP-1.9. actor.TenantID == tenant by construction, so the gateway's
+// tenant-mismatch guard always passes.
 func sessionAuthenticator(db *storage.DB) api.Authenticator {
 	return api.AuthenticatorFunc(func(r *http.Request) (authz.Actor, tenancy.ID, error) {
-		tok, ok := bearerToken(r.Header.Get("Authorization"))
-		if !ok {
+		tok := presentedToken(r)
+		if tok == "" {
 			return authz.Actor{}, "", errNoBearer
 		}
 		s, err := identity.ValidateSession(r.Context(), db, tok)
@@ -36,6 +36,18 @@ func sessionAuthenticator(db *storage.DB) api.Authenticator {
 		}
 		return authz.Actor{TenantID: s.TenantID, UserID: s.UserID}, s.TenantID, nil
 	})
+}
+
+// presentedToken extracts the session token from either transport: the
+// Authorization header (API, MCP, CLI — the original and still-primary form) or
+// the HttpOnly session cookie the browser client uses (WP-1.5-decisions.md §5).
+// The header wins when both are present, so an explicit credential is never
+// silently overridden by an ambient one.
+func presentedToken(r *http.Request) string {
+	if tok, ok := bearerToken(r.Header.Get("Authorization")); ok {
+		return tok
+	}
+	return cookieValue(r, cookieSession)
 }
 
 // bearerToken extracts the token from an "Authorization: Bearer <token>"

@@ -1,0 +1,19 @@
+/* SPDX-License-Identifier: AGPL-3.0-only */
+
+/* Tailwind v4 is configured in CSS, not a JS config file — nothing here needs
+   a tailwind.config.js. Direction comes from the document `dir` attribute set
+   by I18nProvider, and every component uses logical properties, so RTL needs no
+   separate stylesheet (docs/17). */
+@import "tailwindcss";
+
+/* Respect the OS reduced-motion setting globally rather than per-component
+   (docs/17 accessibility). */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

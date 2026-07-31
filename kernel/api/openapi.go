@@ -90,9 +90,13 @@ func OpenAPI(schemas []*metadata.EffectiveSchema, actions []Action) obj {
 	}
 }
 
-// resourcePath is the URL segment for an object: lowercased name, no
-// pluralization (see WP-0.6-decisions.md).
-func resourcePath(objectName string) string { return strings.ToLower(objectName) }
+// ResourcePath is the URL segment for an object: lowercased name, no
+// pluralization (see WP-0.6-decisions.md). Exported because the metadata
+// endpoint the web client renders from must hand out the same path the gateway
+// routes on — two copies of this rule would drift into 404s.
+func ResourcePath(objectName string) string { return strings.ToLower(objectName) }
+
+func resourcePath(objectName string) string { return ResourcePath(objectName) }
 
 func objectSchema(s *metadata.EffectiveSchema) obj {
 	props := obj{
@@ -249,6 +253,21 @@ func actionOperation(a Action) obj {
 	}
 	if params := pathParams(a.Path); len(params) > 0 {
 		op["parameters"] = params
+	}
+	if a.Public {
+		// No credential is accepted, so 401/403 are not reachable outcomes.
+		// A public POST still carries a body (login credentials) even though
+		// it is not a Write — public actions never take an Idempotency-Key.
+		resp := op["responses"].(obj)
+		delete(resp, "401")
+		delete(resp, "403")
+		resp["400"] = problemRef()
+		if a.Method == "POST" {
+			op["requestBody"] = obj{
+				"required": true,
+				"content":  obj{"application/json": obj{"schema": obj{"type": "object"}}},
+			}
+		}
 	}
 	if a.Write {
 		op["parameters"] = append(pathParams(a.Path), idempotencyRef())

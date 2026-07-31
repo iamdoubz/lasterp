@@ -5,9 +5,11 @@ package app
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 
 	"github.com/iamdoubz/lasterp/kernel/authz"
+	"github.com/iamdoubz/lasterp/kernel/capability"
 	"github.com/iamdoubz/lasterp/kernel/metadata"
 	"github.com/iamdoubz/lasterp/modules/invoicing"
 	"github.com/iamdoubz/lasterp/modules/ledger"
@@ -41,6 +43,8 @@ func fail(w http.ResponseWriter, r *http.Request, err error) {
 		writeProblem(w, http.StatusForbidden, "permission denied", "", inst)
 	case errors.Is(err, authz.ErrNoActor):
 		writeProblem(w, http.StatusUnauthorized, "authentication required", "", inst)
+	case errors.Is(err, capability.ErrUnknownModule):
+		writeProblem(w, http.StatusNotFound, "unknown module", err.Error(), inst)
 	case isNotFound(err):
 		writeProblem(w, http.StatusNotFound, "not found", err.Error(), inst)
 	case isConflict(err):
@@ -48,6 +52,10 @@ func fail(w http.ResponseWriter, r *http.Request, err error) {
 	case isUnprocessable(err):
 		writeProblem(w, http.StatusUnprocessableEntity, "unprocessable", err.Error(), inst)
 	default:
+		// The detail stays out of the response (it can carry internals), but it
+		// must not vanish: an unclassified 500 with no log anywhere is
+		// undebuggable in production and in CI alike.
+		log.Printf("unhandled error on %s %s: %v", r.Method, inst, err)
 		writeProblem(w, http.StatusInternalServerError, "internal server error", "", inst)
 	}
 }
@@ -59,18 +67,28 @@ func isNotFound(err error) bool {
 		errors.Is(err, ledger.ErrPeriodNotFound)
 }
 
+// A referenced account that does not exist is a bad request body, not a server
+// fault — it surfaced as an opaque 500 until the WP-1.5 e2e hit it.
+
 // isConflict covers wrong-state transitions (the resource exists but the
 // requested change is not allowed from its current state).
 func isConflict(err error) bool {
+	// Disabling a module something else depends on is a legitimate request
+	// refused for a legitimate reason (ADR-018 dependency closure) — the caller
+	// needs to see which modules block it, not an opaque 500.
+	var inUse capability.ErrModuleInUse
 	return errors.Is(err, invoicing.ErrNotDraft) ||
 		errors.Is(err, ledger.ErrPeriodNotOpen) ||
-		errors.Is(err, ledger.ErrPeriodNotClosed)
+		errors.Is(err, ledger.ErrPeriodNotClosed) ||
+		errors.Is(err, capability.ErrKernelNotDisableable) ||
+		errors.As(err, &inUse)
 }
 
 // isUnprocessable covers well-formed requests that violate a business rule
 // (validation, balance, closed period, missing reference data).
 func isUnprocessable(err error) bool {
 	return errors.Is(err, metadata.ErrValidation) ||
+		errors.Is(err, ledger.ErrAccountNotFound) ||
 		errors.Is(err, ledger.ErrClosedPeriod) ||
 		errors.Is(err, ledger.ErrUnbalanced) ||
 		errors.Is(err, ledger.ErrTooFewLines) ||

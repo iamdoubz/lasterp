@@ -6,3 +6,9 @@ web/*.tsbuildinfo
 node_modules/
 *.log
 .DS_Store
+
+# Playwright (WP-1.5)
+web/test-results/
+web/playwright-report/
+web/blob-report/
+web/.playwright/

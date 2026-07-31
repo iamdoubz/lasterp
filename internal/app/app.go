@@ -125,13 +125,14 @@ func Handler(db *storage.DB) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	return api.NewGateway(api.Config{
+	gw := api.NewGateway(api.Config{
 		DB:            db,
 		Objects:       objects,
-		Actions:       actions(db, reg),
+		Actions:       actions(db, reg, objects),
 		Authenticator: sessionAuthenticator(db),
 		Capabilities:  capability.GatewayChecker{Reg: reg, DB: db},
-	}), nil
+	})
+	return withStatic(gw, webRoot()), nil
 }
 
 // crudObjects are the objects safe to expose as full generic CRUD. Financial

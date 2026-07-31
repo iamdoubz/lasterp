@@ -46,9 +46,21 @@ type StoredSchema struct {
 // ErrSchemaNotFound is returned when no schema row matches.
 var ErrSchemaNotFound = errors.New("metadata: schema not found")
 
+// ErrSchemaVersionConflict is returned when a schema is saved at a version that
+// already holds a *different* definition. Overwriting would silently rewrite
+// history for every tenant on that version; bumping the version is the only
+// correct move (expand→migrate→contract, ADR-006).
+var ErrSchemaVersionConflict = errors.New("metadata: schema version already exists with a different definition")
+
 // SaveObjectSchema persists definition for (tenant, name, layer, version).
 // Pass tenant = "" (or use LayerCore) for a core-layer definition — it
 // will be stored under the shared sentinel tenant_id regardless.
+//
+// Saving a definition byte-identical to the stored one is a no-op, which is
+// what makes module registration idempotent: every `lasterp serve` re-registers
+// the built-in modules, so a restart against an existing database must not
+// collide with its own previous run. A *different* definition at the same
+// version is ErrSchemaVersionConflict, not an overwrite.
 func SaveObjectSchema(ctx context.Context, db *storage.DB, tenant tenancy.ID, layer Layer, name string, version int, definition []byte) error {
 	if name == "" {
 		return errors.New("metadata: name is required")
@@ -61,7 +73,23 @@ func SaveObjectSchema(ctx context.Context, db *storage.DB, tenant tenancy.ID, la
 	checksum := hex.EncodeToString(sum[:])
 
 	err := tenancy.WithTenant(ctx, db, storeTenant, func(ctx context.Context, tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, db.Rebind(`
+		// Read the existing row inside the same transaction as the insert, so
+		// two servers booting concurrently cannot both see "absent" and race.
+		var existing string
+		err := tx.QueryRowContext(ctx, db.Rebind(`
+			SELECT checksum FROM object_schemas
+			WHERE tenant_id = ? AND name = ? AND layer = ? AND version = ?`),
+			string(storeTenant), name, string(layer), version).Scan(&existing)
+		switch {
+		case err == nil && existing == checksum:
+			return nil // already stored, unchanged
+		case err == nil:
+			return fmt.Errorf("%w: %s v%d", ErrSchemaVersionConflict, name, version)
+		case !errors.Is(err, sql.ErrNoRows):
+			return err
+		}
+
+		_, err = tx.ExecContext(ctx, db.Rebind(`
 			INSERT INTO object_schemas (tenant_id, name, layer, version, definition, checksum, created_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?)`),
 			string(storeTenant), name, string(layer), version, string(definition), checksum, time.Now().UTC())

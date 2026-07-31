@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Command lasterp is the LastERP CLI: `serve` runs the kernel API alone,
-// `dev` additionally launches the web dev server for local iteration.
+// Command lasterp is the LastERP CLI: `serve` runs the product API and the
+// built web client, `dev` additionally launches the web dev server for local
+// iteration, and `bootstrap` provisions the first tenant and administrator.
 package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -17,9 +19,11 @@ import (
 	"github.com/iamdoubz/lasterp/internal/app"
 )
 
+const usage = "usage: lasterp <serve|dev|bootstrap>"
+
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: lasterp <serve|dev>")
+		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(1)
 	}
 
@@ -32,10 +36,49 @@ func main() {
 		if err := dev(context.Background()); err != nil {
 			log.Fatal(err)
 		}
+	case "bootstrap":
+		if err := bootstrap(context.Background(), os.Args[2:]); err != nil {
+			log.Fatal(err)
+		}
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command %q; usage: lasterp <serve|dev>\n", os.Args[1])
+		fmt.Fprintf(os.Stderr, "unknown command %q; %s\n", os.Args[1], usage)
 		os.Exit(1)
 	}
+}
+
+// bootstrap provisions the first tenant and administrator. A freshly migrated
+// database has no tenants and no users, and tenant creation is deliberately not
+// an API — so this is the only way into a new deployment.
+func bootstrap(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("bootstrap", flag.ExitOnError)
+	tenant := fs.String("tenant", "", "tenant id (also the tenant field on the sign-in form)")
+	name := fs.String("name", "", "human-readable tenant name (defaults to the tenant id)")
+	email := fs.String("email", "", "administrator email")
+	password := fs.String("password", "", "administrator password (prefer LASTERP_BOOTSTRAP_PASSWORD)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	// A password on the command line lands in shell history and the process
+	// table, so the environment variable wins when both are set.
+	pw := os.Getenv("LASTERP_BOOTSTRAP_PASSWORD")
+	if pw == "" {
+		pw = *password
+	}
+
+	db, err := app.Open(ctx, os.Getenv("LASTERP_DSN"))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = db.Close() }()
+
+	if err := app.Bootstrap(ctx, db, app.BootstrapInput{
+		Tenant: *tenant, Name: *name, Email: *email, Password: pw,
+	}); err != nil {
+		return err
+	}
+	log.Printf("bootstrapped tenant %q with administrator %s", *tenant, *email)
+	return nil
 }
 
 // addr is the listen address, overridable with LASTERP_ADDR (default :8080).
