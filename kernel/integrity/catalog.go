@@ -59,6 +59,7 @@ var Catalog = []Invariant{
 	{ID: "INV-F5", Title: "Financially-relevant documents post to GL only through their declared template", Layer: LayerPipeline, TestRequired: true},
 	{ID: "INV-F6", Title: "Document number sequences are gapless-per-policy, assigned only at server acceptance", Layer: LayerPipeline, TestRequired: true},
 	{ID: "INV-F7", Title: "Stock quantity × valuation reconciles with GL inventory accounts (bounded lag)", Layer: LayerSentinel, Note: "lands with WP-4.4 inventory"},
+	{ID: "INV-F8", Title: "Settlement never exceeds the document it settles: Σapplied ≤ gross, no negative application", Layer: LayerPipeline, TestRequired: true},
 
 	// Event store (INV-E) — enforced as of WP-0.4/0.8.
 	{ID: "INV-E1", Title: "Streams are append-only; no UPDATE/DELETE on the events table", Layer: LayerStorage, TestRequired: true, AppendOnlyTables: []string{"events"}},

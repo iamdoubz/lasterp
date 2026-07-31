@@ -19,6 +19,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/iamdoubz/lasterp/kernel/metadata"
 	"github.com/iamdoubz/lasterp/kernel/storage"
@@ -89,62 +90,83 @@ func invoiceCRUD() (*metadata.CRUD, error) {
 	return metadata.NewCRUD(eff)
 }
 
-// Register persists the Invoice schema (core layer), applies its DDL, and
-// installs the INV-F2 immutability trigger on the generated table. The trigger
-// cannot be a numbered migration: the obj_invoice table only exists once
-// ApplyDDL has run at runtime (same reason ledger's triggers live on
+// Register persists this module's schemas (core layer), applies their DDL, and
+// installs the INV-F2 immutability triggers on the generated tables. The
+// triggers cannot be numbered migrations: obj_invoice / obj_receipt only exist
+// once ApplyDDL has run at runtime (same reason ledger's triggers live on
 // migration-created tables only).
 func Register(ctx context.Context, db *storage.DB) error {
-	eff, err := effective(invoiceYAML)
-	if err != nil {
-		return err
+	for _, o := range []struct {
+		name string
+		yaml string
+	}{
+		{ObjectInvoice, invoiceYAML},
+		{ObjectReceipt, receiptYAML},
+	} {
+		eff, err := effective(o.yaml)
+		if err != nil {
+			return err
+		}
+		if err := metadata.SaveObjectSchema(ctx, db, "", metadata.LayerCore, o.name, 1, []byte(o.yaml)); err != nil {
+			return err
+		}
+		if err := metadata.ApplyDDL(ctx, db, eff, 1); err != nil {
+			return err
+		}
+		// Both are posting documents, so both are frozen once posted (INV-F2).
+		if err := enforcePostedImmutability(ctx, db, o.name); err != nil {
+			return err
+		}
 	}
-	if err := metadata.SaveObjectSchema(ctx, db, "", metadata.LayerCore, ObjectInvoice, 1, []byte(invoiceYAML)); err != nil {
-		return err
-	}
-	if err := metadata.ApplyDDL(ctx, db, eff, 1); err != nil {
-		return err
-	}
-	return enforceInvoiceImmutability(ctx, db)
+	return nil
 }
 
-// enforceInvoiceImmutability installs a BEFORE UPDATE/DELETE trigger on
-// obj_invoice that rejects any mutation of a row whose *existing* status is
-// already 'posted' (INV-F2, storage layer). The draft→posted transition itself
-// passes because OLD.status is 'draft' at that point; every mutation after is
-// refused. Idempotent (drops-if-exists first) so Register can run repeatedly.
-func enforceInvoiceImmutability(ctx context.Context, db *storage.DB) error {
-	table := metadata.TableName(ObjectInvoice)
+// enforcePostedImmutability installs BEFORE UPDATE/DELETE triggers on a posting
+// document's generated table that reject any mutation of a row whose *existing*
+// status is already 'posted' (INV-F2, storage layer). The draft→posted
+// transition itself passes because OLD.status is 'draft' at that point; every
+// mutation after is refused. Idempotent (drops-if-exists first) so Register can
+// run repeatedly — which it does on every boot.
+//
+// object is a kernel-controlled metadata object name (invoicing's own
+// constants), never caller input, so interpolating it into the trigger name and
+// table is not an injection surface.
+func enforcePostedImmutability(ctx context.Context, db *storage.DB, object string) error {
+	table := metadata.TableName(object)
+	lower := strings.ToLower(object)
+	fn := "reject_posted_" + lower + "_mutation"
+	msg := "invoicing: posted " + lower + " is immutable"
+
 	var stmts []string
 	if db.Dialect == storage.Postgres {
 		stmts = []string{
-			`DROP TRIGGER IF EXISTS invoice_posted_no_update ON ` + table,
-			`DROP TRIGGER IF EXISTS invoice_posted_no_delete ON ` + table,
-			`CREATE OR REPLACE FUNCTION reject_posted_invoice_mutation() RETURNS TRIGGER AS $$
+			`DROP TRIGGER IF EXISTS ` + lower + `_posted_no_update ON ` + table,
+			`DROP TRIGGER IF EXISTS ` + lower + `_posted_no_delete ON ` + table,
+			`CREATE OR REPLACE FUNCTION ` + fn + `() RETURNS TRIGGER AS $$
 			 BEGIN
-				RAISE EXCEPTION 'invoicing: posted invoice is immutable: % not permitted', TG_OP;
+				RAISE EXCEPTION '` + msg + `: % not permitted', TG_OP;
 			 END;
 			 $$ LANGUAGE plpgsql`,
-			`CREATE TRIGGER invoice_posted_no_update BEFORE UPDATE ON ` + table + `
-			 FOR EACH ROW WHEN (OLD.status = 'posted') EXECUTE FUNCTION reject_posted_invoice_mutation()`,
-			`CREATE TRIGGER invoice_posted_no_delete BEFORE DELETE ON ` + table + `
-			 FOR EACH ROW WHEN (OLD.status = 'posted') EXECUTE FUNCTION reject_posted_invoice_mutation()`,
+			`CREATE TRIGGER ` + lower + `_posted_no_update BEFORE UPDATE ON ` + table + `
+			 FOR EACH ROW WHEN (OLD.status = 'posted') EXECUTE FUNCTION ` + fn + `()`,
+			`CREATE TRIGGER ` + lower + `_posted_no_delete BEFORE DELETE ON ` + table + `
+			 FOR EACH ROW WHEN (OLD.status = 'posted') EXECUTE FUNCTION ` + fn + `()`,
 		}
 	} else {
 		stmts = []string{
-			`DROP TRIGGER IF EXISTS invoice_posted_no_update`,
-			`DROP TRIGGER IF EXISTS invoice_posted_no_delete`,
-			`CREATE TRIGGER invoice_posted_no_update BEFORE UPDATE ON ` + table + `
+			`DROP TRIGGER IF EXISTS ` + lower + `_posted_no_update`,
+			`DROP TRIGGER IF EXISTS ` + lower + `_posted_no_delete`,
+			`CREATE TRIGGER ` + lower + `_posted_no_update BEFORE UPDATE ON ` + table + `
 			 WHEN OLD.status = 'posted'
-			 BEGIN SELECT RAISE(ABORT, 'invoicing: posted invoice is immutable: UPDATE not permitted'); END`,
-			`CREATE TRIGGER invoice_posted_no_delete BEFORE DELETE ON ` + table + `
+			 BEGIN SELECT RAISE(ABORT, '` + msg + `: UPDATE not permitted'); END`,
+			`CREATE TRIGGER ` + lower + `_posted_no_delete BEFORE DELETE ON ` + table + `
 			 WHEN OLD.status = 'posted'
-			 BEGIN SELECT RAISE(ABORT, 'invoicing: posted invoice is immutable: DELETE not permitted'); END`,
+			 BEGIN SELECT RAISE(ABORT, '` + msg + `: DELETE not permitted'); END`,
 		}
 	}
 	for _, s := range stmts {
 		if _, err := db.ExecContext(ctx, s); err != nil {
-			return fmt.Errorf("invoicing: install immutability trigger: %w", err)
+			return fmt.Errorf("invoicing: install %s immutability trigger: %w", lower, err)
 		}
 	}
 	return nil

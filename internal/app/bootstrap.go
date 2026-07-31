@@ -39,6 +39,7 @@ var adminGrants = map[string][]string{
 	"Contact":      {"create", "read", "update", "delete"},
 	"Period":       {"create", "read", "update"},
 	"Invoice":      {"create", "read", "update", "post"},
+	"Receipt":      {"create", "read", "update", "post"},
 	"JournalEntry": {"post", "read", "reverse"},
 	"capability":   {"manage"},
 	"TaxRate":      {"manage"},
