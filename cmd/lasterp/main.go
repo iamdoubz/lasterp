@@ -134,7 +134,7 @@ func buildHandler(ctx context.Context) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	return app.Handler(db)
+	return app.Handler(ctx, db)
 }
 
 func serve(ctx context.Context) error {

@@ -201,7 +201,7 @@ func perfEnv(t *testing.T) *perfHarness {
 	// so a throttled 429 would otherwise be scored as a fast response — or, as
 	// it did on CI, fail the run outright. What is under measurement here is
 	// how long the server takes to answer, not where the throttle sits.
-	cfg, err := gatewayConfig(db)
+	cfg, err := gatewayConfig(context.Background(), db)
 	if err != nil {
 		t.Fatalf("gatewayConfig: %v", err)
 	}

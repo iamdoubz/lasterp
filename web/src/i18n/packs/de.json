@@ -21,6 +21,7 @@
     "login.submit": "Anmelden",
     "login.pending": "Anmeldung läuft…",
     "login.failed": "Anmeldung fehlgeschlagen. Bitte Angaben prüfen und erneut versuchen.",
+    "login.sso": "Mit Single Sign-on anmelden",
     "object.list.title": "{object}",
     "object.list.empty": "Noch nichts vorhanden.",
     "object.list.new": "Neu: {object}",

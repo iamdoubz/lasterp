@@ -12,11 +12,21 @@ import (
 )
 
 // Credentials is provider-specific. PasswordTOTPProvider reads Email,
-// Password, and — if the account has TOTP enabled — TOTPCode.
+// Password, and — if the account has TOTP enabled — TOTPCode. OIDCProvider
+// reads Code, CodeVerifier and Nonce, which the caller carries across the
+// redirect from the AuthRequest that started the flow.
 type Credentials struct {
 	Email    string
 	Password string
 	TOTPCode string
+
+	// Code is the authorization code returned by the IdP; CodeVerifier is the
+	// PKCE verifier whose challenge was sent with the authorization request;
+	// Nonce is the value the resulting ID token must carry to prove it belongs
+	// to this login attempt and not a replayed one.
+	Code         string
+	CodeVerifier string
+	Nonce        string
 }
 
 // ErrInvalidCredentials is returned for any authentication failure.
@@ -25,9 +35,9 @@ type Credentials struct {
 // valid emails or account configuration.
 var ErrInvalidCredentials = errors.New("identity: invalid credentials")
 
-// AuthProvider authenticates credentials into a UserID. OIDC is a second
-// implementation of this interface, deferred to a follow-up WP once a JOSE
-// library is picked under its own ADR (docs/notes/WP-0.3-decisions.md).
+// AuthProvider authenticates credentials into a UserID. Two implementations
+// exist: PasswordTOTPProvider below, and OIDCProvider (oidc.go, WP-1.9 — the
+// follow-up WP-0.3 deferred until ADR-019 settled the JOSE question).
 type AuthProvider interface {
 	Authenticate(ctx context.Context, tenant tenancy.ID, creds Credentials) (UserID, error)
 }
