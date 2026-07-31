@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 
-import { ApiError, login } from "../api";
+import { ApiError, login, startSso } from "../api";
 import { useT } from "../i18n";
 import { Alert, Button, Field, Input } from "../ui";
 
@@ -19,6 +19,24 @@ export function Login({ onSignedIn }: { onSignedIn: () => void }) {
   const [totp, setTotp] = useState("");
   const [pending, setPending] = useState(false);
   const [failed, setFailed] = useState(false);
+  // The provider's authorization URL, or null when this deployment has no
+  // identity provider — the route 404s and no button is offered.
+  const [ssoUrl, setSsoUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    startSso()
+      .then(({ authorization_url }) => {
+        if (live) setSsoUrl(authorization_url);
+      })
+      .catch(() => {
+        // No provider configured, or the provider is unreachable. Either way
+        // the password form still works, so this is not an error to show.
+      });
+    return () => {
+      live = false;
+    };
+  }, []);
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -46,6 +64,19 @@ export function Login({ onSignedIn }: { onSignedIn: () => void }) {
       </h1>
 
       {failed && <Alert>{t("login.failed")}</Alert>}
+
+      {ssoUrl && (
+        <Button
+          variant="primary"
+          className="mb-6 w-full justify-center"
+          // A full navigation, not a fetch: the provider answers with its own
+          // login page, and the callback comes back as a navigation too. The
+          // flow state is already in the cookie the start call set.
+          onClick={() => window.location.assign(ssoUrl)}
+        >
+          {t("login.sso")}
+        </Button>
+      )}
 
       <form onSubmit={submit} noValidate>
         <Field id="tenant" label={t("login.tenant")} required>

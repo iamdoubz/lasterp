@@ -5,6 +5,7 @@
 package app
 
 import (
+	"context"
 	"net/http"
 	"testing"
 
@@ -30,6 +31,20 @@ import (
 var publicRouteAllowlist = map[string]bool{
 	"POST /api/v1/sessions":         true,
 	"POST /api/v1/sessions/refresh": true,
+
+	// WP-1.9 (OIDC). Both establish authentication rather than using it, which
+	// is the bar for this list. The start route mints CSRF state and hands back
+	// the provider's authorization URL; the callback is the provider's redirect
+	// target and cannot present a session it has not yet issued. Neither can be
+	// authenticated by construction, and the callback additionally cannot be
+	// authenticated by protocol — the IdP redirects a browser to it.
+	//
+	// What keeps them honest: the callback refuses any request whose state does
+	// not match the flow cookie it set, refuses an assertion that does not
+	// resolve to an existing local user, and never provisions one
+	// (oidc_integrity_test.go).
+	"GET /api/v1/sessions/oidc":          true,
+	"GET /api/v1/sessions/oidc/callback": true,
 }
 
 // TestPublicRoutesAreExactlyTheAllowlist is the INV-T2 fence: every registered
@@ -131,7 +146,19 @@ func allActions(t *testing.T, db *storage.DB) []api.Action {
 	if err != nil {
 		t.Fatalf("i18n.Load: %v", err)
 	}
-	return actions(db, reg, objects, translator)
+	// An IdP is configured on purpose: the OIDC routes are public, so they must
+	// be enumerated by the fence. A fence that only sees them in deployments
+	// that happen to enable SSO would let a future public route in unnoticed.
+	idp := newFakeIdP(t)
+	configureOIDC(t, idp, "route-fence-tenant")
+	sso, err := newOIDCLogin(context.Background(), db)
+	if err != nil {
+		t.Fatalf("newOIDCLogin: %v", err)
+	}
+	if sso == nil {
+		t.Fatal("newOIDCLogin returned nothing with an IdP configured")
+	}
+	return actions(db, reg, objects, translator, sso)
 }
 
 // concretePath substitutes a placeholder for each {param} segment.

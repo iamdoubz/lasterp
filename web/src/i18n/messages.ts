@@ -30,6 +30,7 @@ export const messages = {
   "login.submit": "Sign in",
   "login.pending": "Signing in…",
   "login.failed": "Sign-in failed. Check your details and try again.",
+  "login.sso": "Sign in with single sign-on",
 
   // Generic object screens
   "object.list.title": "{object}",

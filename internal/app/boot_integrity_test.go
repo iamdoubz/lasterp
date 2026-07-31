@@ -112,7 +112,7 @@ func mustField(t *testing.T, m map[string]any, key string) string {
 func TestColdBootMigrates(t *testing.T) {
 	for name, db := range bootDBs(t) {
 		t.Run(name, func(t *testing.T) {
-			h, err := Handler(db)
+			h, err := Handler(context.Background(), db)
 			if err != nil {
 				t.Fatalf("Handler: %v", err)
 			}
@@ -361,14 +361,20 @@ func (e *env) createAccount(code, name, accountType string) string {
 // a session for a fully-privileged principal. It returns an env bound to a live
 // httptest server over the wired product handler.
 func seed(t *testing.T, db *storage.DB) *env {
+	return seedTenant(t, db, tenancy.ID(idgen.New()))
+}
+
+// seedTenant is seed with the tenant id chosen by the caller, which the OIDC
+// tests need: the provider is configured with the tenant it signs into before
+// the handler is built, so both have to agree on the id up front.
+func seedTenant(t *testing.T, db *storage.DB, tenant tenancy.ID) *env {
 	t.Helper()
 	ctx := context.Background()
-	tenant := tenancy.ID(idgen.New())
 	if err := tenancy.CreateTenant(ctx, db, tenant, "boot test tenant"); err != nil {
 		t.Fatalf("create tenant: %v", err)
 	}
 
-	h, err := Handler(db)
+	h, err := Handler(context.Background(), db)
 	if err != nil {
 		t.Fatalf("Handler: %v", err)
 	}

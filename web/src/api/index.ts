@@ -92,6 +92,18 @@ export function logout(): Promise<void> {
   return request<void>("/api/v1/sessions/current", { method: "DELETE" });
 }
 
+export interface SsoStart {
+  authorization_url: string;
+}
+
+/** startSso asks the server where to send the browser to authenticate with the
+ * configured identity provider. It fails with a 404 when the deployment has no
+ * provider, which is how the sign-in screen decides whether to offer SSO at all
+ * — there is no separate "is SSO on?" endpoint to keep in step. */
+export function startSso(): Promise<SsoStart> {
+  return request<SsoStart>("/api/v1/sessions/oidc");
+}
+
 /** listObjects returns the schemas this tenant can render. Objects whose module
  * is disabled are absent, so navigation built from this is always live. */
 export async function listObjects(): Promise<MetaObject[]> {

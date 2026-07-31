@@ -117,8 +117,12 @@ func registerModules(ctx context.Context, db *storage.DB) error {
 // migrated db (see Open). It exposes the CRUD-safe objects (Account, Contact),
 // the non-CRUD action surface (actions.go), the bearer-session authenticator,
 // and per-tenant capability gating.
-func Handler(db *storage.DB) (http.Handler, error) {
-	cfg, err := gatewayConfig(db)
+//
+// It takes a context because building the handler now reaches the network: when
+// an IdP is configured, OIDC discovery runs here so a misconfigured provider
+// fails the boot rather than the first login (WP-1.9).
+func Handler(ctx context.Context, db *storage.DB) (http.Handler, error) {
+	cfg, err := gatewayConfig(ctx, db)
 	if err != nil {
 		return nil, err
 	}
@@ -129,7 +133,7 @@ func Handler(db *storage.DB) (http.Handler, error) {
 // of Handler so the performance harness can measure this exact stack with the
 // rate limiter raised — the budget test is measuring how fast the server
 // answers, and a throttled request is not a slow one (docs/09).
-func gatewayConfig(db *storage.DB) (api.Config, error) {
+func gatewayConfig(ctx context.Context, db *storage.DB) (api.Config, error) {
 	reg, err := capability.Load()
 	if err != nil {
 		return api.Config{}, fmt.Errorf("app: load capability registry: %w", err)
@@ -144,10 +148,16 @@ func gatewayConfig(db *storage.DB) (api.Config, error) {
 	if err != nil {
 		return api.Config{}, fmt.Errorf("app: load translation packs: %w", err)
 	}
+	// nil when no IdP is configured, in which case no OIDC route is registered
+	// at all and the web client sees a 404 where the SSO button would be.
+	sso, err := newOIDCLogin(ctx, db)
+	if err != nil {
+		return api.Config{}, err
+	}
 	return api.Config{
 		DB:            db,
 		Objects:       objects,
-		Actions:       actions(db, reg, objects, translator),
+		Actions:       actions(db, reg, objects, translator, sso),
 		Authenticator: sessionAuthenticator(db),
 		Capabilities:  capability.GatewayChecker{Reg: reg, DB: db},
 	}, nil

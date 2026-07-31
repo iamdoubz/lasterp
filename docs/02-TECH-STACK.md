@@ -25,6 +25,8 @@ Full rationale in [docs/adr/](adr/). Summary:
 | Deploy | Docker Compose + Helm chart; **single binary** for solo | 10-minute self-host is a hard requirement | [ADR-011](adr/ADR-011-deployment.md) |
 | License | **AGPLv3 core, Apache-2.0 SDKs/client libs** (decided 2026-07-07) | Prevent closed-cloud capture, keep plugin ecosystem friction-free | [ADR-012](adr/ADR-012-license.md) |
 | Tax & FX data | Adapter pattern: open sources (ECB FX) built-in; Avalara/Vertex/PayrollTax API as connector plugins; local editable tax tables always available | No hard dependency on any commercial data vendor | [ADR-013](adr/ADR-013-reference-data.md) |
+| Composability | Capability manifests + dependency closure solver; disable-without-delete; profile presets | Use only the pieces you want; the kernel knows what each needs | [ADR-018](adr/ADR-018-composability.md) |
+| OIDC / JOSE | **No JOSE library** — ID tokens verified over stdlib `crypto/rsa`/`crypto/ecdsa`, closed RS256/PS256/ES256 allowlist, no HMAC or `none` code path at all | The needed part is small; the unused part of a JOSE library is where the CVEs live | [ADR-019](adr/ADR-019-jose.md) |
 
 ## Repository layout (planned)
 
