@@ -36,6 +36,7 @@ const dateLayout = "2006-01-02"
 // the gateway. See WP-1.4b-decisions.md §3 for the full table.
 func actions(db *storage.DB, reg *capability.Registry, objects []*metadata.EffectiveSchema) []api.Action {
 	out := append(sessionActions(db), metaActions(db, objects, reg)...)
+	out = append(out, reportActions(db)...)
 	return append(out, []api.Action{
 		// --- Invoice (bespoke, NOT generic CRUD: posting pipeline is the only
 		// path to posted/GL — INV-F2/F5/F6, decisions §2) ---

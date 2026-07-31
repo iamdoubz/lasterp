@@ -80,6 +80,31 @@ report reaches into `obj_*` tables for money.
   earnings, asserting `assets = liabilities + equity` — the statement's own reconciliation.
 - **AR aging:** per contact, outstanding = invoice gross − applied receipts, bucketed by age.
 
+### 4a. The projection nothing refreshed — resolved in PR-B
+
+PR-A found that `ledger_balances` was written **only** by an explicit
+`RebuildBalances` call, and no product code path made one. Posting did not update it. So the
+projection was empty in a running system, and reports were about to depend on it.
+
+**Decision: catch up at read time, via a cursor.** `ledger_balance_cursor` records the last event id
+folded in; `EnsureBalances` folds only what is new and advances the cursor **in the same transaction**,
+so what was folded and what the cursor claims cannot diverge. `Load` calls it before every report.
+
+Rejected: **maintaining the projection inside `Post`.** On Postgres the write path goes through a
+SECURITY DEFINER pipeline function that owns the append (INV-F5); hanging a second write off it would
+either widen the app role's grants or leave a window where a crash between the two makes the
+projection silently wrong. Read-time catch-up is exact by construction — there is no staleness window
+to reason about.
+
+This also makes the INV-E5 test **non-vacuous**, which matters more than it sounds. Previously the
+projection was written by the same full fold the oracle uses, so comparing them compared the fold to
+itself. Now incremental catch-up and full re-fold are genuinely different code paths, and
+`TestIncrementalCatchUpMatchesFullRebuild` is a real assertion.
+
+*ponytail:* catch-up is O(new events) per read, and the whole log on first call. If a tenant's feed
+outgrows that, move catch-up to a background worker driven by the same cursor — the read path does not
+change.
+
 ## 5. Account-type classification: an existing hole this WP would otherwise inherit
 
 `ledger.CreateAccount` validates `type` against the closed set
@@ -170,6 +195,24 @@ permission-leak guarantee.
 | **INV-F6** | receipt numbers gapless at acceptance | failed post consumes no number |
 | **INV-T1** | reports/metrics must not leak rows the viewer cannot read | permission-leak suite: cross-tenant + under-privileged reader |
 | **INV-T2/T4** | receipt posting is authorized and attributable | authz required; audit row written |
+
+## 12. What PR-B actually shipped, against §6's plan
+
+The metrics layer landed as designed: nine certified metrics bound to Go evaluators, each declaring
+the object+action the engine checks before evaluating. Two properties are worth naming because they
+are what the layer exists for:
+
+- **One number.** `ar_outstanding` and the AR aging report share `OpenItems`, and
+  `TestARMetricAgreesWithAgingReport` fails if they ever diverge. Ledger metrics share `Load` with the
+  statements, so a dashboard tile and the P&L cannot disagree about revenue.
+- **The subledger ties to the GL.** `TestARAgingTiesToLedgerARBalance` asserts AR aging totals equal
+  the ledger's AR control-account balance. That is the check an auditor runs first, and nothing else
+  in the suite would have caught a drift between them.
+
+`EvaluateAll` **omits** metrics the caller may not see rather than failing the request: a dashboard
+should render what the viewer is entitled to and stay silent about the rest. The catalog itself is not
+secret — knowing a metric exists is not knowing its value — so `Metrics()` is unfiltered and
+evaluation is the only gate.
 
 ---
 

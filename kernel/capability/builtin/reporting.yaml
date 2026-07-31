@@ -1,0 +1,5 @@
+module: reporting
+title: Reports & metrics
+provides: [reporting, metrics.layer]
+requires: [ledger.core, invoicing]
+objects: []
