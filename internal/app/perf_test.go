@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/iamdoubz/lasterp/kernel/api"
 	"github.com/iamdoubz/lasterp/kernel/authz"
 	"github.com/iamdoubz/lasterp/kernel/capability"
 	"github.com/iamdoubz/lasterp/kernel/identity"
@@ -193,11 +194,17 @@ func perfEnv(t *testing.T) *perfHarness {
 		t.Fatalf("IssueSession: %v", err)
 	}
 
-	h, err := Handler(db)
+	// The real gateway stack, with the rate limiter raised out of the way: the
+	// default budget (100 rps, burst 200) is smaller than warmup+samples+seed,
+	// so a throttled 429 would otherwise be scored as a fast response — or, as
+	// it did on CI, fail the run outright. What is under measurement here is
+	// how long the server takes to answer, not where the throttle sits.
+	cfg, err := gatewayConfig(db)
 	if err != nil {
-		t.Fatalf("Handler: %v", err)
+		t.Fatalf("gatewayConfig: %v", err)
 	}
-	srv := httptest.NewServer(h)
+	cfg.RateLimit = api.RateLimit{RequestsPerSecond: 1e6, Burst: 1e6}
+	srv := httptest.NewServer(api.NewGateway(cfg))
 	t.Cleanup(srv.Close)
 
 	ph := &perfHarness{server: srv, token: issued.Token}

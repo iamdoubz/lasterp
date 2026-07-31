@@ -8,7 +8,7 @@
 //     Direction comes from the document `dir` attribute (docs/17), so an RTL
 //     locale needs no component changes.
 //   - Keyboard operable with a visible focus ring. Anything clickable is a real
-//     <button> or <a>; nothing interactive is a bare <div>.
+//     button or anchor element; nothing interactive is a bare div.
 
 import type {
   ButtonHTMLAttributes,
@@ -46,9 +46,9 @@ const buttonVariants: Record<ButtonVariant, string> = {
 
 /**
  * buttonClass is the button look as classes, for the cases where the element
- * must be an <a> — a navigation target is a link, not a button, and wrapping a
- * <Button> in a <Link> produces a zero-height anchor that fails WCAG 2.2
- * target-size (2.5.8). Style the link; never nest the two.
+ * must be an anchor — a navigation target is a link, not a button, and nesting
+ * a Button inside a Link produces a zero-height anchor that fails WCAG 2.2
+ * target-size (2.5.8). Style the link itself; never nest the two.
  *
  * min-h/min-w carry the 24×24 minimum target size explicitly rather than
  * relying on padding to happen to reach it.
@@ -70,8 +70,8 @@ type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
 export function Button({ variant = "secondary", className, type, ...props }: ButtonProps) {
   return (
     <button
-      // An explicit type is not a nicety: a <button> inside a <form> defaults
-      // to submit, so an unmarked secondary action silently submits the form.
+      // An explicit type is not a nicety: a button inside a form defaults to
+      // submit, so an unmarked secondary action silently submits the form.
       type={type ?? "button"}
       className={buttonClass(variant, className)}
       {...props}
