@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"time"
@@ -66,6 +67,20 @@ type Action struct {
 	Summary string // OpenAPI summary
 	Write   bool   // wrap with idempotency (writes) vs. plain read
 	Handler HandlerFunc
+
+	// Public exempts the route from authentication — the narrow escape hatch
+	// that lets session issuance exist at all: a login route cannot present a
+	// session it has not yet issued (WP-1.5-decisions.md §4). It skips *only*
+	// authn; rate limiting (keyed by client IP, since there is no actor yet),
+	// problem+json errors, and OpenAPI documentation all still apply, and the
+	// handler receives an empty tenant.
+	//
+	// Public is an INV-T2 hole by construction ("no write path executes without
+	// an authenticated principal"), so it is deliberately constrained: a public
+	// action must be a read (Write false) and capability-ungated (Object ""),
+	// enforced at boot by NewGateway and in CI by the route-enumeration test in
+	// internal/app. Do not widen it — add an authenticated route instead.
+	Public bool
 }
 
 // HandlerFunc is an Action handler: it runs after the gateway choke point has
@@ -186,13 +201,57 @@ func (g *Gateway) registerObject(schema *metadata.EffectiveSchema) {
 // registerAction wires one non-CRUD Action onto the mux through the same
 // choke point as CRUD routes: guard (authn → tenant-mismatch → rate limit →
 // actor bind) then the capability gate; write actions add idempotency.
+//
+// Public actions take the reduced path (rate limit only). The constraints on
+// Public are checked here and panic on violation: an unauthenticated write or
+// a capability-gated route with no tenant to gate on is a static
+// misconfiguration that must never reach a running server (INV-T2).
 func (g *Gateway) registerAction(a Action) {
+	if a.Public {
+		if a.Write {
+			panic("api: public action " + a.Method + " " + a.Path + " must not be a write (INV-T2)")
+		}
+		if a.Object != "" {
+			panic("api: public action " + a.Method + " " + a.Path + " cannot be capability-gated (no tenant before authn)")
+		}
+		g.mux.HandleFunc(a.Method+" "+a.Path, g.guardPublic(a.Handler))
+		return
+	}
 	var h apiHandler = a.Handler
 	if a.Write {
 		h = g.handleWrite(writeExec(a.Handler))
 	}
 	handler := g.guard(g.capabilityGate(a.Object, h))
 	g.mux.HandleFunc(a.Method+" "+a.Path, handler)
+}
+
+// guardPublic is guard minus authentication: it rate-limits by client IP and
+// hands the handler an empty tenant. Login and refresh are the only routes that
+// may use it — they establish the very session guard would demand.
+func (g *Gateway) guardPublic(h apiHandler) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		d := g.limiter.allow("ip\x00" + clientIP(r))
+		setRateLimitHeaders(w, d)
+		if d.limited {
+			w.Header().Set("Retry-After", strconv.Itoa(d.resetSecs))
+			writeProblem(w, Problem{Status: http.StatusTooManyRequests, Title: "rate limit exceeded", Instance: r.URL.Path})
+			return
+		}
+		h(w, r, "")
+	}
+}
+
+// clientIP is the rate-limit key for unauthenticated routes. It reads
+// r.RemoteAddr only: X-Forwarded-For is caller-supplied and would let an
+// attacker mint a fresh login budget per forged header. A deployment behind a
+// trusted proxy should have the proxy rewrite RemoteAddr (or terminate the
+// limit itself) rather than have the gateway trust a header it cannot verify.
+func clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
 
 // capabilityGate rejects a request for object with a capability-disabled

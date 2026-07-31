@@ -9,6 +9,7 @@ import (
 	"github.com/iamdoubz/lasterp/kernel/api"
 	"github.com/iamdoubz/lasterp/kernel/authz"
 	"github.com/iamdoubz/lasterp/kernel/capability"
+	"github.com/iamdoubz/lasterp/kernel/metadata"
 	"github.com/iamdoubz/lasterp/kernel/money"
 	"github.com/iamdoubz/lasterp/kernel/storage"
 	"github.com/iamdoubz/lasterp/kernel/tenancy"
@@ -33,8 +34,9 @@ const dateLayout = "2006-01-02"
 // reads, reference-data + capability admin). Handlers run after authn with the
 // actor bound into r.Context(); write actions are wrapped with idempotency by
 // the gateway. See WP-1.4b-decisions.md §3 for the full table.
-func actions(db *storage.DB, reg *capability.Registry) []api.Action {
-	return []api.Action{
+func actions(db *storage.DB, reg *capability.Registry, objects []*metadata.EffectiveSchema) []api.Action {
+	out := append(sessionActions(db), metaActions(db, objects, reg)...)
+	return append(out, []api.Action{
 		// --- Invoice (bespoke, NOT generic CRUD: posting pipeline is the only
 		// path to posted/GL — INV-F2/F5/F6, decisions §2) ---
 		{Method: "POST", Path: "/api/v1/invoices", Object: invoicing.ObjectInvoice, Write: true,
@@ -78,7 +80,7 @@ func actions(db *storage.DB, reg *capability.Registry) []api.Action {
 			Summary: "Enable a module", Handler: enableCapability(db, reg)},
 		{Method: "POST", Path: "/api/v1/capabilities/{module}/disable", Object: "", Write: true,
 			Summary: "Disable a module", Handler: disableCapability(db, reg)},
-	}
+	}...)
 }
 
 // --- request DTOs (snake_case JSON at the API boundary) ---

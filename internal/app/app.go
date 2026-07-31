@@ -117,21 +117,33 @@ func registerModules(ctx context.Context, db *storage.DB) error {
 // the non-CRUD action surface (actions.go), the bearer-session authenticator,
 // and per-tenant capability gating.
 func Handler(db *storage.DB) (http.Handler, error) {
-	reg, err := capability.Load()
-	if err != nil {
-		return nil, fmt.Errorf("app: load capability registry: %w", err)
-	}
-	objects, err := crudObjects()
+	cfg, err := gatewayConfig(db)
 	if err != nil {
 		return nil, err
 	}
-	return api.NewGateway(api.Config{
+	return withStatic(api.NewGateway(cfg), webRoot()), nil
+}
+
+// gatewayConfig assembles the product's gateway configuration. It is split out
+// of Handler so the performance harness can measure this exact stack with the
+// rate limiter raised — the budget test is measuring how fast the server
+// answers, and a throttled request is not a slow one (docs/09).
+func gatewayConfig(db *storage.DB) (api.Config, error) {
+	reg, err := capability.Load()
+	if err != nil {
+		return api.Config{}, fmt.Errorf("app: load capability registry: %w", err)
+	}
+	objects, err := crudObjects()
+	if err != nil {
+		return api.Config{}, err
+	}
+	return api.Config{
 		DB:            db,
 		Objects:       objects,
-		Actions:       actions(db, reg),
+		Actions:       actions(db, reg, objects),
 		Authenticator: sessionAuthenticator(db),
 		Capabilities:  capability.GatewayChecker{Reg: reg, DB: db},
-	}), nil
+	}, nil
 }
 
 // crudObjects are the objects safe to expose as full generic CRUD. Financial
