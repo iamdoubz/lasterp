@@ -24,7 +24,6 @@ import (
 	"github.com/iamdoubz/lasterp/kernel/capability"
 	"github.com/iamdoubz/lasterp/kernel/identity"
 	"github.com/iamdoubz/lasterp/kernel/idgen"
-	"github.com/iamdoubz/lasterp/kernel/integrity"
 	"github.com/iamdoubz/lasterp/kernel/storage"
 	"github.com/iamdoubz/lasterp/kernel/storage/postgres"
 	"github.com/iamdoubz/lasterp/kernel/storage/sqlite"
@@ -500,7 +499,49 @@ func sqliteBootDB(t *testing.T) *storage.DB {
 	return db
 }
 
+// pgFixture is one Postgres container with both connections a real deployment
+// has: the owner that ran the migrations, and the restricted role the
+// application serves as. Tests that care about the difference — role separation,
+// `lasterp doctor` — need both, and spinning a second container per assertion
+// would triple the gauntlet's runtime for nothing.
+type pgFixture struct {
+	dsn   string
+	owner *storage.DB
+	app   *storage.DB
+}
+
+// connectAs opens a connection as an arbitrary role, to prove a provisioned
+// role can actually log in with the password it was given.
+func (f *pgFixture) connectAs(t *testing.T, role, password string) error {
+	t.Helper()
+	u, err := url.Parse(f.dsn)
+	if err != nil {
+		return err
+	}
+	u.User = url.UserPassword(role, password)
+	db, err := postgres.Open(u.String())
+	if err != nil {
+		return err
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	return db.PingContext(context.Background())
+}
+
+// postgresBootDB returns the restricted application connection — the posture a
+// hardened deployment serves with, and therefore what almost every test wants.
 func postgresBootDB(t *testing.T) *storage.DB {
+	t.Helper()
+	return postgresBoot(t).app
+}
+
+// postgresOwnerDB returns the unhardened owner connection: the posture a
+// deployment has today if it never runs `lasterp harden`.
+func postgresOwnerDB(t *testing.T) *storage.DB {
+	t.Helper()
+	return postgresBoot(t).owner
+}
+
+func postgresBoot(t *testing.T) *pgFixture {
 	t.Helper()
 	ctx := context.Background()
 
@@ -532,27 +573,21 @@ func postgresBootDB(t *testing.T) *storage.DB {
 	if err != nil {
 		t.Fatalf("open postgres (superuser): %v", err)
 	}
-	defer func() { _ = superDB.Close() }()
+	t.Cleanup(func() { _ = superDB.Close() })
 	if err := Migrate(ctx, superDB); err != nil {
 		t.Fatalf("migrate postgres: %v", err)
 	}
 
+	// Provision and harden through the *shipped* path — the same two functions
+	// `lasterp harden` calls. This used to be inline SQL here, which meant the
+	// gauntlet proved that a hand-written test fixture could lock a role down,
+	// not that the product could (phase-1-review.md P1 item 6, WP-1.10).
 	const appUser, appPassword = "lasterp_app", "lasterp_app"
-	for _, stmt := range []string{
-		`CREATE ROLE ` + appUser + ` LOGIN PASSWORD '` + appPassword + `' NOSUPERUSER NOBYPASSRLS`,
-		`GRANT USAGE, CREATE ON SCHEMA public TO ` + appUser,
-		`GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ` + appUser,
-		`GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO ` + appUser,
-	} {
-		if _, err := superDB.ExecContext(ctx, stmt); err != nil {
-			t.Fatalf("provision app role (%q): %v", stmt, err)
-		}
+	if err := ProvisionAppRole(ctx, superDB, appUser, appPassword); err != nil {
+		t.Fatalf("ProvisionAppRole: %v", err)
 	}
-	if err := integrity.EnforceAppendOnlyGrants(ctx, superDB, appUser); err != nil {
-		t.Fatalf("EnforceAppendOnlyGrants: %v", err)
-	}
-	if err := integrity.EnforceLedgerPipelineGrants(ctx, superDB, appUser); err != nil {
-		t.Fatalf("EnforceLedgerPipelineGrants: %v", err)
+	if err := Harden(ctx, superDB, appUser); err != nil {
+		t.Fatalf("Harden: %v", err)
 	}
 
 	appDSN, err := url.Parse(dsn)
@@ -571,5 +606,5 @@ func postgresBootDB(t *testing.T) *storage.DB {
 	if err := Setup(ctx, appDB); err != nil {
 		t.Fatalf("setup postgres (app role): %v", err)
 	}
-	return appDB
+	return &pgFixture{dsn: dsn, owner: superDB, app: appDB}
 }

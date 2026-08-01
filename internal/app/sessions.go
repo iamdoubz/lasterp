@@ -5,6 +5,7 @@ package app
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"net/http"
 	"time"
 
@@ -76,47 +77,39 @@ func login(db *storage.DB) api.HandlerFunc {
 		}
 		tenant := tenancy.ID(req.Tenant)
 
-		user, err := identity.GetUserByEmail(r.Context(), db, tenant, req.Email)
-		if err != nil {
-			// Run a verify against a dummy hash anyway so a missing user and a
-			// wrong password cost the same wall-clock time (bcrypt is the
-			// dominant cost; skipping it is a timing oracle for "user exists").
-			identity.VerifyPassword(dummyHash, req.Password)
+		// The password rules — unknown user, wrong password, TOTP validation and
+		// step burning, and the timing equalization that makes the first two
+		// indistinguishable — all live in the provider. Until WP-1.10 they lived
+		// here *as well*, in a second copy that had drifted: the provider was
+		// missing the equalizer, and nothing outside its own unit tests called
+		// it. One authentication decision, one implementation.
+		provider := &identity.PasswordTOTPProvider{DB: db}
+		user, err := provider.Authenticate(r.Context(), tenant, identity.Credentials{
+			Email: req.Email, Password: req.Password, TOTPCode: req.TOTP,
+		})
+		if errors.Is(err, identity.ErrInvalidCredentials) {
 			unauthorized(w, r)
 			return
 		}
-		if !identity.VerifyPassword(user.PasswordHash, req.Password) {
-			unauthorized(w, r)
-			return
-		}
-		if user.TOTPEnabled {
-			ok, counter, err := identity.ValidateTOTP(user.TOTPSecret, req.TOTP, time.Now().UTC(), user.TOTPLastCounter)
-			if err != nil || !ok {
-				unauthorized(w, r)
-				return
-			}
-			// Burn the step before issuing anything: a replayed code must not
-			// be able to mint a second session.
-			if err := identity.SetTOTPLastCounter(r.Context(), db, tenant, user.ID, counter); err != nil {
-				fail(w, r, err)
-				return
-			}
-		}
-
-		device := deviceID(r)
-		issued, err := identity.IssueSession(r.Context(), db, tenant, user.ID, device)
 		if err != nil {
 			fail(w, r, err)
 			return
 		}
-		if err := identity.AuditSession(r.Context(), db, tenant, user.ID, issued.ID, identity.AuditLogin); err != nil {
+
+		device := deviceID(r)
+		issued, err := identity.IssueSession(r.Context(), db, tenant, user, device)
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		if err := identity.AuditSession(r.Context(), db, tenant, user, issued.ID, identity.AuditLogin); err != nil {
 			fail(w, r, err)
 			return
 		}
 
 		setSessionCookies(w, issued, device)
 		writeJSON(w, http.StatusOK, sessionResp{
-			UserID: string(user.ID), Tenant: string(tenant), ExpiresAt: issued.ExpiresAt,
+			UserID: string(user), Tenant: string(tenant), ExpiresAt: issued.ExpiresAt,
 		})
 	}
 }
@@ -231,14 +224,3 @@ func cookieValue(r *http.Request, name string) string {
 func unauthorized(w http.ResponseWriter, r *http.Request) {
 	writeProblem(w, http.StatusUnauthorized, "invalid credentials", "", r.URL.Path)
 }
-
-// dummyHash is a real bcrypt hash of a value no one logs in with, used to keep
-// the unknown-user path as slow as the wrong-password path. Generated once at
-// init rather than hardcoded so it tracks whatever cost identity uses.
-var dummyHash = func() string {
-	h, err := identity.HashPassword("lasterp-timing-equalizer")
-	if err != nil {
-		return ""
-	}
-	return h
-}()

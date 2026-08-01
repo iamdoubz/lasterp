@@ -17,6 +17,12 @@ import (
 // re-validated here.
 var identOK = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
+// ValidRoleName reports whether name is safe to interpolate into role DDL.
+// Exported so every caller that has to build such DDL — the grant helpers here
+// and the role provisioning in internal/app — agrees on one rule instead of
+// each inventing its own.
+func ValidRoleName(name string) bool { return identOK.MatchString(name) }
+
 // EnforceAppendOnlyGrants completes the docs/19 §2 role-separation layer for
 // the append-only tables (INV-E1 events, INV-T4 audit_log): it revokes
 // UPDATE, DELETE and TRUNCATE from role so the tables are immutable by lack

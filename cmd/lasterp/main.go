@@ -1,14 +1,22 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Command lasterp is the LastERP CLI: `serve` runs the product API and the
-// built web client, `dev` additionally launches the web dev server for local
-// iteration, `bootstrap` provisions the first tenant and administrator, and
-// `demo` fills a tenant with a small book so the dashboards have something real
-// to show.
+// Command lasterp is the LastERP CLI.
+//
+// Running it: `serve` runs the product API and the built web client, `dev`
+// additionally launches the web dev server for local iteration.
+//
+// Deploying it: `migrate` applies schema migrations as a privileged role,
+// `harden` locks the application role down to the write pipeline (docs/19 §2),
+// and `doctor` reports whether a running deployment is actually separated.
+//
+// Filling it: `bootstrap` provisions the first tenant and administrator, and
+// `demo` seeds a small book so the dashboards have something real to show.
 package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -20,9 +28,10 @@ import (
 	"time"
 
 	"github.com/iamdoubz/lasterp/internal/app"
+	"github.com/iamdoubz/lasterp/kernel/storage"
 )
 
-const usage = "usage: lasterp <serve|dev|bootstrap|demo>"
+const usage = "usage: lasterp <serve|dev|migrate|harden|doctor|bootstrap|demo>"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -45,6 +54,18 @@ func main() {
 		}
 	case "demo":
 		if err := demo(context.Background(), os.Args[2:]); err != nil {
+			log.Fatal(err)
+		}
+	case "migrate":
+		if err := migrate(context.Background()); err != nil {
+			log.Fatal(err)
+		}
+	case "harden":
+		if err := harden(context.Background(), os.Args[2:]); err != nil {
+			log.Fatal(err)
+		}
+	case "doctor":
+		if err := doctor(context.Background()); err != nil {
 			log.Fatal(err)
 		}
 	default:
@@ -119,6 +140,110 @@ func bootstrap(ctx context.Context, args []string) error {
 	return nil
 }
 
+// migrate applies schema migrations and nothing else.
+//
+// app.Migrate has been split from app.Setup since WP-1.4b precisely so a
+// deployment can migrate as a privileged role and serve as a restricted one —
+// the SECURITY DEFINER pipeline functions have to be owned by a role that keeps
+// INSERT on events, which is exactly the privilege the serving role gives up.
+// Until WP-1.10 there was no way to invoke that split from outside the process,
+// so the two-role deployment it enables could not actually be deployed.
+//
+// `serve` still migrates on boot, which keeps solo mode a single command; when
+// the schema is already current that is a no-op.
+func migrate(ctx context.Context) error {
+	db, err := Open(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = db.Close() }()
+
+	if err := app.Migrate(ctx, db); err != nil {
+		return err
+	}
+	log.Print("schema migrations applied")
+	return nil
+}
+
+// harden provisions the restricted application role and applies the docs/19
+// role-separation grants: the app can append to the event log only through the
+// pipeline functions, and cannot mutate the append-only tables at all.
+//
+// It connects with LASTERP_DSN, which for this command must be an *owner*
+// connection (the role that ran the migrations, or a superuser) — it is
+// administering grants on someone else's behalf. The role it hardens is a
+// different, restricted one, and is what `lasterp serve` should connect as.
+//
+// Idempotent on purpose: a deployment runs this on every boot rather than
+// remembering whether it is the first.
+func harden(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("harden", flag.ExitOnError)
+	role := fs.String("app-role", "lasterp_app", "restricted role the application serves as")
+	create := fs.Bool("create-role", false, "create the role if it does not exist (password from LASTERP_APP_PASSWORD)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	db, err := Open(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = db.Close() }()
+
+	if *create {
+		// Same reasoning as bootstrap: a password on the command line lands in
+		// shell history and the process table, so it only comes from the
+		// environment.
+		if err := app.ProvisionAppRole(ctx, db, *role, os.Getenv("LASTERP_APP_PASSWORD")); err != nil {
+			return err
+		}
+		log.Printf("provisioned application role %q", *role)
+	}
+	if err := app.Harden(ctx, db, *role); err != nil {
+		return err
+	}
+	log.Printf("applied role separation to %q", *role)
+	return nil
+}
+
+// doctor reports whether this deployment is actually running with the storage
+// guarantees the Integrity Gauntlet proves. It connects as the application does
+// — LASTERP_DSN unchanged — because the question is about that connection.
+//
+// Exit status is the point: non-zero when the deployment is not separated, so it
+// can be a readiness gate or a deploy check rather than something a human has to
+// read and interpret.
+func doctor(ctx context.Context) error {
+	db, err := Open(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = db.Close() }()
+
+	p, err := app.Diagnose(ctx, db)
+	if err != nil {
+		return err
+	}
+
+	out, err := json.MarshalIndent(p, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(out))
+
+	if !p.Separated {
+		return fmt.Errorf("database role separation is not in effect (%d finding(s)); run `lasterp harden`", len(p.Findings))
+	}
+	return nil
+}
+
+// Open opens the database named by LASTERP_DSN without running migrations or
+// module registration. harden and doctor both administer or inspect an existing
+// database rather than bringing one up.
+func Open(ctx context.Context) (*storage.DB, error) {
+	return app.OpenRaw(ctx, os.Getenv("LASTERP_DSN"))
+}
+
 // newServer builds the HTTP server with timeouts on every phase of a request.
 // A server with none — which is Go's zero value, and was this product's
 // configuration until WP-1.10 — lets a client hold a connection open forever by
@@ -174,14 +299,40 @@ func serve(ctx context.Context) error {
 
 	go func() {
 		<-ctx.Done()
-		_ = srv.Close()
+		shutdown(srv)
 	}()
 
 	log.Printf("LastERP API listening on %s", listen)
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	return nil
+}
+
+// drainTimeout bounds how long a shutdown waits for in-flight requests.
+const drainTimeout = 20 * time.Second
+
+// shutdown stops the server gracefully: stop accepting, let in-flight requests
+// finish, then close. Until WP-1.10 this was srv.Close(), which severs live
+// connections immediately — so every deploy and every SIGTERM in a rolling
+// restart cut off whatever was mid-flight. Nothing could be *corrupted* by that
+// (writes are transactional and the ledger is append-only), but a user watching
+// an invoice post saw a network error and had no way to know whether it landed,
+// which is its own kind of harm in an accounting system.
+//
+// The drain is bounded: a request wedged behind a slow query must not hold a
+// deployment open indefinitely, and Kubernetes will SIGKILL us anyway once its
+// grace period expires.
+func shutdown(srv *http.Server) {
+	ctx, cancel := context.WithTimeout(context.Background(), drainTimeout)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		// The drain window closed with requests still running. Say so — a
+		// deployment that routinely trips this is a deployment with a slow path
+		// nobody has measured.
+		log.Printf("shutdown: drain incomplete after %s: %v", drainTimeout, err)
+		_ = srv.Close()
+	}
 }
 
 // dev starts the API in the background and runs the web dev server in the
@@ -198,13 +349,13 @@ func dev(ctx context.Context) error {
 	srv := newServer(listen, handler)
 	go func() {
 		log.Printf("LastERP API listening on %s", listen)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Printf("API stopped: %v", err)
 		}
 	}()
 	go func() {
 		<-ctx.Done()
-		_ = srv.Close()
+		shutdown(srv)
 	}()
 
 	web := exec.CommandContext(ctx, "pnpm", "--dir", "web", "run", "dev")

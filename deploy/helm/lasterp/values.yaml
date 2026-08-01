@@ -8,3 +8,27 @@ replicaCount: 1
 service:
   type: ClusterIP
   port: 8080
+
+# Database (WP-1.10). Two DSNs, deliberately: the migration/hardening Job runs
+# as the schema owner, and the Deployment serves as a restricted role that
+# cannot write the event log outside the posting pipeline (docs/19 §2, INV-F5).
+#
+# Serving with ownerDsn would silently undo the separation — `lasterp doctor`
+# is what tells you that has happened.
+database:
+  # Owner connection, used only by the pre-install/pre-upgrade Job.
+  ownerDsn: ""
+  # Restricted connection the pods serve with.
+  appDsn: ""
+  # Role the Job creates and locks down.
+  appRole: lasterp_app
+  # Password for that role, used only when createRole is true. Prefer an
+  # existing secret in a real deployment; this is here so `helm install` works.
+  appPassword: ""
+  createRole: true
+
+# Run the migrate+harden Job before each install/upgrade. Turn this off only if
+# your platform runs migrations out of band — in which case `lasterp harden`
+# still has to run somewhere, or the deployment serves unseparated.
+hardenJob:
+  enabled: true

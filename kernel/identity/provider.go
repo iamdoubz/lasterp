@@ -50,6 +50,9 @@ type PasswordTOTPProvider struct {
 func (p *PasswordTOTPProvider) Authenticate(ctx context.Context, tenant tenancy.ID, creds Credentials) (UserID, error) {
 	u, err := GetUserByEmail(ctx, p.DB, tenant, creds.Email)
 	if errors.Is(err, ErrNotFound) {
+		// Spend the same time a real verification would, or the response time
+		// alone answers "is this an account here?" (see EqualizeVerifyTiming).
+		EqualizeVerifyTiming(creds.Password)
 		return "", ErrInvalidCredentials
 	}
 	if err != nil {

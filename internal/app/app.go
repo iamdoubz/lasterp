@@ -82,6 +82,14 @@ func Setup(ctx context.Context, db *storage.DB) error {
 	return nil
 }
 
+// OpenRaw opens the database without migrating it or registering modules. It is
+// for commands that administer or inspect an existing deployment (`harden`,
+// `doctor`) rather than bring one up: hardening as the owner must not
+// accidentally re-run Setup, and a diagnostic must not change what it measures.
+func OpenRaw(_ context.Context, dsn string) (*storage.DB, error) {
+	return openDialect(dsn)
+}
+
 func openDialect(dsn string) (*storage.DB, error) {
 	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
 		return postgres.Open(dsn)
@@ -126,7 +134,9 @@ func Handler(ctx context.Context, db *storage.DB) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	return withStatic(api.NewGateway(cfg), webRoot()), nil
+	// Security headers wrap everything, so an API-only deployment with no
+	// bundle is covered too (headers.go).
+	return withSecurityHeaders(withStatic(api.NewGateway(cfg), webRoot())), nil
 }
 
 // gatewayConfig assembles the product's gateway configuration. It is split out
