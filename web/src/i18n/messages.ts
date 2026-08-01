@@ -76,6 +76,21 @@ export const messages = {
   "schema.field.Contact.kind": "Kind",
   "schema.field.Contact.locale": "Language",
 
+  // Enum options. The values themselves are data — the server stores and
+  // validates them — but what a person reads is a UI string, so they resolve
+  // like field labels do. Only the objects the client renders need keys; an
+  // option with none falls back to its humanized value (meta/render
+  // optionLabel), which is why this list does not have to track every enum in
+  // every module.
+  "schema.option.Account.type.asset": "Asset",
+  "schema.option.Account.type.liability": "Liability",
+  "schema.option.Account.type.equity": "Equity",
+  "schema.option.Account.type.income": "Income",
+  "schema.option.Account.type.expense": "Expense",
+  "schema.option.Contact.kind.customer": "Customer",
+  "schema.option.Contact.kind.vendor": "Vendor",
+  "schema.option.Contact.kind.both": "Customer and vendor",
+
   // Dashboards (docs/21 role packs). Pack titles and metric labels arrive
   // from the server in English; these keys translate them, falling back to
   // the server's own label for anything a pack adds later.

@@ -37,6 +37,11 @@ export type FieldType =
   | "percent"
   | "computed";
 
+/** Presentation overrides the schema may set on a field. Closed set: the
+ * server refuses anything else, and each entry only applies to certain field
+ * types (kernel/metadata widgetApplies). */
+export type Widget = "textarea" | "radio";
+
 export interface MetaField {
   name: string;
   type: FieldType;
@@ -46,6 +51,16 @@ export interface MetaField {
   /** The field's value may exist in several languages; the per-locale ones
    * travel in the record's `translations` key (docs/17). */
   localized?: boolean;
+  /** An enum's closed value set — the same list the server validates writes
+   * against, so a select offers exactly what will be accepted. */
+  options?: string[];
+  /** Presentation order. Fields sort by (order, declaration index), so unset
+   * means "keep schema order". Never reflects storage order. */
+  order?: number;
+  /** Form section. Fields sharing a group render in one fieldset. */
+  group?: string;
+  /** Overrides the control the field's type would otherwise pick. */
+  widget?: Widget;
 }
 
 export interface MetaObject {
