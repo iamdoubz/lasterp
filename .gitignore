@@ -12,3 +12,7 @@ web/test-results/
 web/playwright-report/
 web/blob-report/
 web/.playwright/
+
+# MEMANTO project-local memory cache (auto-synced at session start, not a
+# repo artifact). See CLAUDE.md.
+MEMORY.md

@@ -65,7 +65,15 @@ func fail(w http.ResponseWriter, r *http.Request, err error) {
 		// The detail stays out of the response (it can carry internals), but it
 		// must not vanish: an unclassified 500 with no log anywhere is
 		// undebuggable in production and in CI alike.
-		log.Printf("unhandled error on %s %s: %v", r.Method, inst, err)
+		//
+		// The path is %q, not %s: it is attacker-controlled, and an unquoted
+		// newline in it forges a log line. This product's pitch includes
+		// tamper-evident trails, so the ordinary log should not be the one place
+		// anyone can write whatever they like.
+		// #nosec G706 -- %q is the sanitizer (control characters escaped);
+		// gosec only sees request data reaching a log call and cannot tell
+		// which verb formatted it.
+		log.Printf("unhandled error on %s %q: %v", r.Method, inst, err)
 		writeProblem(w, http.StatusInternalServerError, "internal server error", "", inst)
 	}
 }

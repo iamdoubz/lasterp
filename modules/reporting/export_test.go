@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/csv"
 	"encoding/xml"
+	"errors"
 	"io"
 	"math/rand"
 	"strconv"
@@ -185,7 +186,7 @@ func TestExportXLSXIsAValidWorkbook(t *testing.T) {
 			d := xml.NewDecoder(strings.NewReader(content))
 			for {
 				_, terr := d.Token()
-				if terr == io.EOF {
+				if errors.Is(terr, io.EOF) {
 					break
 				}
 				if terr != nil {
@@ -237,7 +238,7 @@ func TestExportXLSXEscapesHostileLabels(t *testing.T) {
 		d := xml.NewDecoder(bytes.NewReader(b))
 		for {
 			_, err := d.Token()
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				break
 			}
 			if err != nil {

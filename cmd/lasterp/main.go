@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/iamdoubz/lasterp/internal/app"
 )
@@ -118,6 +119,29 @@ func bootstrap(ctx context.Context, args []string) error {
 	return nil
 }
 
+// newServer builds the HTTP server with timeouts on every phase of a request.
+// A server with none — which is Go's zero value, and was this product's
+// configuration until WP-1.10 — lets a client hold a connection open forever by
+// dribbling a request header one byte at a time, exhausting the accept queue
+// from a single host (Slowloris, gosec G112).
+//
+// ReadHeaderTimeout is the one that closes that specific hole; the rest bound
+// the phases after it. WriteTimeout is the loosest of the four because a report
+// export legitimately takes longer to produce than an interactive read, and a
+// budget that kills a large XLSX mid-stream would be a worse bug than the one
+// being fixed (docs/09 budgets are p95 targets for interactive paths, not caps
+// on every response).
+func newServer(listen string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              listen,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      2 * time.Minute,
+		IdleTimeout:       2 * time.Minute,
+	}
+}
+
 // addr is the listen address, overridable with LASTERP_ADDR (default :8080).
 func addr() string {
 	if a := os.Getenv("LASTERP_ADDR"); a != "" {
@@ -143,7 +167,7 @@ func serve(ctx context.Context) error {
 		return err
 	}
 	listen := addr()
-	srv := &http.Server{Addr: listen, Handler: handler}
+	srv := newServer(listen, handler)
 
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -171,7 +195,7 @@ func dev(ctx context.Context) error {
 		return err
 	}
 	listen := addr()
-	srv := &http.Server{Addr: listen, Handler: handler}
+	srv := newServer(listen, handler)
 	go func() {
 		log.Printf("LastERP API listening on %s", listen)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {

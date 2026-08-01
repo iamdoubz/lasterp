@@ -40,11 +40,15 @@ const oidcFlowTTL = 10 * time.Minute
 // have to store an OAuth client secret at rest and no secrets vault exists yet
 // (WP-1.9-decisions.md §2).
 const (
-	envOIDCIssuer       = "LASTERP_OIDC_ISSUER"
-	envOIDCClientID     = "LASTERP_OIDC_CLIENT_ID"
+	envOIDCIssuer   = "LASTERP_OIDC_ISSUER"
+	envOIDCClientID = "LASTERP_OIDC_CLIENT_ID"
+	// #nosec G101 -- these are the *names* of environment variables, not
+	// credentials. The values are read from the environment at boot and never
+	// appear in the repository.
 	envOIDCClientSecret = "LASTERP_OIDC_CLIENT_SECRET"
-	envOIDCRedirectURL  = "LASTERP_OIDC_REDIRECT_URL"
-	envOIDCTenant       = "LASTERP_OIDC_TENANT"
+	// #nosec G101 -- an environment variable name, as above.
+	envOIDCRedirectURL = "LASTERP_OIDC_REDIRECT_URL"
+	envOIDCTenant      = "LASTERP_OIDC_TENANT"
 )
 
 // oidcLogin is the wired OIDC login flow. A nil *oidcLogin means the deployment

@@ -130,8 +130,14 @@ func ValidateSession(ctx context.Context, db *storage.DB, token string) (*Sessio
 
 // RefreshSession issues a new access token for the session owning
 // refreshToken, provided it is presented from the same deviceID it was
-// issued to. The old access token keeps working until it naturally
-// expires; refreshing does not revoke it.
+// issued to.
+//
+// The old access token stops working immediately: the row's token_hash is
+// replaced, not appended to, so a session has exactly one live access token at
+// a time. (This comment previously claimed the opposite — that the old token
+// kept working until it expired — which never matched the code. The behaviour
+// is the safer of the two readings and is what the tests assert; only the
+// comment was wrong. Corrected in WP-1.10.)
 func RefreshSession(ctx context.Context, db *storage.DB, refreshToken, deviceID string) (*IssuedSession, error) {
 	if refreshToken == "" || deviceID == "" {
 		return nil, ErrSessionInvalid

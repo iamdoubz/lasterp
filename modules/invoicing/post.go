@@ -53,6 +53,9 @@ func buildInvoiceJournal(inv Invoice, taxLines []tax.LineResult, period, command
 	revByAccount := map[string]money.Money{}
 	var revOrder []string
 	for i, l := range inv.Lines {
+		// #nosec G602 -- len(taxLines) == len(inv.Lines) is checked at the top
+		// of this function and the loop ranges inv.Lines, so i is always in
+		// range. gosec cannot see the guard.
 		lr := taxLines[i]
 		if lr.Net.Currency() != inv.Currency || lr.Tax.Currency() != inv.Currency {
 			return ledger.PostCmd{}, Totals{}, money.ErrCurrencyMismatch

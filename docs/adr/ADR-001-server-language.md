@@ -1,12 +1,14 @@
 # ADR-001: Server language — Go
 
-**Status:** Accepted · 2026-07-06
+**Status:** Accepted · 2026-07-06 · **Amended 2026-07-31 (WP-1.10):** patch pin raised 1.26.4 → **1.26.5**, and the pinning *mechanism* corrected — the `toolchain` directive cannot carry the pin (see Decision).
 
 ## Context
 Requirements: very fast, single-binary self-hosting, 50k concurrent users, high agent (Claude Code) development velocity, large hiring pool. Candidates: Rust, Go, Elixir, TypeScript/Node, JVM.
 
 ## Decision
-**Go** for the entire server. Toolchain policy (set 2026-07-07, Dan): pin the latest stable release — currently **1.26.4** — via the `toolchain` directive in go.mod; adopt new patch releases within 2 weeks (they carry security fixes), new minor releases after one patch cycle. Performance-critical hotspots may later be implemented in Rust and loaded via WASM (same mechanism as plugins) — only with profiling evidence.
+**Go** for the entire server. Toolchain policy (set 2026-07-07, Dan): pin the latest stable release — currently **1.26.5** — in go.mod; adopt new patch releases within 2 weeks (they carry security fixes), new minor releases after one patch cycle.
+
+The pin lives in the **`go` directive**, not the `toolchain` directive as this ADR originally specified. `go mod tidy` deletes a `toolchain` line whose version equals the `go` line, treating it as redundant — so the mechanism as written could not survive a tidy. `go 1.26.5` achieves the same thing: with the default `GOTOOLCHAIN=auto`, a developer on an older toolchain fetches 1.26.5 rather than building with what they happen to have. A `toolchain` directive becomes meaningful again only if we ever want to build with a *newer* toolchain than the language version we target, which is not the current policy. Bumping the pin means editing `go.mod`, the `setup-go` steps in `.github/workflows/ci.yml`, [docs/02](../02-TECH-STACK.md) and [CLAUDE.md](../../CLAUDE.md) together. Performance-critical hotspots may later be implemented in Rust and loaded via WASM (same mechanism as plugins) — only with profiling evidence.
 
 ## Rationale
 - Goroutines + netpoller comfortably handle tens of thousands of concurrent connections per node; 50k concurrent across a stateless cluster is routine Go territory.
