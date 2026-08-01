@@ -40,7 +40,9 @@ type CRUD struct {
 // (decision 2: event-sourced codegen is out of scope for this WP).
 var ErrWrongPersistence = errors.New("metadata: CRUD engine requires persistence \"crud\"")
 
-// ErrValidation covers a Record failing the schema's required-field check.
+// ErrValidation covers a Record failing the effective schema: a missing
+// required field, a value of the wrong type for its FieldType, or an enum
+// value outside the field's declared options (INV-T5).
 var ErrValidation = errors.New("metadata: validation failed")
 
 // ErrRecordNotFound is returned by Get/Update/SoftDelete for an unknown
@@ -55,27 +57,53 @@ func NewCRUD(schema *EffectiveSchema) (*CRUD, error) {
 	return &CRUD{schema: schema}, nil
 }
 
-func (c *CRUD) validate(rec Record) error {
+// validated checks rec against the effective schema and returns a normalized
+// copy — the values as they should be stored (INV-T5). It never mutates rec.
+//
+// partial is the Update path: only the keys actually present are checked, so a
+// row that already holds an out-of-set value stays editable on every other
+// field. That matters because validation landing in WP-1.11 must not strand
+// rows written before it: the read path does not validate, and an update that
+// does not touch the offending field is not the place to relitigate it. Setting
+// the field to a legal value is the fix, and it is one request.
+//
+// A required field being *touched* is still held to required-ness on update —
+// nulling one is refused — because that is a write of an invalid value, not the
+// absence of a write.
+func (c *CRUD) validated(rec Record, partial bool) (Record, error) {
+	out := cloneRecord(rec)
 	for _, f := range c.schema.Fields {
-		if !f.Required {
+		v, present := rec[f.Name]
+		if partial && !present {
 			continue
 		}
-		v, present := rec[f.Name]
-		if !present || v == nil || v == "" {
-			return fmt.Errorf("%w: field %q is required", ErrValidation, f.Name)
+		if f.Required && (!present || v == nil || v == "") {
+			return nil, fmt.Errorf("%w: field %q is required", ErrValidation, f.Name)
 		}
+		if !present {
+			continue
+		}
+		normalized, err := validateValue(f, v)
+		if err != nil {
+			return nil, err
+		}
+		out[f.Name] = normalized
 	}
-	return nil
+	return out, nil
 }
 
 // Create inserts rec, requiring the "create" permission (authz.Authorize)
 // and recording an audit_log entry in the same transaction as the insert.
 func (c *CRUD) Create(ctx context.Context, db *storage.DB, tenant tenancy.ID, rec Record) (Record, error) {
+	// Authorization first, validation second, always: a 422 that names the
+	// legal values for a caller who is not allowed to write at all is a
+	// validity oracle (INV-T2). The same ordering holds in Update.
 	actor, err := authz.Authorize(ctx, db, c.schema.ObjectName, "create")
 	if err != nil {
 		return nil, err
 	}
-	if err := c.validate(rec); err != nil {
+	rec, err = c.validated(rec, false)
+	if err != nil {
 		return nil, err
 	}
 
@@ -221,6 +249,13 @@ func (c *CRUD) List(ctx context.Context, db *storage.DB, tenant tenancy.ID) ([]R
 // re-marshal).
 func (c *CRUD) Update(ctx context.Context, db *storage.DB, tenant tenancy.ID, id string, changes Record) (Record, error) {
 	actor, err := authz.Authorize(ctx, db, c.schema.ObjectName, "update")
+	if err != nil {
+		return nil, err
+	}
+	// Until WP-1.11 this path ran no validation at all — not even the
+	// required-field check Create had — so a PUT could null a required column
+	// or write a bool into an int one. partial=true: only touched keys.
+	changes, err = c.validated(changes, true)
 	if err != nil {
 		return nil, err
 	}
