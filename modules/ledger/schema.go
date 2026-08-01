@@ -36,7 +36,7 @@ persistence: crud
 fields:
   - {name: code, type: text, required: true, index: true}
   - {name: name, type: text, required: true, localized: true}
-  - {name: type, type: enum, required: true}
+  - {name: type, type: enum, required: true, options: [asset, liability, equity, income, expense]}
   - {name: parent, type: link, target: Account}
   - {name: currency, type: currency}
 permissions:
@@ -58,7 +58,7 @@ fields:
   - {name: code, type: text, required: true, index: true}
   - {name: start_date, type: text, required: true}
   - {name: end_date, type: text, required: true}
-  - {name: status, type: enum, required: true}
+  - {name: status, type: enum, required: true, options: [open, closed]}
 permissions:
   read: [ledger.viewer]
   create: [ledger.admin]
@@ -125,12 +125,19 @@ func journalES() (*metadata.EventSourced, error) {
 	return metadata.NewEventSourced(eff)
 }
 
-// accountVersion is 2 because WP-1.7 localized Account.name. A schema whose
-// definition changes must advance its version — saving a different definition
-// at the same version is refused (metadata.ErrSchemaVersionConflict), and
-// silently overwriting would rewrite history for every tenant already on it.
-// Localizing a field adds no column, so the evolution plans no DDL.
-const accountVersion = 2
+// Schema versions. A schema whose definition changes must advance its version —
+// saving a different definition at the same version is refused
+// (metadata.ErrSchemaVersionConflict), and silently overwriting would rewrite
+// history for every tenant already on it.
+//
+// Account is at 3 and Period at 2 because WP-1.11 declared their enum options
+// (Account at 2 was WP-1.7 localizing name). Declaring options changes no
+// column, required flag or index, so both evolutions plan no DDL — the version
+// advances and no statement runs.
+const (
+	accountVersion = 3
+	periodVersion  = 2
+)
 
 // Register persists the ledger's object schemas (core layer) and applies the
 // DDL for the CRUD-backed objects (Account, Period). JournalEntry is
@@ -144,7 +151,7 @@ func Register(ctx context.Context, db *storage.DB) error {
 		ddl     bool
 	}{
 		{ObjectAccount, accountYAML, accountVersion, true},
-		{ObjectPeriod, periodYAML, 1, true},
+		{ObjectPeriod, periodYAML, periodVersion, true},
 		{ObjectJournalEntry, journalEntryYAML, 1, false},
 	} {
 		eff, err := effective(s.yaml)

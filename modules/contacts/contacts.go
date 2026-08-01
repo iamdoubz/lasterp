@@ -47,7 +47,7 @@ persistence: crud
 fields:
   - {name: name, type: text, required: true, index: true}
   - {name: email, type: email}
-  - {name: kind, type: enum, required: true}
+  - {name: kind, type: enum, required: true, options: [customer, vendor, both]}
   - {name: locale, type: text}
 permissions:
   read: [contacts.viewer]
@@ -56,10 +56,10 @@ permissions:
   delete: [contacts.admin]
 `
 
-// contactVersion is 2 because WP-1.7 added the optional locale field: an
-// additive column, planned by metadata's evolution path on an existing
-// database and created inline on a fresh one.
-const contactVersion = 2
+// contactVersion is 3 because WP-1.11 declared kind's enum options (2 was
+// WP-1.7 adding the optional locale column). Options change no column, so this
+// evolution plans no DDL.
+const contactVersion = 3
 
 func effective(yaml string) (*metadata.EffectiveSchema, error) {
 	obj, err := metadata.ParseObject([]byte(yaml))

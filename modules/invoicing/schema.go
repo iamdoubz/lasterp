@@ -61,7 +61,7 @@ persistence: crud
 fields:
   - {name: contact_id, type: link, target: Contact, required: true}
   - {name: currency, type: currency, required: true}
-  - {name: status, type: enum, required: true}
+  - {name: status, type: enum, required: true, options: [draft, posted]}
   - {name: number, type: text, index: true}
   - {name: issue_date, type: text, required: true}
   - {name: ar_account, type: text, required: true}
@@ -108,10 +108,12 @@ func Register(ctx context.Context, db *storage.DB) error {
 		yaml    string
 		version int
 	}{
-		// Invoice is at v2: WP-1.7 added the optional locale column, which the
-		// metadata engine adds by ALTER on a database that already holds v1.
-		{ObjectInvoice, invoiceYAML, 2},
-		{ObjectReceipt, receiptYAML, 1},
+		// Invoice is at v3 and Receipt at v2: WP-1.11 declared their status
+		// enum options. (Invoice v2 was WP-1.7's optional locale column, which
+		// the metadata engine adds by ALTER on a database holding v1.)
+		// Declaring options changes no column, so both plan no DDL.
+		{ObjectInvoice, invoiceYAML, 3},
+		{ObjectReceipt, receiptYAML, 2},
 	} {
 		eff, err := effective(o.yaml)
 		if err != nil {

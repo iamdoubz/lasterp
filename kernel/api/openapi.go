@@ -108,7 +108,7 @@ func objectSchema(s *metadata.EffectiveSchema) obj {
 	}
 	var required []any
 	for _, f := range s.Fields {
-		props[f.Name] = fieldSchema(f.Type)
+		props[f.Name] = fieldSchema(f)
 		if f.Required {
 			required = append(required, f.Name)
 		}
@@ -120,12 +120,17 @@ func objectSchema(s *metadata.EffectiveSchema) obj {
 	return out
 }
 
-// fieldSchema maps a metadata FieldType to a JSON Schema fragment. money,
+// fieldSchema maps a metadata Field to a JSON Schema fragment. money,
 // decimal and percent are strings (exact minor-unit representation, never
 // float — CLAUDE.md / kernel/metadata DDL), matching how the CRUD engine
 // stores them.
-func fieldSchema(t metadata.FieldType) obj {
-	switch t {
+//
+// An enum publishes its option set: the generated client, the Postman
+// collection and every reader of the spec should learn the closed set from the
+// same declaration the engine validates against (WP-1.11), not by trying values
+// until one is refused.
+func fieldSchema(f metadata.Field) obj {
+	switch f.Type {
 	case metadata.FieldInt:
 		return obj{"type": "integer"}
 	case metadata.FieldBool:
@@ -136,6 +141,16 @@ func fieldSchema(t metadata.FieldType) obj {
 		return obj{"type": "string", "format": "email"}
 	case metadata.FieldJSON, metadata.FieldAddress:
 		return obj{"type": "object"}
+	case metadata.FieldEnum:
+		options := make([]any, 0, len(f.Options))
+		for _, opt := range f.Options {
+			options = append(options, opt)
+		}
+		return obj{"type": "string", "enum": options}
+	case metadata.FieldComputed:
+		// Server-derived. The CRUD engine refuses a supplied value, so the
+		// spec must not advertise it as writable.
+		return obj{"type": "string", "readOnly": true}
 	default:
 		return obj{"type": "string"}
 	}

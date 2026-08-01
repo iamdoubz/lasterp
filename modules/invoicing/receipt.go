@@ -77,7 +77,7 @@ persistence: crud
 fields:
   - {name: contact_id, type: link, target: Contact, required: true}
   - {name: currency, type: currency, required: true}
-  - {name: status, type: enum, required: true}
+  - {name: status, type: enum, required: true, options: [draft, posted]}
   - {name: number, type: text, index: true}
   - {name: received_date, type: text, required: true}
   - {name: bank_account, type: text, required: true}
