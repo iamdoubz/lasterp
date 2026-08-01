@@ -145,10 +145,13 @@ test("an enum field renders as a select over the schema's declared options", asy
   expect(options).not.toContain("banana");
 
   // Field order is the schema's: `code` is declared first and renders first.
+  // Controls only — Field also emits a `<label id="field-*-label">` that a
+  // looser prefix selector would pick up first.
   const ids = await page
-    .locator("form [id^='field-']")
+    .locator("form :is(input, select, textarea)[id^='field-']")
     .evaluateAll((els) => els.map((el) => el.id));
   expect(ids[0]).toBe("field-code");
+  expect(ids).toContain("field-type");
 
   await scan(page, "account-form");
 });

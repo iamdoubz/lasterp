@@ -217,6 +217,49 @@ func TestDoctorReportsNonConformingRows(t *testing.T) {
 	}
 }
 
+// TestDoctorSurvivesAnUnparseableStoredSchema: `doctor` can be pointed at a
+// database no new binary has booted against yet, and a stored definition an
+// older version wrote may not parse today — WP-1.11 made enum `options`
+// mandatory, so a pre-WP-1.11 row does not. One stale row must not take the
+// whole diagnostic offline; it is reported and the rest is still scanned.
+func TestDoctorSurvivesAnUnparseableStoredSchema(t *testing.T) {
+	for name, db := range bootDBs(t) {
+		t.Run(name, func(t *testing.T) {
+			e := seed(t, db)
+			e.createAccount("1000", "Cash", "asset")
+
+			// A definition as an older binary would have stored it, at a
+			// version above the current one so it is the row that loads.
+			const preWP111 = `
+object: Contact
+module: contacts
+persistence: crud
+fields:
+  - {name: name, type: text, required: true}
+  - {name: kind, type: enum, required: true}
+permissions:
+  read: [contacts.viewer]
+`
+			if err := metadata.SaveObjectSchema(context.Background(), db, "",
+				metadata.LayerCore, "Contact", 99, []byte(preWP111)); err != nil {
+				t.Fatalf("store legacy definition: %v", err)
+			}
+
+			got, err := DiagnoseSchemaConformance(context.Background(), db)
+			if err != nil {
+				t.Fatalf("one unparseable schema aborted the whole scan: %v", err)
+			}
+			if got.Note == "" {
+				t.Error("the skipped object must be named; an empty note reads as 'clean'")
+			}
+			// Account is still scanned.
+			if got.Checked == 0 {
+				t.Error("no fields scanned; a skip must not stop the rest")
+			}
+		})
+	}
+}
+
 // seedLegacyAccount inserts directly, bypassing the engine, to stand in for a
 // row written before WP-1.11 existed.
 func seedLegacyAccount(t *testing.T, db *storage.DB, tenant tenancy.ID, code, accountType string) {

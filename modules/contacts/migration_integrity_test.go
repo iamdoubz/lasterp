@@ -24,6 +24,20 @@ import (
 // contactV1YAML is the definition as it shipped before WP-1.7. It is a frozen
 // copy on purpose: the test is about what happens to a database created by the
 // old code, so it must not follow the current schema around.
+//
+// One deliberate deviation from the v1 bytes: `kind` carries its `options`.
+// WP-1.11 made options mandatory on an enum, so the literal v1 text no longer
+// parses — but the closed set {customer, vendor, both} was not *new* in
+// WP-1.11, it existed the whole time in this module's validKinds map. WP-1.11
+// moved where it is written down, not what it is. Declaring it here therefore
+// changes nothing about what v1 meant, and the frozen-ness that this test
+// depends on — v1 has no `locale` field — is untouched.
+//
+// The upgrade path itself never re-parses old YAML: Register() parses the
+// current definition and ApplyDDL diffs against the JSON snapshot in
+// object_schema_migrations. So a real pre-WP-1.11 database upgrades cleanly;
+// it is only this test's simulation of the old world, built with today's
+// parser, that needed the adjustment.
 const contactV1YAML = `
 object: Contact
 module: contacts
@@ -31,7 +45,7 @@ persistence: crud
 fields:
   - {name: name, type: text, required: true, index: true}
   - {name: email, type: email}
-  - {name: kind, type: enum, required: true}
+  - {name: kind, type: enum, required: true, options: [customer, vendor, both]}
 permissions:
   read: [contacts.viewer]
   create: [contacts.admin]

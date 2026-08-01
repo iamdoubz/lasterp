@@ -75,16 +75,25 @@ type SchemaConformance struct {
 func DiagnoseSchemaConformance(ctx context.Context, db *storage.DB) (SchemaConformance, error) {
 	var out SchemaConformance
 
-	schemas, err := registeredCRUDSchemas(ctx, db)
+	schemas, unparsed, err := registeredCRUDSchemas(ctx, db)
 	if err != nil {
 		return out, err
+	}
+	// A definition stored by an older binary can fail today's parser — WP-1.11
+	// made `options` mandatory on an enum, so a pre-WP-1.11 row does not parse.
+	// That is not a broken upgrade (Register parses the *current* YAML and
+	// ApplyDDL diffs against the JSON snapshot, never re-parsing old YAML), but
+	// `doctor` can be pointed at a database no new binary has booted against
+	// yet. Skipping and saying so beats refusing to report anything.
+	for _, note := range unparsed {
+		out.Note = strings.TrimSpace(out.Note + " " + note)
 	}
 	tenants, err := allTenants(ctx, db)
 	if err != nil {
 		return out, err
 	}
 	if len(tenants) == 0 {
-		out.Note = "no tenants exist yet; nothing to scan"
+		out.Note = strings.TrimSpace(out.Note + " no tenants exist yet; nothing to scan")
 		return out, nil
 	}
 
@@ -164,21 +173,30 @@ func nonConformingValues(ctx context.Context, db *storage.DB, tenant tenancy.ID,
 }
 
 // registeredCRUDSchemas returns the effective schema of every core-layer object
-// that has a generated table, at its highest registered version.
-func registeredCRUDSchemas(ctx context.Context, db *storage.DB) ([]*metadata.EffectiveSchema, error) {
+// that has a generated table, at its highest registered version, plus a note
+// for each object whose stored definition this binary cannot parse.
+//
+// An unparseable definition is reported, never fatal: the caller is a
+// diagnostic, and one stale row must not take the whole report offline.
+func registeredCRUDSchemas(ctx context.Context, db *storage.DB) ([]*metadata.EffectiveSchema, []string, error) {
 	names, err := registeredObjectNames(ctx, db)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var out []*metadata.EffectiveSchema
+	var unparsed []string
 	for _, name := range names {
 		stored, err := metadata.LoadObjectSchema(ctx, db, "", metadata.LayerCore, name)
 		if err != nil {
-			return nil, fmt.Errorf("app: load schema %q: %w", name, err)
+			return nil, nil, fmt.Errorf("app: load schema %q: %w", name, err)
 		}
 		object, err := metadata.ParseObject(stored.Definition)
 		if err != nil {
-			return nil, fmt.Errorf("app: parse stored schema %q: %w", name, err)
+			unparsed = append(unparsed, fmt.Sprintf(
+				"%s v%d was not scanned: this binary cannot parse its stored definition (%v). "+
+					"It was probably written by an older version; run `lasterp migrate` with this binary.",
+				name, stored.Version, err))
+			continue
 		}
 		if object.Persistence != metadata.PersistenceCRUD {
 			// Event-sourced objects have no generated table to scan; their
@@ -187,11 +205,12 @@ func registeredCRUDSchemas(ctx context.Context, db *storage.DB) ([]*metadata.Eff
 		}
 		eff, err := metadata.Merge(object)
 		if err != nil {
-			return nil, fmt.Errorf("app: merge stored schema %q: %w", name, err)
+			unparsed = append(unparsed, fmt.Sprintf("%s v%d was not scanned: %v", name, stored.Version, err))
+			continue
 		}
 		out = append(out, eff)
 	}
-	return out, nil
+	return out, unparsed, nil
 }
 
 func registeredObjectNames(ctx context.Context, db *storage.DB) ([]string, error) {
