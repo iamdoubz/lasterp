@@ -4,6 +4,7 @@ package reporting
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/iamdoubz/lasterp/kernel/storage"
@@ -91,14 +92,28 @@ func compareCard(ctx context.Context, db *storage.DB, tenant tenancy.ID, name st
 	}
 	previous, err := Evaluate(ctx, db, tenant, name, w.scopeFor(w.prior, currency))
 	if err != nil {
-		// The caller was permitted to evaluate the current value, so a failure
-		// here is about that particular period, not about access. Show the
-		// number without its comparison rather than losing the tile.
-		return card, nil
+		if priorFailureIsBenign(err) {
+			return card, nil
+		}
+		return Card{}, err
 	}
 
 	card.Comparison = compare(prior.Code, card.Value, previous.Value, m.Direction)
 	return card, nil
+}
+
+// priorFailureIsBenign reports whether a failure to evaluate the prior period
+// means "there is legitimately no number to compare against" rather than "the
+// system is broken".
+//
+// The distinction is the whole point. Until WP-1.10 this function did not exist
+// and compareCard swallowed *every* error, so a database that had fallen over
+// rendered as "no comparison available" on every card, indefinitely and
+// silently — the failure mode a dashboard is least able to survive, because a
+// missing comparison is indistinguishable from a new tenant's first month
+// (phase-1-review.md P1). Only these two sentinels mean the former.
+func priorFailureIsBenign(err error) bool {
+	return errors.Is(err, ErrNoPeriods) || errors.Is(err, ErrUnknownPeriod)
 }
 
 // compare builds the comparison arithmetic. Kept separate from evaluation so the

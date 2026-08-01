@@ -4,3 +4,50 @@ version: "2"
 run:
   build-tags:
     - integrity
+
+linters:
+  # `standard` is errcheck, govet, ineffassign, staticcheck, unused. Everything
+  # below is added by WP-1.10: for a codebase full of money paths and
+  # hand-written SQL, the default set was doing less work than it looked like
+  # (phase-1-review.md P1 item 8).
+  default: standard
+  enable:
+    # Security scanner. Its false-positive rate is real, which is why the
+    # suppressions are per-site `#nosec` comments naming a reason, not rules
+    # switched off globally.
+    - gosec
+    # An unchecked rows.Err() after ranging a *sql.Rows silently truncates a
+    # result set — a financial report quietly short some rows is the worst
+    # failure mode available here.
+    - rowserrcheck
+    # Leaked *sql.Rows / *sql.Stmt exhaust the connection pool under load.
+    - sqlclosecheck
+    # `err == ErrFoo` breaks the moment anything wraps, and this codebase wraps
+    # everywhere (CLAUDE.md: "errors wrapped with context").
+    - errorlint
+    # Unclosed HTTP response bodies leak connections — newly relevant now that
+    # the OIDC client talks to an IdP on every login.
+    - bodyclose
+    # Returning nil after checking a non-nil error is almost always a swallowed
+    # failure. It found one real instance; see reporting/card.go.
+    - nilerr
+
+  exclusions:
+    rules:
+      # Tests deliberately ignore teardown errors, build hostile inputs, and
+      # hardcode throwaway credentials.
+      - path: _test\.go
+        linters:
+          - gosec
+          - errcheck
+          - bodyclose
+
+      # G705 flags any request-derived bytes reaching w.Write as potential XSS.
+      # Every such path here writes a rendered document (PDF, CSV, XLSX) or a
+      # captured JSON body with an explicit Content-Type, so the browser is
+      # never left guessing. The header that makes that airtight — nosniff —
+      # lands with the other security headers in WP-1.10 PR-B; revisit this
+      # exclusion if that slips.
+      - text: "G705"
+        linters:
+          - gosec

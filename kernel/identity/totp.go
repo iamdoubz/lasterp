@@ -7,6 +7,9 @@ package identity
 import (
 	"crypto/hmac"
 	"crypto/rand"
+	// #nosec G505 -- RFC 6238 defines TOTP over HMAC-SHA1 and every
+	// authenticator app implements that. Using a stronger hash here would be
+	// interoperable with nothing.
 	"crypto/sha1"
 	"encoding/base32"
 	"encoding/binary"
@@ -36,6 +39,9 @@ func totpCounter(secret string, at time.Time, stepOffset int64) (string, int64, 
 	counter := at.Unix()/int64(totpStep.Seconds()) + stepOffset
 
 	var buf [8]byte
+	// #nosec G115 -- RFC 6238 encodes the step counter as a 64-bit big-endian
+	// value; reinterpreting the int64 bit pattern is exactly that encoding,
+	// and the counter is non-negative for any clock after 1970.
 	binary.BigEndian.PutUint64(buf[:], uint64(counter))
 	mac := hmac.New(sha1.New, key)
 	mac.Write(buf[:])

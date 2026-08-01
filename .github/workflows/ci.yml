@@ -15,7 +15,7 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26.4"
+          go-version: "1.26.5"
       - uses: actions/setup-node@v6
         with:
           node-version: "26"
@@ -30,13 +30,52 @@ jobs:
       - run: ./scripts/dco-check.sh origin/${{ github.base_ref || 'main' }} HEAD
         if: github.event_name == 'pull_request'
 
+  # docs/08 has specified "govulncheck / npm audit in CI" since Phase 0 and
+  # nothing implemented it, which is how golang.org/x/text sat two minor
+  # versions behind a reachable advisory (GO-2026-5970) through all of Phase 1.
+  # The stale dependency was the symptom; this job is the fix (WP-1.10).
+  supply-chain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.5"
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "26"
+      - run: npm install -g pnpm@9.15.0
+      - run: pnpm install
+
+      # Blocking. govulncheck reports only advisories whose vulnerable symbols
+      # are actually reachable from this code, so a finding here is a real
+      # exposure and not a graph-shaped rumour.
+      - name: go vulnerabilities (blocking)
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+      # Blocking, production dependencies only: nothing vulnerable may reach the
+      # shipped bundle.
+      - name: npm vulnerabilities, production (blocking)
+        run: pnpm --dir web audit --prod --audit-level=low
+
+      # Non-blocking, whole tree. Dev tooling advisories are real but they are
+      # not a shipped vulnerability, and a gate that fails the build because a
+      # test runner's transitive dependency published an advisory this morning
+      # is a gate that gets switched off. The tree is clean as of WP-1.10 (pnpm
+      # overrides in package.json), so anything appearing here is news.
+      - name: npm vulnerabilities, all (report only)
+        run: pnpm --dir web audit
+        continue-on-error: true
+
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26.4"
+          go-version: "1.26.5"
       - uses: actions/setup-node@v6
         with:
           node-version: "26"
@@ -59,7 +98,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26.4"
+          go-version: "1.26.5"
       - uses: actions/setup-node@v6
         with:
           node-version: "26"
@@ -87,7 +126,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26.4"
+          go-version: "1.26.5"
       - name: run integrity gauntlet
         # Auto-discovery (WP-0.10): every INV/adversarial/composability test
         # file is tagged `//go:build integrity`, so new module invariant tests
@@ -102,7 +141,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26.4"
+          go-version: "1.26.5"
       - name: build solo binary
         run: go build -o bin/lasterp ./cmd/lasterp
       - name: build docker image

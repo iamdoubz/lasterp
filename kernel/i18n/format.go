@@ -41,8 +41,12 @@ func (p *Printer) Money(minorUnits int64, iso4217 string) (string, error) {
 
 	// Magnitude in uint64 so math.MinInt64 needs no special case.
 	negative := minorUnits < 0
+	// #nosec G115 -- the reinterpretation is the point: taking the magnitude
+	// through uint64 is what lets math.MinInt64 (whose negation overflows
+	// int64) be formatted without a special case. Both branches are exact.
 	magnitude := uint64(minorUnits)
 	if negative {
+		// #nosec G115 -- see above: exact for every int64 including MinInt64.
 		magnitude = uint64(-(minorUnits + 1)) + 1
 	}
 

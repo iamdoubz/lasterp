@@ -102,7 +102,7 @@ func validateDraft(in DraftInput) error {
 	}
 	if in.Locale != "" {
 		if _, err := language.Parse(in.Locale); err != nil {
-			return fmt.Errorf("%w: locale %q is not a valid BCP-47 tag: %v", ErrInvalidDraft, in.Locale, err)
+			return fmt.Errorf("%w: locale %q is not a valid BCP-47 tag: %w", ErrInvalidDraft, in.Locale, err)
 		}
 	}
 	if len(in.Lines) == 0 {

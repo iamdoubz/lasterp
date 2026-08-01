@@ -4,7 +4,7 @@ Full rationale in [docs/adr/](adr/). Summary:
 
 | Layer | Choice | Why (short) | ADR |
 |---|---|---|---|
-| Server language | **Go 1.26.4** (pinned; track latest stable patch) | Single static binary (self-hosting), goroutines handle 50k+ conns, fast compile = fast agent iteration, huge ecosystem, easy to write correctly | [ADR-001](adr/ADR-001-server-language.md) |
+| Server language | **Go 1.26.5** (pinned; track latest stable patch) | Single static binary (self-hosting), goroutines handle 50k+ conns, fast compile = fast agent iteration, huge ecosystem, easy to write correctly | [ADR-001](adr/ADR-001-server-language.md) |
 | Hot paths (later) | Rust via WASM/FFI | Only if profiling demands it | ADR-001 |
 | Server DB | **PostgreSQL 18+ recommended**; supported: SQL Server, MySQL/MariaDB (Tier 2), Oracle, Db2 (Tier 3); Mongo/Cassandra as read-side sinks only | Use what you have — every engine passes the same conformance + integrity suite | [ADR-002](adr/ADR-002-database.md), [ADR-015](adr/ADR-015-database-portability.md) |
 | Solo-mode DB | **SQLite** (embedded) | Zero-dependency self-hosting | ADR-002 |

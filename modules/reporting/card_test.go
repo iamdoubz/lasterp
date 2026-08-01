@@ -3,6 +3,10 @@
 package reporting
 
 import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -119,5 +123,38 @@ func TestCardsAsOfIsClampedToNow(t *testing.T) {
 	later := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	if got := cardsAsOf(w, later); !got.Before(later) {
 		t.Errorf("as-of after the period closed = %s, want the period end", got)
+	}
+}
+
+// A dashboard that cannot reach its database must say so, not render every card
+// with a quietly missing comparison — which looks exactly like a tenant's first
+// month and is therefore invisible (phase-1-review.md P1; WP-1.10).
+func TestPriorFailureIsBenign(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"no fiscal calendar at all", ErrNoPeriods, true},
+		{"prior period was archived", ErrUnknownPeriod, true},
+		// Wrapped, because callers wrap (CLAUDE.md) and a == comparison here
+		// would have degraded silently on every real call site.
+		{"wrapped sentinel", fmt.Errorf("evaluate %s: %w", "revenue", ErrUnknownPeriod), true},
+
+		{"connection is gone", sql.ErrConnDone, false},
+		{"no rows from a query that must return one", sql.ErrNoRows, false},
+		{"query deadline blown", context.DeadlineExceeded, false},
+		{"caller hung up", context.Canceled, false},
+		{"anything unrecognized", errors.New("pq: relation \"ledger_balances\" does not exist"), false},
+		// A different reporting sentinel is still a bug, not a benign gap: the
+		// metric was resolved before the prior period was evaluated.
+		{"unknown metric", ErrUnknownMetric, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := priorFailureIsBenign(tc.err); got != tc.want {
+				t.Errorf("priorFailureIsBenign(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
 	}
 }
