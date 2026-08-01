@@ -182,3 +182,37 @@ func TestPlanEvolutionRejectsNonMonotonic(t *testing.T) {
 		t.Fatalf("err = %v, want ErrNonMonotonicVersion for to<from", err)
 	}
 }
+
+// TestPlanEvolutionDescriptorOnlyDiffPlansNoDDL is what makes WP-1.11's five
+// schema-version bumps safe on a populated database. Declaring an enum's
+// options — or reordering, grouping or re-widgeting a field — changes no
+// column, no nullability and no index, so the plan must be empty: the version
+// advances and no statement runs.
+//
+// The failure mode if this regresses is a surprise ALTER on every upgrade, on
+// tables holding posted financial documents.
+func TestPlanEvolutionDescriptorOnlyDiffPlansNoDDL(t *testing.T) {
+	base := widgetObject(
+		Field{Name: "name", Type: FieldText, Required: true},
+		Field{Name: "status", Type: FieldEnum, Required: true, Options: []string{"open", "closed"}},
+	)
+	descriptors := widgetObject(
+		Field{Name: "name", Type: FieldText, Required: true, Order: 2, Group: "identity", Widget: WidgetTextarea},
+		// Narrower option set, reordered, grouped — all presentation or
+		// domain, none of it storage.
+		Field{Name: "status", Type: FieldEnum, Required: true, Options: []string{"open"}, Order: 1},
+	)
+
+	plan, err := PlanEvolution(eff(t, base), eff(t, descriptors), 1, 2)
+	if err != nil {
+		t.Fatalf("PlanEvolution: %v", err)
+	}
+	if len(plan.Steps) != 0 {
+		t.Fatalf("steps = %+v, want none (options and UI descriptors are not storage)", plan.Steps)
+	}
+	for _, dialect := range []storage.Dialect{storage.Postgres, storage.SQLite} {
+		if got := plan.DDL(dialect); got != "" {
+			t.Fatalf("%v DDL = %q, want empty", dialect, got)
+		}
+	}
+}

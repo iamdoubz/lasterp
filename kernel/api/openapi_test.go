@@ -32,6 +32,54 @@ func sampleEffective(t *testing.T) *metadata.EffectiveSchema {
 	return eff
 }
 
+// TestOpenAPIPublishesEnumOptions: the spec must carry the same closed set the
+// engine validates against (WP-1.11). A generated client or a Postman
+// collection should learn the legal values from the declaration, not by trying
+// them until one comes back 422.
+func TestOpenAPIPublishesEnumOptions(t *testing.T) {
+	const withEnum = `
+object: Ticket
+module: support
+persistence: crud
+fields:
+  - {name: title, type: text, required: true}
+  - {name: status, type: enum, required: true, options: [open, closed]}
+  - {name: total, type: computed}
+permissions:
+  read: [support.viewer]
+`
+	core, err := metadata.ParseObject([]byte(withEnum))
+	if err != nil {
+		t.Fatalf("ParseObject: %v", err)
+	}
+	eff, err := metadata.Merge(core)
+	if err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+
+	spec := OpenAPI([]*metadata.EffectiveSchema{eff}, nil)
+	components, _ := spec["components"].(obj)
+	schemas, _ := components["schemas"].(obj)
+	ticket, ok := schemas["Ticket"].(obj)
+	if !ok {
+		t.Fatalf("Ticket schema missing: %v", schemas)
+	}
+	props, _ := ticket["properties"].(obj)
+
+	status, _ := props["status"].(obj)
+	options, _ := status["enum"].([]any)
+	if len(options) != 2 || options[0] != "open" || options[1] != "closed" {
+		t.Fatalf("status enum = %v, want [open closed]", status["enum"])
+	}
+
+	// A computed field is server-derived and the CRUD engine refuses a
+	// supplied value, so the spec must not advertise it as writable.
+	total, _ := props["total"].(obj)
+	if total["readOnly"] != true {
+		t.Fatalf("computed field = %v, want readOnly", total)
+	}
+}
+
 // TestOpenAPIValidates asserts the generated document has the OpenAPI 3.1
 // required shape (the AC's "OpenAPI spec validates"). Full Spectral linting
 // is WP-3.7's CI gate (docs/15); this is the structural contract.
