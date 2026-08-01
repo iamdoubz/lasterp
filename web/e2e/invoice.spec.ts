@@ -48,12 +48,26 @@ async function signIn(page: Page) {
  */
 const RUN = Date.now().toString().slice(-6);
 
+/** setField writes one value into a metadata-rendered control, dispatching on
+ * what the schema made it. Since WP-1.11 an enum renders as a <select> over its
+ * declared options, and fill() does not work on one — the control is now
+ * genuinely constrained, which is the point. */
+async function setField(page: Page, field: string, value: string) {
+  const control = page.locator(`#field-${field}`);
+  const tag = await control.evaluate((el) => el.tagName);
+  if (tag === "SELECT") {
+    await control.selectOption(value);
+    return;
+  }
+  await control.fill(value);
+}
+
 /** createRecord fills a metadata-rendered form and returns the new record's id
  * from the URL the app navigates to. */
 async function createRecord(page: Page, resource: string, values: Record<string, string>) {
   await page.goto(`/o/${resource}/new`);
   for (const [field, value] of Object.entries(values)) {
-    await page.locator(`#field-${field}`).fill(value);
+    await setField(page, field, value);
   }
 
   // Wait on the create response rather than only on the URL: a refused save
@@ -111,6 +125,32 @@ test("navigation is rendered from tenant metadata", async ({ page }) => {
   await expect(nav.getByRole("link", { name: "Contact" })).toBeVisible();
   await expect(nav.getByRole("link", { name: "Account" })).toBeVisible();
   await scan(page, "shell");
+});
+
+test("an enum field renders as a select over the schema's declared options", async ({ page }) => {
+  await signIn(page);
+  await page.goto("/o/account/new");
+
+  // The finding this closes was that the chart of accounts accepted any string
+  // for `type`. The form now offers exactly the closed set the server
+  // validates against — the option list travels in /api/v1/meta/objects, so
+  // this is metadata reaching the browser, not a hardcoded list.
+  const type = page.locator("#field-type");
+  await expect(type).toHaveJSProperty("tagName", "SELECT");
+
+  const options = await type.locator("option").evaluateAll((els) =>
+    els.map((el) => (el as HTMLOptionElement).value).filter((v) => v !== ""),
+  );
+  expect(options).toEqual(["asset", "liability", "equity", "income", "expense"]);
+  expect(options).not.toContain("banana");
+
+  // Field order is the schema's: `code` is declared first and renders first.
+  const ids = await page
+    .locator("form [id^='field-']")
+    .evaluateAll((els) => els.map((el) => el.id));
+  expect(ids[0]).toBe("field-code");
+
+  await scan(page, "account-form");
 });
 
 test("invoice lifecycle: draft → post → GL entry → PDF", async ({ page }) => {

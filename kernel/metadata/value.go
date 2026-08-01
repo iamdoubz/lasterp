@@ -111,7 +111,7 @@ func ruleEmail(f Field, v any) (any, error) {
 	// net/mail is the stdlib's own RFC 5322 parser — a hand-rolled regex here
 	// would be both longer and wronger.
 	if _, err := mail.ParseAddress(s); err != nil {
-		return nil, fmt.Errorf("%w: field %q is not a valid email address: %v", ErrValidation, f.Name, err)
+		return nil, fmt.Errorf("%w: field %q is not a valid email address: %w", ErrValidation, f.Name, err)
 	}
 	return s, nil
 }
@@ -184,7 +184,9 @@ func ruleCurrency(f Field, v any) (any, error) {
 	}
 	c, err := money.Lookup(s)
 	if err != nil {
-		return nil, fmt.Errorf("%w: field %q: %v", ErrValidation, f.Name, err)
+		// Both errors are wrapped: a caller can classify this as a validation
+		// failure and still reach money.ErrUnknownCurrency underneath.
+		return nil, fmt.Errorf("%w: field %q: %w", ErrValidation, f.Name, err)
 	}
 	return c.Code, nil
 }
@@ -239,7 +241,7 @@ func ruleJSON(f Field, v any) (any, error) {
 		return s, nil
 	}
 	if _, err := json.Marshal(v); err != nil {
-		return nil, fmt.Errorf("%w: field %q is not JSON-representable: %v", ErrValidation, f.Name, err)
+		return nil, fmt.Errorf("%w: field %q is not JSON-representable: %w", ErrValidation, f.Name, err)
 	}
 	return v, nil
 }

@@ -67,12 +67,19 @@ type Report struct {
 
 // TypeUnclassified is where accounts outside the ledger's closed type set land.
 //
-// It exists because they CAN exist: ledger.CreateAccount validates the type, but
-// the generic CRUD route does not (kernel/metadata has no enum options —
-// WP-1.6-decisions.md §5). An account with an unrecognized type would otherwise
-// silently vanish from both the P&L and the balance sheet, and both statements
-// would still *look* balanced while being wrong. A visible bucket turns silent
-// misstatement into an obvious question.
+// It exists because they CAN exist. Until WP-1.11 that was true of new writes:
+// ledger.CreateAccount validated the type but the generic CRUD route did not,
+// because kernel/metadata had no enum options (WP-1.6-decisions.md §5). The
+// engine now refuses an out-of-set write on every path (INV-T5), but the bucket
+// stays and must: rows written before that are deliberately not rewritten (no
+// backfill can know what "banana" meant), so they are still out there, and
+// `lasterp doctor` reports them rather than anything silently repairing them.
+//
+// An account with an unrecognized type would otherwise vanish from both the
+// P&L and the balance sheet, and both statements would still *look* balanced
+// while being wrong. A visible bucket turns silent misstatement into an obvious
+// question. Deleting a mitigation because the cause is fixed is how the cause
+// comes back.
 const TypeUnclassified = "unclassified"
 
 // classify maps an account type to its statement section, funnelling anything

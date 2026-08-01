@@ -1,7 +1,7 @@
 # WP-1.11 decisions — Metadata field validation + schema descriptors
 
-**Status: plan (2026-08-01).** Branch `wp-1.11`. No implementation code written yet;
-this file is the interpretation a human approves before code lands.
+**Status: implemented (2026-08-01).** Branch `wp-1.11`. Plan approved by the repo owner
+before code; this file records the interpretation and what shipped against it.
 
 WP-1.11 closes the ADR-006 gap [WP-1.6 §5](WP-1.6-decisions.md) called "the one finding
 that outlives this WP" and [phase-1-review.md](phase-1-review.md) re-confirmed:
@@ -25,7 +25,9 @@ for the replica generator to see it — see §4.
 3. `FieldEnum` has no options and falls to the `default:` branch in both `columnType`
    (ddl.go:28) and `scanRecord` (crud.go:405) — an enum column is `TEXT` and free text.
 4. **Five** enum fields ship, not six: `Contact.kind`, `Account.type`, `Period.status`,
-   `Invoice.status`, `Receipt.status`. (The WP brief says six and then lists five.)
+   `Invoice.status`, `Receipt.status`. The original brief said six; the sixth was a match in
+   a test file. `TestEveryRegisteredEnumFieldDeclaresOptions` pins the count at five against
+   what the running server registered, so a sixth has to be added deliberately.
 5. `Account.type` and `Contact.kind` are the two reachable through generic CRUD
    (`crudObjects()`, `internal/app/app.go:179`). `Contact.kind` is the worse of the two:
    `contacts.CreateContact` validates against `validKinds`, but the generic route bypasses
@@ -34,9 +36,10 @@ for the replica generator to see it — see §4.
 6. There is **no production overlay authoring path**. `metadata.Merge` is called with zero
    overlays in every module; `Overlay` is exercised only in `kernel/metadata/*_test.go`.
    That bounds what the narrowing rule in §3 can be proven against — see §9.
-7. Unrelated drift found while reading the catalog: **`INV-F8` is registered in
-   `kernel/integrity/catalog.go` but missing from `docs/19-DATA-INTEGRITY.md` §1.**
-   Restored here since this WP edits that list anyway.
+7. Unrelated drift found while reading the catalog: **`INV-F8` was registered in
+   `kernel/integrity/catalog.go` (since WP-1.6a) but missing from
+   `docs/19-DATA-INTEGRITY.md` §1.** Pre-existing — *not* introduced by this WP — and
+   restored here, since this WP edits that list anyway to add INV-T5.
 
 ## Invariants touched
 
@@ -183,15 +186,18 @@ The written answer the brief asks for.
 CRUD write path, docs/19 enforcement layer 3 (command pipeline). No `CHECK` constraints are
 generated. Four reasons, in order of weight:
 
-1. **A shared table cannot express a per-tenant domain.** `GenerateDDL` produces one
+1. **WP-2.2 reads metadata, not DDL.** The client replica is generated from the same schema
+   documents this WP extends. If the option set lives in a Postgres `CHECK`, the replica
+   generator cannot see it, and INV-S2's "offline commands pass the identical validation
+   pipeline" becomes two pipelines that agree by coincidence. This is the mechanical reason
+   WP-1.11 blocks WP-2.2, and the reason to lead with.
+2. **A shared table cannot express a per-tenant domain.** `GenerateDDL` produces one
    physical table for every tenant (that is what `tenant_id` + RLS is for). §3 lets a tenant
    overlay narrow an option set. A `CHECK` could therefore only encode the widest, core set —
    it would enforce a *strictly weaker* rule than the engine while looking authoritative.
    A constraint that is right about less than the code above it is worse than no constraint.
-2. **WP-2.2 reads metadata, not DDL.** The client replica is generated from the same schema
-   documents. If the option set lives in a Postgres `CHECK`, the replica cannot see it, and
-   INV-S2's "identical validation pipeline" becomes two pipelines that agree by coincidence.
-   This is the mechanical reason this WP blocks WP-2.2.
+   `TestNarrowedOptionBindsTheWritePath` is the demonstration: two engines over one table,
+   disagreeing about what is legal, both correct.
 3. **SQLite cannot add one.** `ALTER TABLE … ADD CONSTRAINT` does not exist there. WP-1.0a
    already hit this wall and made widen/loosen steps Postgres-only (evolve.go:146). A
    Postgres-only `CHECK` is a semantic divergence between dialects, which the adapter
