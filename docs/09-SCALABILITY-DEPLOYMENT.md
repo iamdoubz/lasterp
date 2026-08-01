@@ -28,8 +28,36 @@ Change feed fan-out: sync engine tails the event log via logical replication slo
 
 **Zero data loss:** synchronous_commit=on (default), Postgres streaming replication with sync replica for cluster shape (RPO 0), `lasterp backup` = pgBackRest/wal-g + object-storage manifest; restore drill documented and CI-tested against a scratch instance monthly.
 
+## Database roles (required on Postgres — WP-1.10)
+
+LastERP deployments use **two** database roles, and the difference is load-bearing rather than hygiene:
+
+| Role | Used by | Holds |
+|---|---|---|
+| owner | `lasterp migrate`, `lasterp harden` | schema ownership, and the `SECURITY DEFINER` pipeline functions (`append_event`, `ledger_post_entry`) |
+| application | `lasterp serve` | everything needed to run, minus direct `INSERT` on `events` and any mutation of the append-only tables |
+
+That second row is what makes INV-F5 — "no direct ledger writes outside the posting pipeline" — a *storage* guarantee instead of a convention the application is trusted to keep (docs/19 §2 layer 3). Serving as the owner is a supported-but-degraded posture, not an error, so nothing will stop you; `lasterp doctor` is what tells you which one you are in.
+
+```sh
+export LASTERP_DSN='postgres://owner:…@db/lasterp'      # owner connection
+lasterp migrate                                          # schema, as the owner
+LASTERP_APP_PASSWORD=… lasterp harden --create-role      # create + lock down lasterp_app
+
+export LASTERP_DSN='postgres://lasterp_app:…@db/lasterp' # restricted connection
+lasterp doctor                                           # exits non-zero if not separated
+lasterp serve
+```
+
+Both `migrate` and `harden` are idempotent, so they belong in every deploy rather than a first-run runbook — an upgrade that adds a protected table needs the grants re-applied, and a grant nobody re-applied is a hole nobody notices. [deploy/docker-compose.yml](../deploy/docker-compose.yml) and the chart's pre-upgrade hook both do exactly the sequence above.
+
+`doctor` exits non-zero when the deployment is not separated, so it works as a deploy gate rather than something a human has to read. It reports posture by reading the catalog (`has_table_privilege`), never by attempting a write that ought to fail.
+
+**SQLite/solo mode has no roles** and is a single trusted process (ADR-005); `harden` is a no-op there and `doctor` says so rather than implying a separation that does not exist.
+
 ## Upgrades
 - Expand → migrate → contract schema migrations only; app N and N+1 must both run against the transitional schema (zero-downtime rolling deploys).
+- **Run `lasterp migrate` then `lasterp harden` as the owner before rolling the new version**, and keep serving as the application role (see above).
 - Metadata/customization compatibility check runs pre-upgrade with a human-readable report (ADR-006).
 - Client protocol versioned; server supports current + previous minor.
 

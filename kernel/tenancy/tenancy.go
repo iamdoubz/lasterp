@@ -110,6 +110,20 @@ func withTenantOnce(ctx context.Context, db *storage.DB, tenant ID, fn func(ctx 
 		return err
 	}
 	if err := tx.Commit(); err != nil {
+		// A cancelled or timed-out request has its transaction rolled back by
+		// database/sql's context watcher, which runs in its own goroutine. So
+		// Commit reports either the context error or — when that rollback lands
+		// first — a bare sql.ErrTxDone, and the second form is indistinguishable
+		// from a genuine storage fault by the time it reaches the edge. That is
+		// how an ordinary "user navigated away" became an unclassified 500 in
+		// the logs (found by the WP-1.10 e2e, once reporting stopped swallowing
+		// these).
+		//
+		// The cause is the cancellation in both cases, so report that and let
+		// the edge classify it as the non-event it is.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return fmt.Errorf("tenancy: commit: %w", ctxErr)
+		}
 		return fmt.Errorf("tenancy: commit: %w", err)
 	}
 	return nil

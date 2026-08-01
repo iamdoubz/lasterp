@@ -1,7 +1,82 @@
+# Compose deployment with database role separation applied (docs/19 §2, WP-1.10).
+#
+# Two roles is the whole point, and it is why this file has a one-shot `harden`
+# service rather than a single container:
+#
+#   lasterp      (owner) — owns the schema, runs the migrations, owns the
+#                          SECURITY DEFINER pipeline functions.
+#   lasterp_app         — what the server actually connects as. It can append to
+#                          the event log only by EXECUTEing append_event and
+#                          ledger_post_entry, and cannot UPDATE or DELETE the
+#                          append-only tables at all.
+#
+# Without the split, the application connects as the schema owner and can write
+# the ledger directly, which makes INV-F5's storage-layer guarantee true in CI
+# and false in production (phase-1-review.md P1 item 6). `lasterp doctor` reports
+# which posture a running deployment is in, and exits non-zero for the wrong one.
 services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_DB: lasterp
+      POSTGRES_USER: lasterp
+      POSTGRES_PASSWORD: lasterp
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lasterp -d lasterp"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # Migrations run as the owner: the SECURITY DEFINER pipeline functions have to
+  # be owned by a role that keeps INSERT on events, which is precisely the
+  # privilege the serving role gives up two services down.
+  migrate:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      LASTERP_DSN: postgres://lasterp:lasterp@postgres:5432/lasterp?sslmode=disable
+    entrypoint: ["/usr/local/bin/lasterp"]
+    command: ["migrate"]
+    restart: "no"
+
+  # Creates the application role and locks it down. Separate from migrate
+  # because the image has no shell to chain them (distroless), and separate from
+  # serve because it needs the owner connection.
+  #
+  # Idempotent, so it runs on every `compose up` rather than only the first — a
+  # deployment that has to remember which boot it is on will get it wrong.
+  harden:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      # The owner connection: this container administers grants on another
+      # role's behalf.
+      LASTERP_DSN: postgres://lasterp:lasterp@postgres:5432/lasterp?sslmode=disable
+      LASTERP_APP_PASSWORD: lasterp_app
+    entrypoint: ["/usr/local/bin/lasterp"]
+    command: ["harden", "--create-role", "--app-role", "lasterp_app"]
+    restart: "no"
+
   lasterp:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
+    depends_on:
+      harden:
+        condition: service_completed_successfully
+    environment:
+      # Note the different user. Serving as `lasterp` (the owner) would undo
+      # everything the harden step just did, and nothing would complain —
+      # which is exactly why `lasterp doctor` exists.
+      LASTERP_DSN: postgres://lasterp_app:lasterp_app@postgres:5432/lasterp?sslmode=disable
+      LASTERP_ADDR: ":8080"
     ports:
       - "8080:8080"

@@ -145,6 +145,48 @@ rather than fixing something. It goes last in PR-B; if PR-B grows, it is the
 first thing dropped to its own follow-up rather than the thing that delays the
 hardening.
 
+**Outcome: cut.** PR-B grew to cover the headers, graceful shutdown, three new
+CLI commands, the compose and chart deployment path, the docs, and three test
+files. The read API needs `ListTaxRates`/`ListFxRates` in two modules with
+global-plus-tenant scoping and tests on both dialects — perhaps 200 lines — and
+none of it is security work. Landing it inside a PR that changes authentication
+and database privileges would make that PR harder to review for the things that
+matter in it. It goes to its own follow-up.
+
+**11. `lasterp migrate` had to exist first.** `app.Migrate` and `app.Setup` have
+been separate since WP-1.4b, explicitly so "a deployment can run migrations under
+a bootstrap role and serve under a restricted app role" — but nothing outside the
+process could invoke that split, because the only entry point was `serve`, which
+does both. The two-role deployment the split was designed for was therefore not
+actually deployable, which is the same shape of gap as the ungranted role
+separation itself: the capability existed and the path to it did not.
+
+`serve` still migrates on boot, so solo mode stays one command; when the schema
+is current that is a no-op.
+
+**12. A cancelled request was being reported as a storage fault.** Found by the
+PR-B e2e, and only findable because PR-A stopped `reporting/card.go` swallowing
+every error: the dashboard route began logging
+`unhandled error on GET "/api/v1/dashboards/ceo": tenancy: commit: sql:
+transaction has already been committed or rolled back` on an ordinary page
+navigation.
+
+`database/sql` rolls a transaction back from its own goroutine when the context
+is done, so `tx.Commit()` afterwards returns *either* the context error or a bare
+`sql.ErrTxDone` depending on which lands first. `fail()` has always classified
+`context.Canceled` as the non-event it is — but the second form does not wrap it,
+so it fell through to the unclassified-500 branch and wrote a log line implying
+the database was broken.
+
+`withTenantOnce` now reports the context error whenever the context is done and
+the commit failed, because the cancellation is the cause in both orderings.
+`kernel/tenancy/cancel_test.go` covers both, and the slow one fails without the
+fix with exactly the string above.
+
+This is worth naming as a pattern rather than a one-off: the swallowed error in
+`card.go` was hiding a *second* defect, and fixing the first is what surfaced it.
+Every `return nil` on an error path is a place where this can be true.
+
 ## Deferred (flagged)
 
 - **SBOM per release** — see §7; belongs with the release pipeline.

@@ -18,6 +18,11 @@ spec:
         - name: lasterp
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # The restricted connection, never database.ownerDsn: serving as the
+          # owner undoes the hardening the pre-upgrade Job just applied.
+          env:
+            - name: LASTERP_DSN
+              value: {{ .Values.database.appDsn | quote }}
           ports:
             - containerPort: 8080
           readinessProbe:
