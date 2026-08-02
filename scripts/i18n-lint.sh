@@ -41,6 +41,20 @@ while IFS= read -r -d '' f; do
     # Strip allowlisted tokens so brand-only text doesn't trip the gate.
     scan="${line//$allowlist/}"
 
+    # Blank out comparison operators before looking for tag brackets.
+    #
+    # `{count > 0 && count <= max && (` is not a text node, but the pattern
+    # below reads it as one: the `>` of the first comparison, the letters of
+    # `count`, and the `<` of the second look exactly like `>text<`. The same
+    # goes for the idiomatic `{count > 0 && <Alert/>}`. A tag-closing `>` is
+    # never preceded by whitespace and a tag-opening `<` is never followed by
+    # it, so spaced operators are safe to erase — and a genuine text node that
+    # happens to contain one (`<p>Total > 100</p>`) still trips the gate,
+    # because its surrounding tag brackets are untouched.
+    for op in ' > ' ' >= ' ' < ' ' <= '; do
+      scan="${scan//$op/ }"
+    done
+
     # JSX text node: >...text...< on one line, letters present, no { } braces
     # (a {expr} child is already going through code, not a literal).
     if echo "$scan" | grep -qE '>[^<>{}]*[A-Za-z][^<>{}]*<'; then

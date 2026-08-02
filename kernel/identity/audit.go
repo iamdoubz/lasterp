@@ -21,6 +21,50 @@ const (
 	AuditLogout = "logout"
 )
 
+// Second-factor lifecycle audit actions (WP-1.12). Every transition is
+// recorded — INV-T4 wants an attributable record of every mutation, and
+// "someone turned MFA off on this account" is the one an incident review reads
+// first. AuditRecoveryUsed additionally distinguishes a login that spent a
+// recovery code from an ordinary one, which is why the login route offers
+// recovery codes in their own field rather than sniffing them out of the TOTP
+// field (decisions §5).
+const (
+	AuditTOTPEnrollStarted = "totp.enroll.started"
+	AuditTOTPEnabled       = "totp.enabled"
+	AuditTOTPDisabled      = "totp.disabled"
+	AuditRecoveryUsed      = "totp.recovery.used"
+)
+
+// auditUserObject is the audit_log.object value for account-security events.
+// They are recorded against the user, not a session: a TOTP transition outlives
+// the session that made it, and an incident review asks "what happened to this
+// account", not "what happened in this session".
+const auditUserObject = "User"
+
+// AuditAccountSecurity records a second-factor lifecycle transition against the
+// user it happened to (INV-T4). Like AuditSession it lives in the kernel rather
+// than the HTTP handler, so the record is a function call away rather than
+// something each new caller has to remember.
+func AuditAccountSecurity(ctx context.Context, db *storage.DB, tenant tenancy.ID, user UserID, action string) error {
+	if tenant == "" || user == "" {
+		return errors.New("identity: tenant and user are required to audit an account security event")
+	}
+	err := tenancy.WithTenant(ctx, db, tenant, func(ctx context.Context, tx *sql.Tx) error {
+		// changes stays "{}": the interesting fact is the transition itself,
+		// and the columns it touches are a secret and its hashes. Writing them
+		// here would defeat the point of hashing them over there.
+		_, err := tx.ExecContext(ctx, db.Rebind(`
+			INSERT INTO audit_log (id, tenant_id, object, record_id, action, changes, actor_id, at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`),
+			idgen.New(), string(tenant), auditUserObject, string(user), action, "{}", string(user), time.Now().UTC())
+		return err
+	})
+	if err != nil {
+		return fmt.Errorf("identity: audit %s: %w", action, err)
+	}
+	return nil
+}
+
 // auditObject is the audit_log.object value for authentication events. Session
 // is not a metadata object (sessions predate the metadata engine and are
 // kernel-owned), but the audit trail is one table by design — docs/19 wants a

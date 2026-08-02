@@ -16,3 +16,7 @@ web/.playwright/
 # MEMANTO project-local memory cache (auto-synced at session start, not a
 # repo artifact). See CLAUDE.md.
 MEMORY.md
+
+# Agent git worktrees. Checkouts of branches that already live in the repo —
+# the rest of .claude/ (agents, commands, skills) is tracked on purpose.
+.claude/worktrees/

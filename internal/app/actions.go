@@ -38,6 +38,7 @@ const dateLayout = "2006-01-02"
 // the gateway. See WP-1.4b-decisions.md §3 for the full table.
 func actions(db *storage.DB, reg *capability.Registry, objects []*metadata.EffectiveSchema, tr *i18n.Translator, sso *oidcLogin) []api.Action {
 	out := append(sessionActions(db), oidcActions(sso)...)
+	out = append(out, totpActions(db)...)
 	out = append(out, metaActions(db, objects, reg)...)
 	out = append(out, reportActions(db)...)
 	out = append(out, dashboardActions(db)...)

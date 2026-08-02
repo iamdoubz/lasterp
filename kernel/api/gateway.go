@@ -81,6 +81,33 @@ type Action struct {
 	// enforced at boot by NewGateway and in CI by the route-enumeration test in
 	// internal/app. Do not widen it — add an authenticated route instead.
 	Public bool
+
+	// CarriesCredentials marks a write whose request or response body holds a
+	// secret — a password, a recovery code, an API key. It keeps both out of
+	// idempotency_keys, a table with no TTL and no cleanup, which would
+	// otherwise become the longest-lived copy of every credential the API
+	// touches (WP-1.12-decisions.md §9).
+	//
+	// Two effects, one per column:
+	//
+	//   - response_body is stored empty, so a replay returns the original
+	//     status and Idempotent-Replayed and nothing else. That is the right
+	//     semantics for a show-once credential anyway: replaying a confirmation
+	//     must not re-reveal it.
+	//   - request_fingerprint is computed over method and path only, never the
+	//     body. An unsalted SHA-256 of {"password":"…"} is an offline oracle
+	//     against a value that is deliberately expensive to guess everywhere
+	//     else — bcrypt in users.password_hash is pointless if the same secret
+	//     sits one table over behind a single hash.
+	//
+	// The cost is that two different bodies under one key read as a replay
+	// rather than a 409 on these routes. That is acceptable where it is set:
+	// the request is the credential, so a caller reusing a key with a different
+	// body is retrying, not issuing a new command.
+	//
+	// It is not a way to opt out of idempotency. The reservation and the
+	// exactly-once execution are unchanged.
+	CarriesCredentials bool
 }
 
 // HandlerFunc is an Action handler: it runs after the gateway choke point has
@@ -192,10 +219,10 @@ func (g *Gateway) registerObject(schema *metadata.EffectiveSchema) {
 	gate := func(h apiHandler) http.HandlerFunc { return g.guard(g.capabilityGate(object, h)) }
 
 	g.mux.HandleFunc("GET "+base, gate(g.handleList(crud)))
-	g.mux.HandleFunc("POST "+base, gate(g.handleWrite(g.doCreate(crud))))
+	g.mux.HandleFunc("POST "+base, gate(g.handleWrite(g.doCreate(crud), false)))
 	g.mux.HandleFunc("GET "+base+"/{id}", gate(g.handleGet(crud)))
-	g.mux.HandleFunc("PATCH "+base+"/{id}", gate(g.handleWrite(g.doUpdate(crud))))
-	g.mux.HandleFunc("DELETE "+base+"/{id}", gate(g.handleWrite(g.doDelete(crud))))
+	g.mux.HandleFunc("PATCH "+base+"/{id}", gate(g.handleWrite(g.doUpdate(crud), false)))
+	g.mux.HandleFunc("DELETE "+base+"/{id}", gate(g.handleWrite(g.doDelete(crud), false)))
 }
 
 // registerAction wires one non-CRUD Action onto the mux through the same
@@ -219,7 +246,7 @@ func (g *Gateway) registerAction(a Action) {
 	}
 	var h apiHandler = a.Handler
 	if a.Write {
-		h = g.handleWrite(writeExec(a.Handler))
+		h = g.handleWrite(writeExec(a.Handler), a.CarriesCredentials)
 	}
 	handler := g.guard(g.capabilityGate(a.Object, h))
 	g.mux.HandleFunc(a.Method+" "+a.Path, handler)
@@ -415,7 +442,7 @@ func (g *Gateway) doDelete(crud *metadata.CRUD) writeExec {
 // handleWrite wraps a mutation with idempotency: it requires an
 // Idempotency-Key, replays a stored response on a matching key, otherwise
 // executes exec once and records the result (ADR-009).
-func (g *Gateway) handleWrite(exec writeExec) apiHandler {
+func (g *Gateway) handleWrite(exec writeExec, credentialed bool) apiHandler {
 	return func(w http.ResponseWriter, r *http.Request, tenant tenancy.ID) {
 		key := r.Header.Get("Idempotency-Key")
 		if key == "" {
@@ -428,7 +455,13 @@ func (g *Gateway) handleWrite(exec writeExec) apiHandler {
 			writeProblem(w, Problem{Status: http.StatusBadRequest, Title: "unreadable request body", Instance: r.URL.Path})
 			return
 		}
-		fp := fingerprint(r.Method, r.URL.Path, body)
+		// A credentialed route fingerprints method and path only: the body is
+		// the secret, and a stored hash of it outlives every other copy.
+		fpBody := body
+		if credentialed {
+			fpBody = nil
+		}
+		fp := fingerprint(r.Method, r.URL.Path, fpBody)
 
 		stored, err := g.idem.begin(r.Context(), tenant, key, fp)
 		switch {
@@ -449,7 +482,11 @@ func (g *Gateway) handleWrite(exec writeExec) apiHandler {
 		exec(cw, r, tenant)
 
 		if cw.status >= 200 && cw.status < 300 {
-			if ferr := g.idem.finalize(r.Context(), tenant, key, cw.status, cw.buf.Bytes()); ferr != nil {
+			stored := cw.buf.Bytes()
+			if credentialed {
+				stored = nil
+			}
+			if ferr := g.idem.finalize(r.Context(), tenant, key, cw.status, stored); ferr != nil {
 				writeProblem(w, problemForError(ferr, r.URL.Path))
 				return
 			}

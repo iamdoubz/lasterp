@@ -34,6 +34,11 @@ import (
 var passwordPrimitives = []string{
 	"VerifyPassword(",
 	"ValidateTOTP(",
+	// WP-1.12: a recovery code is a credential. Verifying one in the
+	// composition root would be the same mistake the fence was built to catch,
+	// one credential type later. internal/app calls Authenticate or
+	// Reauthenticate; the provider is what spends the code.
+	"ConsumeRecoveryCode(",
 }
 
 // TestOnlyOneCodePathAuthenticatesAPassword asserts that the composition root

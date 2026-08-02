@@ -83,7 +83,7 @@ test("the shell is localized: nav, object labels and the language switcher", asy
   const nav = page.getByRole("navigation", { name: "Hauptnavigation" });
   // Object names come from the server as machine names; the pack turns them
   // into words a German reader expects.
-  await expect(nav.getByRole("link", { name: "Konto" })).toBeVisible();
+  await expect(nav.getByRole("link", { name: "Konto", exact: true })).toBeVisible();
   await expect(nav.getByRole("link", { name: "Kontakt" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Abmelden" })).toBeVisible();
   await scan(page, "shell (de)");
@@ -96,7 +96,7 @@ test("the shell is localized: nav, object labels and the language switcher", asy
   // The nav's own accessible name is translated too, so it has to be found
   // again under its English one — which is the assertion, not an annoyance.
   await expect(
-    page.getByRole("navigation", { name: "Main" }).getByRole("link", { name: "Account" }),
+    page.getByRole("navigation", { name: "Main" }).getByRole("link", { name: "Account", exact: true }),
   ).toBeVisible();
 
   // …and the choice survives a reload, with no query parameter in sight.
