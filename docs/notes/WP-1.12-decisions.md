@@ -1,6 +1,23 @@
 # WP-1.12 decisions — TOTP enrollment
 
-**Status: plan approved pending review (2026-08-01).** Branch `wp-1.12`.
+**Status: implemented (2026-08-01).** Branch `wp-1.12`. Four things changed
+between approval and merge; each is marked in place, with the original reasoning
+kept so the correction is legible:
+
+- **§3** takes `rsc.io/qr` ([ADR-020](../adr/ADR-020-qr-encoding.md)) instead of
+  hand-rolling an encoder — decided before implementation.
+- **§4** now requires the password to *enroll*, not only to disable. The plan
+  exempted the upgrade path; that left a stolen session able to enroll an
+  attacker's authenticator and lock the owner out permanently.
+- **§6**'s lockout does both writes in SQL. The first cut computed the counter
+  in Go, which lost updates under concurrency and could clear the lock.
+- **§9**'s flag is `CarriesCredentials`, covering the idempotency *request
+  fingerprint* as well as the response body — the disable body carries a
+  password, and an unsalted hash of it is an oracle.
+
+§6's "cut line" was not taken: the lockout landed with the WP. The last three
+came out of the integrity review; the invariant table below also corrects an
+INV-T3 citation that should always have read INV-T2.
 
 WP-1.12 closes the P2 finding in [phase-1-review.md](phase-1-review.md): TOTP can
 be *validated* but never *enrolled*. `kernel/identity/totp.go` has shipped a
@@ -21,7 +38,7 @@ enforced and tested. This WP adds paths that must not break them.
 |---|---|
 | **INV-T1** | A new tenant-scoped table (`totp_recovery_codes`) with `tenant_id` first in the primary key and an RLS policy, plus every new query filtering on tenant explicitly. A recovery code minted in tenant A must not authenticate anyone in tenant B, on either dialect. |
 | **INV-T2** | The enrollment routes are **authenticated**, so the `Action.Public` allowlist in `internal/app/routes_integrity_test.go` does not change — and a test asserts it did not. The structural fence in `auth_integrity_test.go` ("no authentication decision in `internal/app`") is *extended*, not weakened: see §7. |
-| **INV-T3** | Enrollment and disablement act only on the caller's own account. No `{id}` is accepted from the request, for the same reason `DELETE /api/v1/sessions/current` accepts none — a path parameter here would be a permission floor lowered by a URL. |
+| **INV-T2** (second half) | Enrollment and disablement act only on the caller's own account. No `{id}` is accepted from the request, for the same reason `DELETE /api/v1/sessions/current` accepts none — a path parameter here would be an authorization decision made by a URL. *(Corrected during implementation: this was filed under INV-T3, which is about permission floors and value domains not being widened by overlays, plugins or agents. Nothing in this WP touches INV-T3.)* |
 | **INV-T4** | Every transition (`totp.enroll.started`, `totp.enabled`, `totp.disabled`, `totp.recovery.used`) writes an `audit_log` row carrying actor, action and timestamp. This is the WP's explicit acceptance criterion. |
 
 ## Ambiguities resolved
@@ -136,60 +153,57 @@ then updating would be a check-then-act race; this is not.
 `kernel/integrity`'s `AppendOnlyTables`: marking a code used is the whole point,
 and the append-only grants exist for `events` and `audit_log`, which this is not.
 
-### 3. The QR code: hand-rolled, server-side, PNG data URI — and an ADR to say so
+### 3. The QR code: `rsc.io/qr`, server-side, PNG data URI — and an ADR to say so
+
+**Reversed 2026-08-01, before implementation.** This section originally decided
+a hand-rolled in-tree encoder (`kernel/qr`: byte mode, level M, versions 1–10,
+full mask selection, plus a four-angle test suite including a decoder written in
+the test file). It is now **[ADR-020](../adr/ADR-020-qr-encoding.md): take
+`rsc.io/qr`.** The original reasoning is kept below the decision, because the
+argument that overturned it is the useful part.
 
 The roadmap asks the enrollment endpoint to issue an `otpauth://` URI **and** a
 QR. A QR encoder is not in the standard library and is not in `go.mod`, so this
-is a real decision under the no-new-dependency rule. Proposed as
-**[ADR-020](../adr/ADR-020-qr-encoding.md)**, following ADR-019's shape.
+is a real decision under the no-new-dependency rule either way — the ADR is a
+deliverable regardless of which way it lands.
 
-**Decision: a restricted in-tree encoder in `kernel/qr`, no dependency.**
+**Decision: `rsc.io/qr`.** `identity.TOTPQRDataURI` is
+`qr.Encode(uri, qr.M)` plus a base64 wrapper. Zero transitive dependencies; it
+is the encoder `rsc.io/2fa` uses for this identical purpose; stable since 2015,
+which for a pure function over a frozen ISO standard is what finished looks
+like.
 
-The usual argument for taking a library — "don't hand-roll security-critical
-parsing" — does not apply. A QR encoder *parses nothing*: it takes a string this
-server generated and emits a bitmap. It has no attack surface, no untrusted
-input, and its failure mode is loud and local ("the code will not scan"), not
-silent and exploitable. That is the opposite risk profile from the JOSE decision
-in ADR-019, and it argues for writing it rather than importing it. The candidates
-(`github.com/skip2/go-qrcode`, unmaintained since 2021; `rsc.io/qr`) would each
-add a permanent supply-chain edge to the server binary for a pure function.
+**Why the original argument was wrong.** It ran: ADR-019 declined a JOSE
+library, so decline this one too. That inverts:
 
-The encoder is restricted to exactly what enrollment needs, which is what keeps
-it small enough to be reviewable:
+- ADR-019's case was about a **parser** — untrusted input, a real
+  talked-into-accepting-the-wrong-thing failure mode. A QR encoder parses
+  nothing. It takes a string this server generated and emits a bitmap. Its
+  failure mode is "the code will not scan": loud, local, and caught immediately.
+  Same conclusion in ADR-019 (don't import a parser you can write safely), the
+  opposite conclusion here.
+- The **costs were never comparable**. ADR-019's verifier is a few hundred lines
+  of comparisons. A conforming encoder is Reed–Solomon over GF(256), interleaved
+  block layout, alignment and version-information tables, and ISO/IEC 18004 mask
+  penalty scoring — ~600 lines that must be *correct*, plus a test harness large
+  enough to prove it without a reference implementation to diff against. Around
+  1000 lines of non-TOTP code inside a TOTP work package, owned forever.
 
-- **byte mode only** (an `otpauth://` URI is mixed-case ASCII; alphanumeric mode
-  cannot represent it and numeric mode is irrelevant);
-- **error-correction level M** (~15%), the level authenticator documentation
-  assumes, with enough margin for a screen photographed at an angle;
-- **versions 1–10 only** — 213 data bytes at level M, comfortably more than any
-  `otpauth://` URI this product generates. Longer input is an **error**, never a
-  silent downgrade. Capping at 10 also caps the tables: alignment-pattern
-  positions and the four version-information words for versions 7–10.
-- **full mask selection** with the ISO/IEC 18004 penalty scores. Picking a fixed
-  mask would produce codes that are valid but scan badly on some readers, which
-  is precisely the kind of "works on my phone" bug this must not have.
+Optimizing a dependency count by paying in code-to-get-right is the wrong trade.
+The no-new-deps rule is satisfied by writing the ADR, not by the ADR always
+saying no.
 
-**Testing it without a reference implementation** is the real risk, so the suite
-attacks it from four independent directions: (a) the Reed–Solomon syndromes of
-every emitted codeword block must be zero — this catches generator-polynomial and
-interleaving bugs outright; (b) the 15-bit format information must BCH-decode back
-to the ECC level and mask actually used; (c) structural assertions — finder
-patterns, separators, timing patterns, dark module, quiet zone; (d) a small
-decoder living in the test file that reads the matrix back to the original string
-through the inverse of the placement and mask, round-tripped over generated URIs
-of every length that changes version.
-
-**Server-side, delivered as a `data:image/png;base64,…` URI in the enroll
-response.** Three sub-decisions:
+**Delivery** (unchanged from the original plan): server-side, PNG, data URI in
+the enroll response.
 
 - *Server-side rather than client-side*: "every capability must be reachable via
   API/MCP" — a CLI or MCP client enrolling a user must be able to display a QR
   without reimplementing the encoder. Rendering it in TypeScript would put the
   encoder somewhere the API cannot reach.
 - *PNG rather than SVG*: the current CSP is `img-src 'self' data:`, so both work
-  and both are inert inside `<img>`. PNG is chosen because `image/png` is
-  stdlib, the matrix is already a bitmap, and it removes the "is a data: SVG a
-  script vector" conversation from every future security review.
+  and both are inert inside `<img>`. PNG is chosen because the encoder already
+  emits one and it removes the "is a data: SVG a script vector" conversation
+  from every future security review.
 - *Data URI in the JSON body rather than a second `GET` route*: a route serving
   the image would be a cacheable GET returning a credential, and would need its
   own no-store handling and its own authz check. One response, one credential,
@@ -238,9 +252,27 @@ implementation of "is this person who they claim to be". The semantics fall out
 for free: because TOTP is by definition enabled when disable is called, the
 second factor is never optional.
 
-Enrollment itself needs **no** re-authentication. Enabling a second factor is a
-security *upgrade*; making an upgrade harder than the status quo is how MFA
-adoption stays low. Only the downgrade is gated.
+**Enrollment also requires the password — reversed during implementation.** The
+plan exempted it: enabling a second factor is a security *upgrade*, and making
+an upgrade harder than the status quo is how MFA adoption stays low. Review
+found the hole that argument misses. An attacker holding only a **session**
+enrolls their own authenticator, confirms it, and keeps the recovery codes. The
+legitimate owner still knows the password but now cannot disable anything —
+disable demands a second factor they do not have, and administrator reset is
+deferred (below). That is an absorbing state: password-only has no equivalent,
+so the threat table's "no worse than the password-only status quo it replaces"
+was simply wrong.
+
+The account is password-only at the moment of enrollment, so requiring the
+password asks for the only factor that exists. It costs one form field and
+closes a session-theft path into permanent account loss. Adoption friction is a
+real concern, but it does not outrank "a stolen session can lock you out of your
+own account forever".
+
+Order of checks in the handler matters: already-enabled (409) and no-password
+(422) are answered *before* the credential check, so a caller is not asked to
+prove who they are only to be told the request was never going to work. Neither
+leaks anything — `GET /api/v1/me/totp` reports both to the same caller.
 
 ### 5. Recovery codes are accepted at login through an explicit field, not format sniffing
 
@@ -288,7 +320,27 @@ enough to reduce a one-hour expected search to centuries.
 **Cut line:** if the reviewer judges this out of scope for an enrollment WP, it
 can be dropped to a follow-up without touching anything else in the plan — it is
 one migration and one file. The threat notes below then have to say the second
-factor is brute-forceable, which is why it is proposed here.
+factor is brute-forceable, which is why it is proposed here. *(Not taken: it
+landed with the WP.)*
+
+**Both writes happen in SQL, against the stored row — corrected during
+implementation.** The first cut read `TOTPFailedAttempts` into Go, added one,
+and wrote the result back as an absolute value. That is a lost update, and both
+of its failure modes hand the win to exactly the attacker this control exists to
+stop — one who has the password already and runs attempts in parallel inside the
+gateway's budget:
+
+- N concurrent attempts all read *k* and all write *k+1*, so the counter never
+  reaches ten and the lock never fires;
+- worse, any request holding a pre-lock snapshot writes `totp_locked_until` back
+  to `NULL`, **unlocking** an account the instant it locked.
+
+The fix is `SET totp_failed_attempts = totp_failed_attempts + 1` with the lock
+derived in a `CASE` over the same expression, and `ELSE totp_locked_until` so an
+existing lock is preserved rather than cleared. It is the same check-then-act
+trap §2 avoided for recovery codes, one control over — and the reason it
+survived the first pass is that the lockout had only sequential tests while the
+recovery-code path had a concurrency one. It now has both.
 
 ### 7. The `internal/app` authentication fence is extended, never widened
 
@@ -321,7 +373,7 @@ like `DELETE /api/v1/sessions/current`. All three writes carry an
 Re-enrolling while already enabled is a **409**, not a silent re-issue: rotating
 a live second factor is disable-then-enroll, and the audit trail should say so.
 
-### 9. `Action.NoStoreResponse` — because the idempotency cache would otherwise store recovery codes in plaintext
+### 9. `Action.CarriesCredentials` — because `idempotency_keys` would otherwise be the longest-lived copy of every secret the API touches
 
 This one is a genuine finding, not a preference. `kernel/api`'s `handleWrite`
 persists the **verbatim response body** of every 2xx write into
@@ -330,20 +382,38 @@ persists the **verbatim response body** of every 2xx write into
 plaintext, into a second table, permanently — defeating the WP's own
 "stored hashed" requirement by a side channel nobody would think to look at.
 
-Fix: `kernel/api.Action` grows `NoStoreResponse bool`. When set, `handleWrite`
-finalizes the idempotency record with the status and an **empty** body, so a
-replay returns the status, `Idempotent-Replayed: true`, and nothing else. The
-semantics are the right ones for a show-once credential: a replayed confirmation
-must *not* re-reveal the codes. `enroll` and `confirm` set it.
+**And the request side is worse — found in review, after the plan was written.**
+The same table stores `request_fingerprint = SHA-256(method ‖ path ‖ body)`,
+unsalted. The disable body is `{"password":"…","totp":"123456"}`; method and path
+are constants and a TOTP code adds about twenty bits. That row is an offline
+password oracle roughly two orders of magnitude cheaper than the bcrypt in
+`users.password_hash` — a hash is not plaintext, so the grep that catches the
+response side would never have flagged it. It is the first `Write: true` route
+whose body carries a password (login is `Public`, which is not a write).
+
+Fix: `kernel/api.Action` grows **`CarriesCredentials bool`**, covering both
+columns. `response_body` is finalized **empty**, so a replay returns the status
+and `Idempotent-Replayed: true` and nothing else — the right semantics for a
+show-once credential, which must not be re-revealed. `request_fingerprint` is
+computed over method and path only, never the body. All three writes set it.
+
+The cost of the fingerprint change is that two different bodies under one key
+read as a replay rather than a 409 on these routes. Acceptable where it is set:
+the request *is* the credential, so a caller reusing a key with a different body
+is retrying, not issuing a new command.
 
 The alternative — marking these routes `Write: false` to dodge the wrapper —
 was rejected: it drops a repo-wide rule ("all writes take idempotency keys") to
 work around a storage detail, and it leaves the next credential-minting endpoint
 (API keys, WP-3.0 secrets) to rediscover the same trap.
 
-A tagged integrity test drives the full enroll → confirm flow over HTTP and then
-greps `idempotency_keys.response_body` and `audit_log.changes` for the TOTP
-secret and for every issued recovery code, on both dialects. It is the same shape
+Two tagged integrity tests cover it on both dialects: one drives the full
+enroll → confirm flow over HTTP and greps `idempotency_keys.response_body` and
+`audit_log.changes` for the TOTP secret and every issued recovery code; the
+other recomputes the fingerprint a body-inclusive implementation would have
+stored and asserts no such row exists, while checking that the body-free
+fingerprint *is* there — idempotency still works, it just does not commit to a
+body. It is the same shape
 as the WP-3.0 acceptance criterion ("grep the logs, event store and an export for
 the plaintext and find none").
 
@@ -372,10 +442,11 @@ the plaintext and find none").
 | Threat | Control |
 |---|---|
 | Attacker with a stolen/borrowed session disables MFA | Disable requires the password **and** a second factor (§4). A session alone proves nothing about the person holding it. |
-| Attacker enrolls *their own* authenticator on a victim's account | Enrollment writes a pending secret only; enabling requires a code from that secret **and** the account is already MFA-free at that point, so this is no worse than the password-only status quo it replaces. Once TOTP is enabled, a second enrollment is a 409 and requires a disable first, which requires the second factor. Both transitions are audited (INV-T4). |
-| Online brute force of the 6-digit second factor | Per-user lockout after 10 consecutive second-factor failures, 15 minutes (§6). Without it, a 100 req/s budget breaks a ±1-step TOTP window in under an hour. |
+| Attacker enrolls *their own* authenticator on a victim's account | **Enrollment requires the password** (§4, reversed during implementation), so a stolen session alone cannot do it. The original plan exempted enrollment and the threat note here claimed it was "no worse than the password-only status quo" — that was wrong: an attacker who enrolled would take the recovery codes too, and the owner could then never disable the factor, which password-only has no equivalent of. Once TOTP is enabled a second enrollment is a 409 and needs a disable first, which needs the second factor. Every transition is audited (INV-T4). |
+| Online brute force of the 6-digit second factor | Per-user lockout after 10 consecutive second-factor failures, 15 minutes (§6). Without it, a 100 req/s budget breaks a ±1-step TOTP window in under an hour. The counter and the lock are both written in SQL against the stored row: computing them in Go would let concurrent attempts lose updates and even clear the lock, which is the shape review caught and a concurrency test now pins. |
 | Recovery codes brute-forced online | Same lockout path; 120 bits of entropy makes online guessing irrelevant anyway. |
-| Recovery codes recovered from a database read | Stored as SHA-256 of a 120-bit random value (§2). Not reversible, not guessable, and — via `NoStoreResponse` (§9) — not sitting in plaintext in `idempotency_keys` either. Proven by a tagged test that greps for them. |
+| Recovery codes recovered from a database read | Stored as SHA-256 of a 120-bit random value (§2). Not reversible, not guessable, and — via `CarriesCredentials` (§9) — not sitting in `idempotency_keys` either, in the response body or hashed into the request fingerprint. Proven by two tagged tests. |
+| Account password recovered from `idempotency_keys` | The disable request body carries the password, and `request_fingerprint` is an unsalted SHA-256 of it — a cheaper oracle than the bcrypt hash it is meant to protect. Credentialed routes fingerprint method and path only (§9). |
 | Recovery code replayed | Single-use enforced by `UPDATE … WHERE used_at IS NULL` + `RowsAffected == 1`, so concurrency cannot double-spend one (§2). |
 | TOTP code replayed within its step | `totp_last_counter` is advanced on every successful validation, including the one that confirms enrollment (§1) — otherwise the confirmation code stays live as a login code for the rest of its window. |
 | Cross-tenant use of a recovery code | `tenant_id` first in the primary key, an RLS policy on Postgres, and an explicit tenant predicate on every query (the only guard on SQLite). Tagged test on both dialects (INV-T1). |

@@ -116,6 +116,18 @@ function ObjectNav({ objects }: { objects: MetaObject[] }) {
           </Link>
         </li>
       ))}
+      {/* Account security sits with the object links rather than in a user menu
+          there is no design for yet. It is not an object — no capability gates
+          it and every signed-in user has one. */}
+      <li>
+        <Link
+          to="/account"
+          activeProps={{ className: "font-semibold underline" }}
+          className="text-sm text-sky-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-600 dark:text-sky-400"
+        >
+          {t("nav.account")}
+        </Link>
+      </li>
     </ul>
   );
 }

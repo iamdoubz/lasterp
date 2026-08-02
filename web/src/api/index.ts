@@ -95,6 +95,10 @@ export interface LoginInput {
   email: string;
   password: string;
   totp?: string;
+  /** A single-use recovery code, offered instead of `totp` when the
+   * authenticator is unavailable. Its own field rather than something the
+   * server tells apart from a TOTP code by shape (WP-1.12-decisions.md §5). */
+  recovery_code?: string;
 }
 
 /** login starts a session. The tokens come back as HttpOnly cookies, so there
@@ -152,6 +156,70 @@ export function updateRecord(
   return request<Record_>(`/api/v1/${resource}/${id}`, {
     method: "PATCH",
     body: values,
+    idempotencyKey: key,
+  });
+}
+
+// --- second factor (WP-1.12). Self-service only: no route takes a user id, so
+// there is nothing to pass and nothing to get wrong (INV-T2). ---
+
+export interface TotpStatus {
+  enabled: boolean;
+  /** A secret is stored but not yet confirmed. The account still signs in with
+   * a password alone until it is. */
+  pending: boolean;
+  recovery_codes_remaining: number;
+}
+
+export interface TotpEnrollment {
+  otpauth_uri: string;
+  /** Base32, for manual entry — and the accessible equivalent of the QR. */
+  secret: string;
+  /** A `data:image/png;base64,…` URI, rendered decoratively beside the secret. */
+  qr_png: string;
+}
+
+export interface TotpConfirmation {
+  enabled: boolean;
+  /** Shown once and never retrievable again: only hashes are stored, and a
+   * replayed confirmation deliberately returns no body. */
+  recovery_codes: string[];
+}
+
+export function getTotpStatus(): Promise<TotpStatus> {
+  return request<TotpStatus>("/api/v1/me/totp");
+}
+
+/** startTotpEnrollment re-authenticates with the password. A session alone is
+ * not enough: an attacker holding one could otherwise enroll their own
+ * authenticator, keep the recovery codes, and leave the real owner unable to
+ * disable it (WP-1.12-decisions.md §4). */
+export function startTotpEnrollment(password: string, key?: string): Promise<TotpEnrollment> {
+  return request<TotpEnrollment>("/api/v1/me/totp/enroll", {
+    method: "POST",
+    body: { password },
+    idempotencyKey: key,
+  });
+}
+
+export function confirmTotpEnrollment(code: string, key?: string): Promise<TotpConfirmation> {
+  return request<TotpConfirmation>("/api/v1/me/totp/confirm", {
+    method: "POST",
+    body: { code },
+    idempotencyKey: key,
+  });
+}
+
+/** disableTotp re-authenticates: the password plus either a current code or an
+ * unused recovery code. A session alone is not enough — the threat is a session
+ * an attacker holds (WP-1.12-decisions.md §4). */
+export function disableTotp(
+  input: { password: string; totp?: string; recovery_code?: string },
+  key?: string,
+): Promise<void> {
+  return request<void>("/api/v1/me/totp/disable", {
+    method: "POST",
+    body: input,
     idempotencyKey: key,
   });
 }

@@ -54,6 +54,13 @@ type loginReq struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
 	TOTP     string `json:"totp"`
+
+	// RecoveryCode stands in for TOTP when the authenticator is gone. A
+	// separate field rather than a value told apart from TOTP by shape (six
+	// digits vs. dashed base32): an authentication path should not contain a
+	// guess (WP-1.12-decisions.md §5). Adding a field to an already-allowlisted
+	// route does not touch the public-route allowlist.
+	RecoveryCode string `json:"recovery_code"`
 }
 
 // sessionResp is what a successful login/refresh returns. It deliberately
@@ -85,7 +92,8 @@ func login(db *storage.DB) api.HandlerFunc {
 		// it. One authentication decision, one implementation.
 		provider := &identity.PasswordTOTPProvider{DB: db}
 		user, err := provider.Authenticate(r.Context(), tenant, identity.Credentials{
-			Email: req.Email, Password: req.Password, TOTPCode: req.TOTP,
+			Email: req.Email, Password: req.Password,
+			TOTPCode: req.TOTP, RecoveryCode: req.RecoveryCode,
 		})
 		if errors.Is(err, identity.ErrInvalidCredentials) {
 			unauthorized(w, r)
@@ -106,6 +114,10 @@ func login(db *storage.DB) api.HandlerFunc {
 			fail(w, r, err)
 			return
 		}
+		// A login that spent a recovery code is audited too, as a separate
+		// event — it means the user has lost their authenticator. That record
+		// is written by the provider, which is the only layer that knows a code
+		// was actually consumed rather than merely offered.
 
 		setSessionCookies(w, issued, device)
 		writeJSON(w, http.StatusOK, sessionResp{

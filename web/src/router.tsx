@@ -13,6 +13,7 @@ import {
 
 import { getRecord } from "./api";
 import { useT } from "./i18n";
+import { Account } from "./routes/Account";
 import { DashboardScreen } from "./routes/DashboardView";
 import { InvoiceDetail } from "./routes/InvoiceDetail";
 import { ObjectDetail } from "./routes/ObjectDetail";
@@ -85,6 +86,14 @@ const dashboardRoute = createRoute({
     const { name } = useParams({ from: "/dashboards/$name" });
     return <DashboardScreen name={name} />;
   },
+});
+
+// Account security is a fixed route, not an object screen: it acts on the
+// caller and takes no id (INV-T2), so there is no :resource to parameterise.
+const accountRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/account",
+  component: Account,
 });
 
 const listRoute = createRoute({
@@ -164,6 +173,7 @@ const invoiceRoute = createRoute({
 
 const routeTree = rootRoute.addChildren([
   indexRoute,
+  accountRoute,
   dashboardRoute,
   listRoute,
   newRoute,

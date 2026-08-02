@@ -123,7 +123,7 @@ test("navigation is rendered from tenant metadata", async ({ page }) => {
   const nav = page.getByRole("navigation", { name: "Main" });
   // Objects come from /api/v1/meta/objects, not a hardcoded menu.
   await expect(nav.getByRole("link", { name: "Contact" })).toBeVisible();
-  await expect(nav.getByRole("link", { name: "Account" })).toBeVisible();
+  await expect(nav.getByRole("link", { name: "Account", exact: true })).toBeVisible();
   await scan(page, "shell");
 });
 

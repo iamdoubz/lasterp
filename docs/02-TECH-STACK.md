@@ -27,6 +27,7 @@ Full rationale in [docs/adr/](adr/). Summary:
 | Tax & FX data | Adapter pattern: open sources (ECB FX) built-in; Avalara/Vertex/PayrollTax API as connector plugins; local editable tax tables always available | No hard dependency on any commercial data vendor | [ADR-013](adr/ADR-013-reference-data.md) |
 | Composability | Capability manifests + dependency closure solver; disable-without-delete; profile presets | Use only the pieces you want; the kernel knows what each needs | [ADR-018](adr/ADR-018-composability.md) |
 | OIDC / JOSE | **No JOSE library** — ID tokens verified over stdlib `crypto/rsa`/`crypto/ecdsa`, closed RS256/PS256/ES256 allowlist, no HMAC or `none` code path at all | The needed part is small; the unused part of a JOSE library is where the CVEs live | [ADR-019](adr/ADR-019-jose.md) |
+| QR encoding | **`rsc.io/qr`** for the TOTP enrollment QR — the opposite call to ADR-019, deliberately | An encoder parses nothing, so there is no untrusted input to get wrong; hand-rolling Reed–Solomon and mask scoring would be ~1000 lines to own for a pure function. Zero transitive deps | [ADR-020](adr/ADR-020-qr-encoding.md) |
 
 ## Repository layout (planned)
 

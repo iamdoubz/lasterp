@@ -17,6 +17,10 @@ export function Login({ onSignedIn }: { onSignedIn: () => void }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [totp, setTotp] = useState("");
+  const [recoveryCode, setRecoveryCode] = useState("");
+  // Which second factor the user is offering. A deliberate choice rather than
+  // the server guessing from the shape of the input (WP-1.12-decisions.md §5).
+  const [useRecovery, setUseRecovery] = useState(false);
   const [pending, setPending] = useState(false);
   const [failed, setFailed] = useState(false);
   // The provider's authorization URL, or null when this deployment has no
@@ -43,7 +47,13 @@ export function Login({ onSignedIn }: { onSignedIn: () => void }) {
     setPending(true);
     setFailed(false);
     try {
-      await login({ tenant, email, password, totp: totp || undefined });
+      await login({
+        tenant,
+        email,
+        password,
+        totp: useRecovery ? undefined : totp || undefined,
+        recovery_code: useRecovery ? recoveryCode || undefined : undefined,
+      });
       onSignedIn();
     } catch (err) {
       // Every failure renders the same message on purpose — the server already
@@ -114,16 +124,46 @@ export function Login({ onSignedIn }: { onSignedIn: () => void }) {
           />
         </Field>
 
-        <Field id="totp" label={t("login.totp")} description={t("login.totpHint")}>
-          <Input
-            id="totp"
-            name="totp"
-            inputMode="numeric"
-            autoComplete="one-time-code"
-            value={totp}
-            onChange={(e) => setTotp(e.target.value)}
-          />
-        </Field>
+        {useRecovery ? (
+          <Field
+            id="recovery-code"
+            label={t("login.recoveryCode")}
+            description={t("login.recoveryHint")}
+          >
+            <Input
+              id="recovery-code"
+              name="recovery-code"
+              className="font-mono"
+              value={recoveryCode}
+              onChange={(e) => setRecoveryCode(e.target.value)}
+            />
+          </Field>
+        ) : (
+          <Field id="totp" label={t("login.totp")} description={t("login.totpHint")}>
+            <Input
+              id="totp"
+              name="totp"
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              value={totp}
+              onChange={(e) => setTotp(e.target.value)}
+            />
+          </Field>
+        )}
+
+        <Button
+          type="button"
+          className="mb-4"
+          onClick={() => {
+            // Clear the field being abandoned, so a stale value cannot be sent
+            // in a field the user is no longer looking at.
+            setTotp("");
+            setRecoveryCode("");
+            setUseRecovery((on) => !on);
+          }}
+        >
+          {useRecovery ? t("login.useAuthenticator") : t("login.useRecovery")}
+        </Button>
 
         <Button type="submit" variant="primary" disabled={pending} className="w-full justify-center">
           {pending ? t("login.pending") : t("login.submit")}

@@ -44,13 +44,7 @@ func TestPasswordTOTPProviderRequiresCode(t *testing.T) {
 			if err != nil {
 				t.Fatalf("CreateUser: %v", err)
 			}
-			secret, err := GenerateTOTPSecret()
-			if err != nil {
-				t.Fatalf("GenerateTOTPSecret: %v", err)
-			}
-			if err := EnableTOTP(ctx, db, tenant, u.ID, secret); err != nil {
-				t.Fatalf("EnableTOTP: %v", err)
-			}
+			secret := mustEnableTOTP(t, ctx, db, tenant, u.ID)
 
 			p := &PasswordTOTPProvider{DB: db}
 			if _, err := p.Authenticate(ctx, tenant, Credentials{Email: "frank@example.com", Password: "s3cret!", TOTPCode: "000000"}); !errors.Is(err, ErrInvalidCredentials) {

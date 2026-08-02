@@ -112,7 +112,7 @@ func GetUserByOIDCSubject(ctx context.Context, db *storage.DB, tenant tenancy.ID
 	var u *User
 	err := tenancy.WithTenant(ctx, db, tenant, func(ctx context.Context, tx *sql.Tx) error {
 		row := tx.QueryRowContext(ctx, db.Rebind(`
-			SELECT id, tenant_id, email, password_hash, totp_secret, totp_enabled, totp_last_counter, created_at
+			SELECT `+userColumns+`
 			FROM users WHERE tenant_id = ? AND oidc_issuer = ? AND oidc_subject = ?`),
 			string(tenant), issuer, subject)
 		got, err := scanUser(row)

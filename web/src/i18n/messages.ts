@@ -31,6 +31,58 @@ export const messages = {
   "login.pending": "Signing in…",
   "login.failed": "Sign-in failed. Check your details and try again.",
   "login.sso": "Sign in with single sign-on",
+  "login.recoveryCode": "Recovery code",
+  "login.recoveryHint": "Use one of your saved recovery codes if you cannot reach your authenticator.",
+  "login.useRecovery": "Use a recovery code instead",
+  "login.useAuthenticator": "Use an authentication code instead",
+
+  // Account security — second factor (WP-1.12)
+  "account.title": "Account security",
+  "account.totp.heading": "Two-factor authentication",
+  "account.totp.on": "Two-factor authentication is on.",
+  "account.totp.off": "Two-factor authentication is off. Your account is protected by a password alone.",
+  "account.totp.enable": "Turn on two-factor authentication",
+  "account.enroll.password": "Password",
+  "account.enroll.why":
+    "Confirm it is you before adding a second factor, so a borrowed session cannot add one you do not control.",
+  "account.enroll.failed": "That password was not accepted. Check it and try again.",
+  "account.totp.starting": "Preparing…",
+  "account.totp.scan":
+    "Scan this code with your authenticator app, or enter the setup key by hand.",
+  "account.totp.secret": "Setup key",
+  "account.totp.confirmLabel": "Authentication code",
+  "account.totp.confirmHint": "Enter the six-digit code your app is showing now.",
+  "account.totp.confirm": "Confirm and turn on",
+  "account.totp.confirming": "Confirming…",
+  "account.totp.confirmFailed": "That code was not accepted. Check your app and try again.",
+  "account.totp.cancel": "Cancel",
+  "account.recovery.heading": "Recovery codes",
+  "account.recovery.saveNow":
+    "Save these now — this is the only time they are shown. Each one works once.",
+  "account.recovery.copy": "Copy codes",
+  "account.recovery.copied": "Copied.",
+  "account.recovery.download": "Download codes",
+  "account.recovery.done": "I have saved my codes",
+  "account.recovery.remaining":
+    "{count, plural, one {# recovery code left} other {# recovery codes left}}",
+  "account.recovery.low":
+    "You are running low on recovery codes. Turn two-factor authentication off and on again to get a fresh set.",
+  "account.recovery.none":
+    "You have no recovery codes left. If you lose your authenticator you will not be able to sign in.",
+  "account.disable.heading": "Turn off two-factor authentication",
+  "account.disable.why":
+    "Confirm it is you: your password, plus a code from your authenticator or an unused recovery code.",
+  "account.disable.password": "Password",
+  "account.disable.totp": "Authentication code",
+  "account.disable.recoveryCode": "Recovery code",
+  "account.disable.submit": "Turn off two-factor authentication",
+  "account.disable.pending": "Turning off…",
+  "account.disable.failed": "Those details were not accepted. Check them and try again.",
+  "account.disable.done": "Two-factor authentication is off.",
+  // "Account security", not "Account": the chart of accounts is an object
+  // called Account and sits in the same nav list. Two links reading "Account"
+  // that go to unrelated screens is a bug for a user, not just for a test.
+  "nav.account": "Account security",
 
   // Generic object screens
   "object.list.title": "{object}",
