@@ -82,10 +82,17 @@ func TestCatalogWellFormed(t *testing.T) {
 			t.Errorf("%s is not TestRequired but has no Note saying which WP enables it", inv.ID)
 		}
 	}
-	// The two Phase-0 append-only tables must be present exactly.
+	// The append-only set must match exactly. The point of pinning it is that
+	// adding or removing a protected table is a deliberate act with an
+	// enforcement story (grant revoke + trigger + tests), never a side effect
+	// of editing the catalog — so this list grows only alongside that work.
+	//
+	//	events, audit_log — Phase 0 (WP-0.4 / WP-0.5)
+	//	change_feed       — WP-2.1: a feed a writer can edit can lie to a
+	//	                    replica that already consumed it
 	got := strings.Join(ProtectedTables(), ",")
-	if got != "events,audit_log" {
-		t.Errorf("ProtectedTables() = %q, want the two Phase-0 append-only tables", got)
+	if want := "events,audit_log,change_feed"; got != want {
+		t.Errorf("ProtectedTables() = %q, want %q", got, want)
 	}
 }
 
