@@ -41,6 +41,26 @@ The Lotus Notes promise (work anywhere, replicate later) with a referee. Decisio
 Offline-allowed: create/edit drafts, record CRM data, record time/expenses, pick/pack/count inventory (movements post on sync), view everything in scope.
 Online-required by default: posting to GL, payment execution, payroll approval, period close (these need current-state guarantees; tenants can relax per-action with eyes open).
 
+## Implementation status (WP-2.1: the downstream feed)
+
+Shipped in [`kernel/changefeed`](../kernel/changefeed/): the `change_feed` table (one
+totally-ordered per-tenant log over the event store and the CRUD audit trail), appended in
+the same transaction as the write it describes, and read by cursor via
+`GET /api/v1/sync/changes`. Entries are **pointers** — `source` + `ref_id` into `events` or
+`audit_log` — so payloads live in exactly one place; readers hydrate from the source.
+
+The cursor's guarantee is **INV-S5**: no committed change is skipped, every entry is
+observed exactly once, and resuming from any position reproduces the same order. A
+`BIGSERIAL` alone does not give that — a transaction takes its id at INSERT, not at commit,
+so a writer holding id 5 open lets a later writer take 6 and commit first, and a reader
+trusting `id > cursor` strands 5 permanently. A per-tenant ordering lock makes id order
+equal commit order; cost and upgrade path in
+[WP-2.1-decisions.md](notes/WP-2.1-decisions.md) §2.
+
+Not yet built: the streaming transport (steps 1–3 above are served by cursored polling plus
+an in-process notifier), scope computation (WP-2.4 — entries carry a scope tag, computed
+trivially), snapshot hydration (WP-2.2), and everything upstream (WP-2.3).
+
 ## Guarantees & limits
 - Acknowledged writes: RPO 0 (command accepted ⇔ events durably committed).
 - Offline writes: at-least-once delivery, exactly-once effect (command_id dedupe).

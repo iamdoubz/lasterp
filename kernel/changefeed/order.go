@@ -61,5 +61,8 @@ func serializeAppend(ctx context.Context, tx *sql.Tx, db *storage.DB, tenant ten
 func advisoryKey(tenant tenancy.ID) int64 {
 	h := fnv.New64a()
 	_, _ = h.Write([]byte(tenant))
+	// #nosec G115 -- the wrap to negative is intended and harmless: every
+	// int64 is a valid advisory-lock key, and the only property required of
+	// this value is that the same tenant maps to the same one.
 	return int64(h.Sum64())
 }

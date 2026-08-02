@@ -134,6 +134,28 @@ gets RLS + a policy like every other), **INV-T4** (entries inherit actor attribu
 row they point at), **INV-E5** (feed determinism is the same purity property the event fold
 relies on).
 
+## 5a. The feed is append-only
+
+Added during implementation, not in the original plan. A feed a writer can go back and edit
+can lie to a replica that already consumed it: the client applied cursor 7, and has no way
+to learn that cursor 7 now says something else. INV-S5's "observed exactly once, in a stable
+total order" is only meaningful if entries are immutable once written.
+
+So `change_feed` joins `events` and `audit_log` as an append-only table — registered on
+INV-S5's `AppendOnlyTables`, which puts it in `ProtectedTables()` and therefore under
+`lasterp harden`'s REVOKE, plus the mirror trigger in migration 0044.
+
+## 5b. The sync surface gets its own grant
+
+`GET /api/v1/sync/changes` authorizes `sync:read` rather than inheriting the permissions of
+the objects it reports on. The feed spans every object a tenant holds, so a principal who
+may read invoices has not thereby been handed a firehose of every change in the tenant.
+
+Until WP-2.4 computes per-device scopes, holding `sync:read` means seeing the tenant's whole
+feed — a privileged grant, given to the bootstrap administrator and nobody else by default.
+The blast radius is bounded by §3: entries are pointers, so what leaks is object names and
+row ids, not row contents.
+
 ## 6. NATS carries a bell, not the data
 
 The feed's transport of record is the database. NATS publishes only "tenant T has changes
@@ -146,9 +168,39 @@ second place it can be lost from or leaked from. As a bell, a dropped NATS messa
 database rather than of a broker.
 
 No ADR is needed for the dependency itself — docs/02 fixes NATS JetStream in the stack,
-embedded in solo mode. Solo mode uses an in-process notifier and starts no broker; the NATS
-publisher is for multi-node deployments, where there is genuinely a second implementation
-rather than an interface invented for one.
+embedded in solo mode.
+
+**What actually shipped in this WP is the interface and the in-process notifier; the NATS
+publisher is deferred.** Solo mode — one binary, one database — has no broker to run and
+never needed one, so the in-process fan-out is the complete answer there. The NATS
+implementation only earns its keep with a second server node, and today there is neither a
+second node nor a subscriber of any kind: WP-2.2 builds the first one. Adding the client
+dependency, the connection lifecycle and broker test infrastructure now would be writing
+and maintaining an untested code path for zero consumers, which is precisely what the
+roadmap's `Notifier` seam exists to avoid. When WP-2.3 puts a second node in play, a NATS
+publisher is one type satisfying an interface that already exists.
+
+Stated plainly because the roadmap line for this WP says "→ NATS": this is a deliberate
+reduction of that line, not an oversight.
+
+## 6a. The sync simulation harness
+
+CLAUDE.md makes the docs/04 simulation harness mandatory for any sync-touching change, and
+this WP does not land it. The harness is *N virtual clients × scripted partitions/crashes ×
+convergence properties* — and there is no client to virtualize until WP-2.2 builds the
+replica, which is why the roadmap puts the harness in WP-2.3's AC.
+
+What this WP does land is the half of it that can exist without a client: concurrent
+writers against a reader draining mid-flight, resume from every cursor position, and
+rollback atomicity — the "no lost accepted write" property applied to the server side of
+the feed. The client-side half (partitions, crashes, replica convergence) lands with the
+replica it needs.
+
+## 6b. Package name
+
+`kernel/changefeed`, not `kernel/sync`: a package named `sync` cannot use the standard
+library's `sync` without an import alias in every file that needs both, and the notifier
+needs it in the first file written.
 
 ## 7. Deferred, with reasons
 
@@ -157,6 +209,8 @@ rather than an interface invented for one.
   reachable via API/MCP" and the ordering/resume AC. A stream framing with no client to
   consume it would be designed twice — **WP-2.2** builds the replica that knows what it
   wants.
+- **The NATS publisher** — see §6. Interface and in-process notifier ship; the broker
+  implementation lands when a second node exists.
 - **Backfill of pre-existing rows.** The feed starts empty and covers writes from its
   migration forward. Hydration of everything older is docs/04's "initial snapshot at a
   consistent position" — **WP-2.2**'s AC, and it reads the source tables, not the feed.
