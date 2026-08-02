@@ -71,8 +71,9 @@ var Catalog = []Invariant{
 	// Tenancy & access (INV-T) — enforced as of WP-0.3/0.5/0.6/0.8.
 	{ID: "INV-T1", Title: "No query path returns another tenant's rows (RLS backstop; zero rows without context)", Layer: LayerStorage, TestRequired: true},
 	{ID: "INV-T2", Title: "No write path executes without an authenticated principal and authz decision", Layer: LayerPipeline, TestRequired: true},
-	{ID: "INV-T3", Title: "Permission floors and approval gates cannot be lowered by overlays/plugins/agents", Layer: LayerPipeline, TestRequired: true},
+	{ID: "INV-T3", Title: "Permission floors, approval gates and declared value domains cannot be widened by overlays/plugins/agents", Layer: LayerPipeline, TestRequired: true},
 	{ID: "INV-T4", Title: "Every mutation is attributable: actor, command, timestamp — no anonymous writes", Layer: LayerStorage, TestRequired: true, AppendOnlyTables: []string{"audit_log"}},
+	{ID: "INV-T5", Title: "Every stored field value conforms to its object's effective schema (declared type and option set)", Layer: LayerPipeline, TestRequired: true},
 
 	// Sync (INV-S) — Phase 2.
 	{ID: "INV-S1", Title: "No acknowledged write is ever lost (RPO 0)", Layer: LayerPipeline, Note: "lands with WP-2.3 sync"},

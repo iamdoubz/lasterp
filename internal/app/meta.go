@@ -25,11 +25,22 @@ type metaField struct {
 	// languages, so it should show (and edit) the one for the current locale
 	// out of the record's translations rather than only the canonical value.
 	Localized bool `json:"localized,omitempty"`
+
+	// Options is an enum field's closed value set — the same list the engine
+	// validates writes against, so the renderer offers exactly what the server
+	// will accept rather than a free-text box and a 422.
+	Options []string `json:"options,omitempty"`
+
+	// Order, Group and Widget are the UI descriptors WP-1.5 §2 deferred.
+	// Order is presentation only; it never reflects storage order.
+	Order  int    `json:"order,omitempty"`
+	Group  string `json:"group,omitempty"`
+	Widget string `json:"widget,omitempty"`
 }
 
 // metaObject is one renderable object: its name, its resource path, and its
-// fields in schema order (WP-1.5-decisions.md §2 — field order is schema order
-// until the object schema grows real UI descriptors).
+// fields in presentation order (WP-1.11 gave the schema real UI descriptors;
+// before that, field order was declaration order and nothing could change it).
 type metaObject struct {
 	Name     string      `json:"name"`
 	Resource string      `json:"resource"`
@@ -74,12 +85,18 @@ func listMetaObjects(db *storage.DB, objects []*metadata.EffectiveSchema, reg *c
 	}
 }
 
+// toMetaObject projects an effective schema for the renderer. Fields come out
+// in presentation order as well as carrying their `order`, so a client that
+// does not sort is still right — two consumers disagreeing about field order
+// would be a confusing way to learn this attribute exists.
 func toMetaObject(s *metadata.EffectiveSchema) metaObject {
-	fields := make([]metaField, 0, len(s.Fields))
-	for _, f := range s.Fields {
+	ordered := s.PresentationOrder()
+	fields := make([]metaField, 0, len(ordered))
+	for _, f := range ordered {
 		fields = append(fields, metaField{
 			Name: f.Name, Type: f.Type, Required: f.Required, Target: f.Target,
-			Localized: f.Localized,
+			Localized: f.Localized, Options: f.Options,
+			Order: f.Order, Group: f.Group, Widget: string(f.Widget),
 		})
 	}
 	return metaObject{

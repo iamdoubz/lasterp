@@ -17,6 +17,7 @@ import {
   FieldControl,
   editableFields,
   emptyRecord,
+  groupFields,
   labelFor,
   objectLabel,
   submittable,
@@ -36,7 +37,9 @@ export function ObjectForm({ object, id, initial }: Props) {
   const name = objectLabel(object.name, label);
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const fields = editableFields(object.fields);
+  // editableFields already applies the schema's field order; groupFields then
+  // splits it into sections without disturbing that order within each.
+  const groups = groupFields(editableFields(object.fields));
 
   const [values, setValues] = useState<Record_>(() => ({
     ...emptyRecord(object.fields),
@@ -81,16 +84,34 @@ export function ObjectForm({ object, id, initial }: Props) {
       )}
 
       <form onSubmit={submit} noValidate>
-        {fields.map((f) => (
-          <Field key={f.name} id={`field-${f.name}`} label={labelFor(f, object.name, label)} required={f.required}>
-            <FieldControl
-              field={f}
-              id={`field-${f.name}`}
-              value={values[f.name]}
-              onChange={(v) => setValues((prev) => ({ ...prev, [f.name]: v }))}
-            />
-          </Field>
-        ))}
+        {groups.map((group) => {
+          const controls = group.fields.map((f) => (
+            <Field key={f.name} id={`field-${f.name}`} label={labelFor(f, object.name, label)} required={f.required}>
+              <FieldControl
+                field={f}
+                id={`field-${f.name}`}
+                object={object.name}
+                label={label}
+                value={values[f.name]}
+                onChange={(v) => setValues((prev) => ({ ...prev, [f.name]: v }))}
+              />
+            </Field>
+          ));
+          // An ungrouped schema renders exactly as it did before descriptors
+          // existed — no fieldset, no legend, no extra landmark for a screen
+          // reader to announce.
+          if (group.name === "") {
+            return <div key="__ungrouped">{controls}</div>;
+          }
+          return (
+            <fieldset key={group.name} className="mb-4 border-t border-slate-200 pt-4 dark:border-slate-700">
+              <legend className="pe-2 text-sm font-semibold text-slate-900 dark:text-slate-100">
+                {label(`schema.group.${object.name}.${group.name}`, group.name)}
+              </legend>
+              {controls}
+            </fieldset>
+          );
+        })}
 
         <div className="flex gap-2">
           <Button type="submit" variant="primary" disabled={save.isPending}>

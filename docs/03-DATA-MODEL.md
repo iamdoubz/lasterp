@@ -13,6 +13,8 @@ fields:
   - {name: customer, type: link, target: Customer, required: true, index: true}
   - {name: issue_date, type: date, required: true, default: today}
   - {name: currency, type: currency, default: tenant.base_currency}
+  - {name: status, type: enum, required: true, options: [draft, posted],
+     group: lifecycle, order: 10}
   - {name: lines, type: table, target: InvoiceLine, min_rows: 1}
   - {name: total, type: money, computed: "sum(lines.amount)"}
   - {name: tax_total, type: money, computed: tax_engine}
@@ -38,6 +40,23 @@ From one definition the engine generates: DDL + migrations, Go structs + validat
 `text, long_text, rich_text, int, decimal, money {amount, currency}, currency, date, datetime (UTC + tz), bool, enum, link (FK), table (child rows), json, file, email, phone, address (structured), duration, percent, computed`
 
 **Money is a first-class type:** integer minor units + ISO-4217 currency, never floats. Decimal math everywhere (shopspring/decimal or int64 minor units; WP-1.1 decides).
+
+**Every field type validates its values** at the metadata engine, on create and on update, for every write path — API, in-process, sync replay, bulk import, agent (INV-T5, WP-1.11). Validation also *normalizes*: a JSON body's integer arrives as a float and is stored as an integer, a currency code is stored canonicalized. Enforcement is deliberately not in the storage layer — the physical table is shared by every tenant while option sets are per-tenant, and the client replica (WP-2.2) is generated from this metadata rather than from the server's DDL. See [WP-1.11 decisions §4](notes/WP-1.11-decisions.md).
+
+### Field attributes beyond name/type
+
+| Attribute | Meaning |
+|---|---|
+| `required` | Enforced at both layers: `NOT NULL` in the generated DDL and a check in the engine. |
+| `index` | Adds a `(tenant_id, field)` index. Overlay fields are not indexed (they live in `custom_fields`). |
+| `target` | `link`/`table`: the object pointed at. |
+| `localized` | Text-ish fields only; per-locale values ride in the record's `translations` key (docs/17). |
+| `options` | **Required on `enum`, refused elsewhere.** The closed value set. An overlay may *narrow* it, never widen it (INV-T3) — the permission-floor rule applied to data, bounding from the other side. |
+| `order` | Presentation order — `(order, declaration index)`, stable. **Never reorders columns**; re-ordering a form is not a migration. |
+| `group` | Form section; fields sharing a group render in one `fieldset`/`legend`. |
+| `widget` | Presentation override from a closed set (`textarea`, `radio`), each valid only on applicable types. |
+
+`options`, `order`, `group` and `widget` change no column, nullability or index, so a schema version that only touches them plans no DDL — the version advances and no statement runs.
 
 ## Layer 2: Kernel tables (fixed, hand-designed)
 

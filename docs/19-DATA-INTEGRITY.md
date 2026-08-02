@@ -16,6 +16,7 @@ Every invariant below has: an ID, an enforcement layer, a test suite tagged with
 - INV-F5 Every financially-relevant document posts to GL through its declared template; no direct ledger writes outside the posting pipeline.
 - INV-F6 Document number sequences are gapless-per-policy and assigned only at server acceptance.
 - INV-F7 Stock quantity × valuation reconciles with GL inventory accounts at all times (projection lag bounded).
+- INV-F8 Settlement never exceeds the document it settles: Σapplied ≤ gross, no negative application.
 
 **Event store (INV-E):**
 - INV-E1 Streams are append-only; no UPDATE/DELETE on the events table (DB grants + triggers make it impossible, not just forbidden).
@@ -27,8 +28,9 @@ Every invariant below has: an ID, an enforcement layer, a test suite tagged with
 **Tenancy & access (INV-T):**
 - INV-T1 No query path returns another tenant's rows (RLS as backstop; zero rows without tenant context).
 - INV-T2 No write path executes without an authenticated principal and authorization decision.
-- INV-T3 Permission floors and approval gates cannot be lowered by overlays, plugins, or agents (ADR-014 constitution).
+- INV-T3 Permission floors, approval gates, and declared value domains cannot be widened by overlays, plugins, or agents (ADR-014 constitution). Permissions are a floor and option sets are a ceiling; both express the same rule — the core layer's declaration is a bound no later layer may escape.
 - INV-T4 Every mutation is attributable: actor, command, timestamp — no anonymous writes, including system/agent/plugin writes.
+- INV-T5 Every stored field value conforms to its object's effective schema — declared type and declared option set; no write path stores a value outside it (online, offline replay, bulk import, or agent).
 
 **Sync (INV-S):**
 - INV-S1 No acknowledged write is ever lost (RPO 0).

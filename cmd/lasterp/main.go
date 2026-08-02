@@ -213,6 +213,9 @@ func harden(ctx context.Context, args []string) error {
 // Exit status is the point: non-zero when the deployment is not separated, so it
 // can be a readiness gate or a deploy check rather than something a human has to
 // read and interpret.
+//
+// It also reports stored-data schema conformance (INV-T5) under its own key,
+// which never affects the exit status — see the comment at the call site.
 func doctor(ctx context.Context) error {
 	db, err := Open(ctx)
 	if err != nil {
@@ -224,12 +227,30 @@ func doctor(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// Stored-data conformance (INV-T5, WP-1.11) is reported under its own key
+	// and deliberately does NOT affect the exit status: this command's non-zero
+	// exit means "role separation is not in effect" and is wired up as a deploy
+	// gate. A row holding a value written before validation existed is
+	// misconfigured data, not an unhealthy process — failing the readiness gate
+	// on it would teach operators to switch the gate off.
+	conformance, err := app.DiagnoseSchemaConformance(ctx, db)
+	if err != nil {
+		return err
+	}
 
-	out, err := json.MarshalIndent(p, "", "  ")
+	out, err := json.MarshalIndent(struct {
+		app.Posture
+		SchemaConformance app.SchemaConformance `json:"schema_conformance"`
+	}{Posture: p, SchemaConformance: conformance}, "", "  ")
 	if err != nil {
 		return err
 	}
 	fmt.Println(string(out))
+
+	if n := len(conformance.Findings); n > 0 {
+		log.Printf("%d stored value(s) fall outside their schema's declared options; "+
+			"they are readable and editable, and setting the field to a declared value is the fix", n)
+	}
 
 	if !p.Separated {
 		return fmt.Errorf("database role separation is not in effect (%d finding(s)); run `lasterp harden`", len(p.Findings))

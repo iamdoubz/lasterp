@@ -107,6 +107,28 @@ export function Checkbox({ className, ...props }: InputHTMLAttributes<HTMLInputE
   );
 }
 
+interface RadioProps extends InputHTMLAttributes<HTMLInputElement> {
+  /** The visible text for this option. The input owns its own label because a
+   * radio group's outer label names the question, not the answers. */
+  label: string;
+}
+
+export function Radio({ className, label, id, ...props }: RadioProps) {
+  return (
+    <span className="flex items-center gap-2">
+      <input
+        type="radio"
+        id={id}
+        className={cx("size-4 border-slate-300 text-sky-700 dark:border-slate-600", focusRing, className)}
+        {...props}
+      />
+      <label htmlFor={id} className="text-sm text-slate-700 dark:text-slate-200">
+        {label}
+      </label>
+    </span>
+  );
+}
+
 // --- Field: label + control + error, wired for screen readers ---
 
 interface FieldProps {
@@ -130,7 +152,14 @@ export function Field({ id, label, required, error, description, children }: Fie
 
   return (
     <div className="mb-4">
-      <label htmlFor={id} className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-200">
+      <label
+        htmlFor={id}
+        // The id lets a composite control (a radio group, which has no single
+        // focusable element for htmlFor to point at) name itself with
+        // aria-labelledby.
+        id={`${id}-label`}
+        className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-200"
+      >
         {label}
         {required && (
           <span aria-hidden="true" className="ms-1 text-red-700">

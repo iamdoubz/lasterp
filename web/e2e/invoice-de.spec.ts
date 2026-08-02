@@ -53,7 +53,14 @@ async function createRecord(
 ) {
   await page.goto(`/o/${resource}/new`);
   for (const [field, value] of Object.entries(values)) {
-    await page.locator(`#field-${field}`).fill(value);
+    // Enums render as a <select> over their declared options since WP-1.11,
+    // and fill() does not work on one.
+    const control = page.locator(`#field-${field}`);
+    if ((await control.evaluate((el) => el.tagName)) === "SELECT") {
+      await control.selectOption(value);
+    } else {
+      await control.fill(value);
+    }
   }
   const [response] = await Promise.all([
     page.waitForResponse(

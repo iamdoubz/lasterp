@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// The metadata renderer: the whole of "metadata-rendered list/form/detail" is
-// the two total functions below over the kernel's closed FieldType set
-// (WP-1.5-decisions.md §2). There is no UI descriptor in the object schema yet,
-// so field order is schema order and every widget choice is derived from type.
+// The metadata renderer: "metadata-rendered list/form/detail" is the total
+// functions below over the kernel's closed FieldType set (WP-1.5-decisions.md
+// §2). WP-1.11 gave the schema the UI descriptors that WP deferred — field
+// order, grouping and widget overrides — plus enum option sets, so an enum is
+// now a select over the same closed list the server validates against instead
+// of a free-text box and a 422.
 
 import type { ChangeEvent } from "react";
 
 import { SYSTEM_FIELDS, type FieldType, type MetaField, type Record_ } from "../api";
-import { Checkbox, Input, Select, Textarea } from "../ui";
+import { Checkbox, Input, Radio, Select, Textarea } from "../ui";
 
 /** A Labeler resolves a catalog key that may not exist, falling back to a
  * humanized default — `useI18n().label`. */
@@ -41,18 +43,79 @@ export function objectLabel(object: string, label: Labeler): string {
   return label(`schema.object.${object}`, object);
 }
 
+/**
+ * optionLabel is one enum option in the reader's language.
+ *
+ * Option *values* are data — the server stores and validates them — but what a
+ * person reads is a UI string, so they resolve the same way field labels do:
+ * a schema key when the pack has one, a humanized fallback when it does not.
+ * A pack that has not caught up with a new option shows "Both", not a raw key.
+ */
+export function optionLabel(
+  field: MetaField,
+  object: string,
+  value: string,
+  label: Labeler,
+): string {
+  return label(`schema.option.${object}.${field.name}.${value}`, humanize(value));
+}
+
+/**
+ * orderedFields sorts by the schema's `order`, then declaration index.
+ *
+ * Unset order is 0, so a schema that declares none renders exactly as it did
+ * before descriptors existed, and an overlay can slot a new field between two
+ * core ones by numbering it. Array.prototype.sort is stable in every engine
+ * this targets, which is what makes the declaration-index tiebreak implicit.
+ */
+export function orderedFields(fields: MetaField[]): MetaField[] {
+  return [...fields].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+}
+
 /** editableFields drops the columns the server owns. A form that posted
  * created_at or tenant_id would be rejected (DisallowUnknownFields) at best and
- * a tenancy bug at worst. */
+ * a tenancy bug at worst. Ordering happens here so every consumer inherits it
+ * without having to remember to sort. */
 export function editableFields(fields: MetaField[]): MetaField[] {
-  return fields.filter((f) => !SYSTEM_FIELDS.includes(f.name) && f.type !== "computed");
+  return orderedFields(fields).filter(
+    (f) => !SYSTEM_FIELDS.includes(f.name) && f.type !== "computed",
+  );
 }
 
 /** listFields is what a list view shows: the first few editable fields, so a
- * wide object doesn't produce a table nobody can read. Column selection is a UI
- * descriptor concern deferred with the rest (§2). */
+ * wide object doesn't produce a table nobody can read. Which few is now the
+ * schema's call rather than declaration order's. */
 export function listFields(fields: MetaField[], limit = 5): MetaField[] {
   return editableFields(fields).slice(0, limit);
+}
+
+/** A group of fields rendered together under one legend. Fields with no group
+ * come first, in one unnamed group, so an ungrouped schema renders as a plain
+ * list of controls exactly as before. */
+export interface FieldGroup {
+  /** "" for the ungrouped fields. */
+  name: string;
+  fields: MetaField[];
+}
+
+/** groupFields splits fields into sections, preserving first-appearance order
+ * of the groups themselves. */
+export function groupFields(fields: MetaField[]): FieldGroup[] {
+  const groups: FieldGroup[] = [];
+  const byName = new Map<string, FieldGroup>();
+  for (const f of fields) {
+    const name = f.group ?? "";
+    let group = byName.get(name);
+    if (!group) {
+      group = { name, fields: [] };
+      byName.set(name, group);
+      groups.push(group);
+    }
+    group.fields.push(f);
+  }
+  // The ungrouped section, if any, leads: it holds the object's identifying
+  // fields in every schema that groups at all.
+  return groups.sort((a, b) => (a.name === "" ? -1 : b.name === "" ? 1 : 0));
 }
 
 /**
@@ -135,17 +198,50 @@ interface ControlProps {
   id: string;
   value: unknown;
   onChange: (value: unknown) => void;
+  /** The owning object, for resolving enum option labels. Optional so the
+   * control stays renderable without an i18n context. */
+  object?: string;
+  label?: Labeler;
 }
 
 /**
  * FieldControl is the FieldType → control map. It is exhaustive over FieldType
  * by construction: the `never` check at the bottom makes adding a kernel field
  * type a compile error here rather than a silently unrendered form.
+ *
+ * A field's `widget` overrides that map where the schema asks for it. The set
+ * is closed and the server validates applicability, so an unknown widget never
+ * reaches here — but the fallback is still the type's own control rather than
+ * nothing, because a schema from a newer server than this bundle is a
+ * deployment reality.
  */
-export function FieldControl({ field, id, value, onChange }: ControlProps) {
+export function FieldControl({ field, id, value, onChange, object, label }: ControlProps) {
   const str = value === null || value === undefined ? "" : String(value);
   const text = (e: ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) =>
     onChange(e.target.value);
+  const optionText = (v: string) =>
+    object && label ? optionLabel(field, object, v, label) : humanize(v);
+
+  if (field.widget === "textarea") {
+    return <Textarea id={id} value={str} required={field.required} onChange={text} />;
+  }
+  if (field.widget === "radio" && field.options) {
+    return (
+      <div role="radiogroup" aria-labelledby={`${id}-label`} className="flex flex-col gap-1">
+        {field.options.map((option) => (
+          <Radio
+            key={option}
+            id={`${id}-${option}`}
+            name={id}
+            value={option}
+            checked={str === option}
+            label={optionText(option)}
+            onChange={text}
+          />
+        ))}
+      </div>
+    );
+  }
 
   switch (field.type) {
     case "long_text":
@@ -221,9 +317,26 @@ export function FieldControl({ field, id, value, onChange }: ControlProps) {
       );
 
     case "enum":
-      // The schema carries no option list yet (kernel/metadata.Field has no
-      // Options), so the closed set cannot be offered. Free text until it does.
-      return <Input id={id} type="text" value={str} required={field.required} onChange={text} />;
+      // The schema carries the closed set (WP-1.11), so offer exactly it. An
+      // enum with no options cannot reach here — the server refuses to parse
+      // such a schema — but a bundle older than its server might see one, and
+      // a free-text box is a better failure than an empty select.
+      if (!field.options?.length) {
+        return <Input id={id} type="text" value={str} required={field.required} onChange={text} />;
+      }
+      return (
+        <Select id={id} value={str} required={field.required} onChange={text}>
+          {/* An optional enum needs a way back to "unset"; a required one is
+              placeholder-only until the user picks, so the browser's own
+              required-field validation has something to catch. */}
+          <option value="">{field.required ? "—" : ""}</option>
+          {field.options.map((option) => (
+            <option key={option} value={option}>
+              {optionText(option)}
+            </option>
+          ))}
+        </Select>
+      );
 
     case "link":
       // A reference picker needs to list the target object; that is a second
@@ -276,9 +389,8 @@ function assertNever(type: never, id: string, value: string) {
   return <Input id={id} type="text" defaultValue={value} />;
 }
 
-/** A Select is exported for screens that do have a closed option set (invoice
- * period, capability toggles) even though no metadata field type produces one
- * yet. */
+/** A Select is exported for screens with a closed option set of their own
+ * (invoice period, capability toggles) that does not come from a schema. */
 export { Select };
 
 /** emptyRecord builds the initial form state for a new record. */
