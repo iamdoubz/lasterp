@@ -17,6 +17,10 @@ web/.playwright/
 # repo artifact). See CLAUDE.md.
 MEMORY.md
 
+# Deployment credentials. deploy/docker-compose.yml reads passwords from the
+# environment; compose picks up deploy/.env automatically.
+.env
+
 # Agent git worktrees. Checkouts of branches that already live in the repo —
 # the rest of .claude/ (agents, commands, skills) is tracked on purpose.
 .claude/worktrees/

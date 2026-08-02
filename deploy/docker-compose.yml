@@ -20,7 +20,15 @@ services:
     environment:
       POSTGRES_DB: lasterp
       POSTGRES_USER: lasterp
-      POSTGRES_PASSWORD: lasterp
+      POSTGRES_PASSWORD: ${LASTERP_OWNER_PASSWORD:-lasterp}
+    # Without this, `compose down` destroys the books. The defaults below are
+    # fine for a demo and wrong for anything holding real ledger events, which
+    # is why the passwords come from the environment.
+    # Mounted at /var/lib/postgresql, not .../data: postgres:18 puts the cluster
+    # in a major-version subdirectory so `pg_upgrade --link` does not straddle a
+    # mount boundary, and refuses to start against the older layout.
+    volumes:
+      - lasterp-data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U lasterp -d lasterp"]
       interval: 2s
@@ -38,7 +46,7 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      LASTERP_DSN: postgres://lasterp:lasterp@postgres:5432/lasterp?sslmode=disable
+      LASTERP_DSN: postgres://lasterp:${LASTERP_OWNER_PASSWORD:-lasterp}@postgres:5432/lasterp?sslmode=disable
     entrypoint: ["/usr/local/bin/lasterp"]
     command: ["migrate"]
     restart: "no"
@@ -59,8 +67,8 @@ services:
     environment:
       # The owner connection: this container administers grants on another
       # role's behalf.
-      LASTERP_DSN: postgres://lasterp:lasterp@postgres:5432/lasterp?sslmode=disable
-      LASTERP_APP_PASSWORD: lasterp_app
+      LASTERP_DSN: postgres://lasterp:${LASTERP_OWNER_PASSWORD:-lasterp}@postgres:5432/lasterp?sslmode=disable
+      LASTERP_APP_PASSWORD: ${LASTERP_APP_PASSWORD:-lasterp_app}
     entrypoint: ["/usr/local/bin/lasterp"]
     command: ["harden", "--create-role", "--app-role", "lasterp_app"]
     restart: "no"
@@ -76,7 +84,10 @@ services:
       # Note the different user. Serving as `lasterp` (the owner) would undo
       # everything the harden step just did, and nothing would complain —
       # which is exactly why `lasterp doctor` exists.
-      LASTERP_DSN: postgres://lasterp_app:lasterp_app@postgres:5432/lasterp?sslmode=disable
+      LASTERP_DSN: postgres://lasterp_app:${LASTERP_APP_PASSWORD:-lasterp_app}@postgres:5432/lasterp?sslmode=disable
       LASTERP_ADDR: ":8080"
     ports:
-      - "8080:8080"
+      - "${LASTERP_PORT:-8080}:8080"
+
+volumes:
+  lasterp-data:
