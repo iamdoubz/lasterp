@@ -37,6 +37,7 @@ Every invariant below has: an ID, an enforcement layer, a test suite tagged with
 - INV-S2 Offline commands pass the identical validation pipeline as online writes — no privileged sync side door.
 - INV-S3 Client replica converges to server state; divergence is detected and repaired, never ignored.
 - INV-S4 Rejected commands are surfaced to the user; no silent drops.
+- INV-S5 No committed change is skipped by the change feed: for any cursor position a reader observes every committed entry exactly once, in a stable total order that does not change on resume. (The downstream half of INV-S1, enforced from WP-2.1 — the feed exists before the replica does.)
 
 **Extension & autonomy (INV-X):**
 - INV-X1 Plugins touch data only via capability-checked host functions — no ambient authority; a plugin cannot violate INV-F/E/T/S even if maliciously constructed.

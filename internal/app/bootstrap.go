@@ -44,6 +44,9 @@ var adminGrants = map[string][]string{
 	"capability":   {"manage"},
 	"TaxRate":      {"manage"},
 	"FxRate":       {"manage"},
+	// The change feed spans every object in the tenant, so it is its own
+	// grant rather than a consequence of the ones above (WP-2.1).
+	"sync": {"read"},
 }
 
 // ErrTenantExists is returned when the tenant is already provisioned, so

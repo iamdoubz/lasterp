@@ -80,6 +80,12 @@ var Catalog = []Invariant{
 	{ID: "INV-S2", Title: "Offline commands pass the identical validation pipeline as online writes", Layer: LayerPipeline, Note: "lands with WP-2.3 sync"},
 	{ID: "INV-S3", Title: "Client replica converges to server state; divergence is detected and repaired", Layer: LayerSentinel, Note: "lands with WP-2.2 sync"},
 	{ID: "INV-S4", Title: "Rejected commands are surfaced to the user; no silent drops", Layer: LayerPipeline, Note: "lands with WP-2.3 sync"},
+	// INV-S5 is the downstream half of INV-S1, and lands early because the
+	// feed exists before the replica does (WP-2.1). It is separate rather than
+	// folded in: INV-S1 is the end-to-end RPO-0 promise that only completes
+	// once upstream command replay exists in WP-2.3, and claiming it here
+	// would overstate what is proven.
+	{ID: "INV-S5", Title: "No committed change is skipped by the feed: every entry is observed exactly once, in a stable total order", Layer: LayerPipeline, TestRequired: true, AppendOnlyTables: []string{"change_feed"}},
 
 	// Extension & autonomy (INV-X) — Phase 3 / Phase 6.
 	{ID: "INV-X1", Title: "Plugins touch data only via capability-checked host functions — no ambient authority", Layer: LayerPipeline, Note: "lands with WP-3.1 plugin host"},
