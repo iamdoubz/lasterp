@@ -27,6 +27,8 @@ export function Good() {
       <span>LastERP</span>
       <input placeholder={t("search.placeholder")} />
       <em>debug only</em> {/* i18n-ignore */}
+      {count > 0 && count <= max && <span>{t("stock.low")}</span>}
+      {count > 0 && <Alert>{t("stock.none")}</Alert>}
     </main>
   );
 }
@@ -74,5 +76,22 @@ if "$scripts_dir/i18n-lint.sh" >/dev/null 2>&1; then
   exit 1
 fi
 echo "PASS: i18n-lint.sh rejects hardcoded user-facing attribute"
+git rm -q web/src/BadAttr.tsx
+git commit -q -m "drop bad attr"
+
+# A text node that happens to contain a comparison is still a text node: the
+# operator blanking must not become a way to smuggle prose past the gate.
+cat > web/src/BadCompare.tsx <<'EOF'
+export function BadCompare() {
+  return <p>Total > 100 items</p>;
+}
+EOF
+git add -A
+git commit -q -m "bad compare"
+if "$scripts_dir/i18n-lint.sh" >/dev/null 2>&1; then
+  echo "FAIL: i18n-lint.sh accepted a hardcoded text node containing a comparison" >&2
+  exit 1
+fi
+echo "PASS: i18n-lint.sh rejects hardcoded text containing an operator"
 
 echo "all i18n-lint fixture tests passed"
