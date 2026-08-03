@@ -6,6 +6,14 @@ import { defineConfig } from "vite";
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  // SQLite-WASM ships a .wasm next to its JS and resolves it by relative URL.
+  // Pre-bundling rewrites the JS into .vite/deps and leaves the .wasm behind,
+  // so the fetch falls through to the SPA handler and the runtime tries to
+  // instantiate index.html as WebAssembly ("expected magic word 00 61 73 6d,
+  // found 3c 21 64 6f" — that is `<!do`). Excluding it keeps the pair together.
+  optimizeDeps: {
+    exclude: ["@sqlite.org/sqlite-wasm"],
+  },
   server: {
     proxy: {
       "/api": "http://localhost:8080",

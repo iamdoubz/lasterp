@@ -8,9 +8,11 @@
     "build": "tsc -b && vite build",
     "test": "vitest run",
     "lint": "eslint .",
-    "e2e": "playwright test"
+    "e2e": "playwright test",
+    "spike:sync": "playwright test --config playwright.spike.config.ts"
   },
   "dependencies": {
+    "@sqlite.org/sqlite-wasm": "3.53.0-build1",
     "@tanstack/react-query": "^5.101.4",
     "@tanstack/react-router": "^1.170.18",
     "react": "^19.0.0",
