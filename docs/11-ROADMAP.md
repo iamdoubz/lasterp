@@ -70,7 +70,7 @@ WP-0.1 repo bootstrap
 - **WP-2.3 Outbox & command replay:** optimistic apply, pending flags, replay pipeline, accept/reject/rebase, conflict tray UI. AC: simulation harness (04-SYNC-ENGINE.md test plan) green; no-silent-loss property.
 - **WP-2.4 Scope management:** role-based scope computation, re-shape on change, revocation purge. AC: entitlement-change scenarios.
 - **WP-2.5 Device security:** device registration, replica encryption, remote wipe. AC: wipe honored on reconnect; replica unreadable without keystore.
-- **WP-2.6 Spike: shared sync-client core** (TS lib vs Rust/WASM lib for web+Tauri+mobile). Output: ADR-017.
+- **WP-2.6 Spike: shared sync-client core** (TS lib vs Rust/WASM lib for web+Tauri+mobile) — **DONE**, output [ADR-017](adr/ADR-017-sync-client-core.md): TypeScript, one core per shell, replica in a dedicated worker (an OPFS constraint, not a language one). Prototype in `web/src/sync/` is WP-2.2's seed. Decisions: [WP-2.6-decisions.md](notes/WP-2.6-decisions.md).
 - **Milestone M2: "work all day offline, sync perfectly"** — the Lotus Notes demo.
 
 ## Phase 3 — Extensibility & AI
