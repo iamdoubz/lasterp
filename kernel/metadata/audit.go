@@ -31,10 +31,18 @@ func recordAudit(ctx context.Context, tx *sql.Tx, db *storage.DB, tenant tenancy
 	// "CRUD audit entries" alongside event-store entries — so publish in this
 	// same transaction, for the same reason the audit row itself is written
 	// here: the two must be atomic with the write they document (WP-2.1).
+	//
+	// RefID is the **record's** id, not this audit row's. WP-2.1 wrote the
+	// audit id here, matching its own "source + ref_id identify the row in
+	// events or audit_log" — which had no consumer yet to be wrong for. The
+	// first one (WP-2.2a materialisation) needs the row that changed, and an
+	// audit id only reaches it by a second hop. The audit row itself stays
+	// reachable by (tenant_id, object, record_id), which is exactly the index
+	// audit_log already carries.
 	return changefeed.Append(ctx, tx, db, changefeed.Entry{
 		TenantID:   tenant,
 		Source:     changefeed.SourceAudit,
-		RefID:      id,
+		RefID:      recordID,
 		Object:     object,
 		ScopeKey:   changefeed.ScopeKeyFor(object),
 		RecordedAt: at,

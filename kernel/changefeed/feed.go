@@ -35,19 +35,25 @@ const (
 )
 
 // Entry is one change to publish, as supplied by the writer.
+// Field names are wire-visible: GET /api/v1/sync/changes serialises these
+// straight out, so they carry snake_case tags like every other payload in the
+// API rather than exposing Go's exported-field casing to clients.
 type Entry struct {
-	TenantID   tenancy.ID
-	Source     Source
-	RefID      string // primary key in the source table
-	Object     string // object/stream kind, for scope tagging and filtering
-	ScopeKey   string // see scope.go; trivially computed until WP-2.4
-	RecordedAt time.Time
+	TenantID tenancy.ID `json:"tenant_id"`
+	Source   Source     `json:"source"`
+	// RefID is the primary key of the thing that changed — the event for
+	// SourceEvent, the *record* for SourceAudit (not the audit row: see
+	// kernel/metadata's recordAudit).
+	RefID      string    `json:"ref_id"`
+	Object     string    `json:"object"` // object/stream kind, for scope tagging and filtering
+	ScopeKey   string    `json:"scope_key"`
+	RecordedAt time.Time `json:"recorded_at"`
 }
 
 // Change is an Entry as read back, carrying the cursor position the reader
 // resumes from.
 type Change struct {
-	Cursor int64
+	Cursor int64 `json:"cursor"`
 	Entry
 }
 
@@ -122,6 +128,32 @@ func Read(ctx context.Context, db *storage.DB, tenant tenancy.ID, after int64, l
 		return nil, fmt.Errorf("changefeed: read: %w", err)
 	}
 	return changes, nil
+}
+
+// HighWater returns the newest cursor position visible for tenant, or 0 when
+// the feed is empty.
+//
+// It is what a hydrating client records before paging a snapshot: everything
+// that changes from here on is in the feed, so the snapshot's own raciness is
+// repaired by the first batch rather than prevented by holding a transaction
+// open across the whole hydration (WP-2.2-decisions.md §4).
+func HighWater(ctx context.Context, db *storage.DB, tenant tenancy.ID) (int64, error) {
+	if tenant == "" {
+		return 0, errors.New("changefeed: tenant is required")
+	}
+
+	var cursor int64
+	err := tenancy.WithTenant(ctx, db, tenant, func(ctx context.Context, tx *sql.Tx) error {
+		// COALESCE rather than scanning a NULL: an empty feed is position 0,
+		// which is exactly the cursor a client starts from.
+		row := tx.QueryRowContext(ctx, db.Rebind(
+			`SELECT COALESCE(MAX(id), 0) FROM change_feed WHERE tenant_id = ?`), string(tenant))
+		return row.Scan(&cursor)
+	})
+	if err != nil {
+		return 0, fmt.Errorf("changefeed: high water: %w", err)
+	}
+	return cursor, nil
 }
 
 type scanner interface {
