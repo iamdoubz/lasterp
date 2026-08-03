@@ -89,6 +89,12 @@ func testPostgresDB(t *testing.T) *storage.DB {
 	if _, err := superDB.ExecContext(ctx, `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO `+appUser); err != nil {
 		t.Fatalf("grant to app role: %v", err)
 	}
+	// change_feed.id is BIGSERIAL (WP-2.1) and every CRUD write now publishes
+	// to it, so INSERT needs USAGE on its backing sequence too — the same
+	// grant kernel/eventstore's harness has always needed for events.id.
+	if _, err := superDB.ExecContext(ctx, `GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO `+appUser); err != nil {
+		t.Fatalf("grant sequence usage to app role: %v", err)
+	}
 
 	appDSN, err := url.Parse(dsn)
 	if err != nil {

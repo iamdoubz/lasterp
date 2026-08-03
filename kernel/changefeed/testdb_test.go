@@ -1,7 +1,8 @@
-package metadata
+package changefeed
 
 import (
 	"context"
+	"database/sql"
 	"net/url"
 	"path/filepath"
 	"testing"
@@ -19,6 +20,11 @@ import (
 	"github.com/iamdoubz/lasterp/kernel/tenancy"
 )
 
+// testDialects returns one migrated *storage.DB per dialect (CLAUDE.md:
+// storage-touching code passes on Postgres AND SQLite). Same shape as
+// kernel/eventstore's harness, including the non-superuser app role — the
+// testcontainers default user bypasses RLS regardless of FORCE, which would
+// make the tenant-isolation assertions here false positives.
 func testDialects(t *testing.T) map[string]*storage.DB {
 	t.Helper()
 	dbs := map[string]*storage.DB{"sqlite": testSQLiteDB(t)}
@@ -30,29 +36,25 @@ func testDialects(t *testing.T) map[string]*storage.DB {
 
 func testSQLiteDB(t *testing.T) *storage.DB {
 	t.Helper()
-	dsn := filepath.Join(t.TempDir(), "metadata.db") + "?_pragma=busy_timeout(30000)"
+	dsn := filepath.Join(t.TempDir(), "changefeed.db") + "?_pragma=busy_timeout(30000)&_pragma=journal_mode(WAL)"
 	db, err := sqlite.Open(dsn)
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
+	db.SetMaxOpenConns(10)
 	if err := migrate.Apply(context.Background(), db); err != nil {
 		t.Fatalf("migrate sqlite: %v", err)
 	}
 	return db
 }
 
-// testPostgresDB migrates as the testcontainers superuser, then hands back
-// a connection as a freshly created ordinary (NOSUPERUSER NOBYPASSRLS)
-// role — see kernel/identity's identical helper and
-// docs/notes/WP-0.4-decisions.md for why testing through the superuser
-// connection would make every RLS-dependent assertion a false positive.
 func testPostgresDB(t *testing.T) *storage.DB {
 	t.Helper()
 	ctx := context.Background()
 
 	container, err := tcpostgres.Run(ctx, "postgres:18",
-		tcpostgres.WithDatabase("lasterp_metadata"),
+		tcpostgres.WithDatabase("lasterp_changefeed"),
 		tcpostgres.WithUsername("lasterp"),
 		tcpostgres.WithPassword("lasterp"),
 		testcontainers.WithWaitStrategy(
@@ -86,15 +88,9 @@ func testPostgresDB(t *testing.T) *storage.DB {
 	if _, err := superDB.ExecContext(ctx, `CREATE ROLE `+appUser+` LOGIN PASSWORD '`+appPassword+`' NOSUPERUSER NOBYPASSRLS`); err != nil {
 		t.Fatalf("create app role: %v", err)
 	}
-	if _, err := superDB.ExecContext(ctx, `GRANT USAGE, CREATE ON SCHEMA public TO `+appUser); err != nil {
-		t.Fatalf("grant schema create to app role: %v", err)
-	}
 	if _, err := superDB.ExecContext(ctx, `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO `+appUser); err != nil {
 		t.Fatalf("grant to app role: %v", err)
 	}
-	// change_feed.id is BIGSERIAL (WP-2.1) and every CRUD write now publishes
-	// to it, so INSERT needs USAGE on its backing sequence too — the same
-	// grant kernel/eventstore's harness has always needed for events.id.
 	if _, err := superDB.ExecContext(ctx, `GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO `+appUser); err != nil {
 		t.Fatalf("grant sequence usage to app role: %v", err)
 	}
@@ -110,6 +106,7 @@ func testPostgresDB(t *testing.T) *storage.DB {
 		t.Fatalf("open postgres (app role): %v", err)
 	}
 	t.Cleanup(func() { _ = appDB.Close() })
+	appDB.SetMaxOpenConns(50)
 	return appDB
 }
 
@@ -120,4 +117,30 @@ func mustCreateTenant(t *testing.T, db *storage.DB) tenancy.ID {
 		t.Fatalf("create tenant: %v", err)
 	}
 	return id
+}
+
+// testEntry is a feed entry pointing at a fabricated source row. These tests
+// exercise ordering and visibility, which do not depend on the pointed-at row
+// existing.
+func testEntry(tenant tenancy.ID, ref string) Entry {
+	return Entry{
+		TenantID:   tenant,
+		Source:     SourceEvent,
+		RefID:      ref,
+		Object:     "Invoice",
+		ScopeKey:   "invoicing",
+		RecordedAt: time.Now().UTC(),
+	}
+}
+
+// appendCommitted appends one entry in its own committed transaction.
+func appendCommitted(t *testing.T, db *storage.DB, tenant tenancy.ID, ref string) {
+	t.Helper()
+	ctx := context.Background()
+	err := tenancy.WithTenant(ctx, db, tenant, func(ctx context.Context, tx *sql.Tx) error {
+		return Append(ctx, tx, db, testEntry(tenant, ref))
+	})
+	if err != nil {
+		t.Fatalf("append %s: %v", ref, err)
+	}
 }

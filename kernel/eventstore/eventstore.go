@@ -13,8 +13,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
+	"github.com/iamdoubz/lasterp/kernel/changefeed"
 	"github.com/iamdoubz/lasterp/kernel/storage"
 	"github.com/iamdoubz/lasterp/kernel/tenancy"
 )
@@ -155,7 +158,21 @@ func Append(ctx context.Context, db *storage.DB, tenant tenancy.ID, stream Strea
 			ActorID: ev.ActorID, CommandID: commandID,
 			OccurredAt: occurredAt, RecordedAt: recordedAt,
 		}
-		return nil
+
+		// Publish to the change feed in this same transaction (WP-2.1). A
+		// replica's view of the log is only as complete as this append, so it
+		// must succeed or fail with the event itself — a feed entry written
+		// afterwards could be lost by a crash in between, and one written
+		// before could describe an event that never committed.
+		object, _, _ := strings.Cut(string(stream), ":")
+		return changefeed.Append(ctx, tx, db, changefeed.Entry{
+			TenantID:   tenant,
+			Source:     changefeed.SourceEvent,
+			RefID:      strconv.FormatInt(id, 10),
+			Object:     object,
+			ScopeKey:   changefeed.ScopeKeyFor(object),
+			RecordedAt: recordedAt,
+		})
 	})
 
 	switch {
