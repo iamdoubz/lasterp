@@ -208,6 +208,105 @@ func (c *CRUD) getTx(ctx context.Context, tx *sql.Tx, db *storage.DB, tenant ten
 	return rec, nil
 }
 
+// ListPage returns up to limit non-archived records ordered by id, starting
+// after the given id ("" for the first page). It is what hydration reads
+// (WP-2.2a): List loads a tenant's entire table into memory on both ends,
+// which is fine for a screen and not for seeding a replica of a real book.
+//
+// Ordering is by id rather than created_at because ids are UUIDv7 — already
+// time-ordered, and unique, so a page boundary cannot straddle two rows
+// sharing a timestamp and silently drop one.
+//
+// Archived rows are excluded: a fresh replica never held them, so it does not
+// need to be told they are gone. Rows archived *after* the snapshot's cursor
+// arrive through the feed, where GetMany does convey them (see its doc).
+func (c *CRUD) ListPage(ctx context.Context, db *storage.DB, tenant tenancy.ID, after string, limit int) ([]Record, error) {
+	if _, err := authz.Authorize(ctx, db, c.schema.ObjectName, "read"); err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		return nil, errors.New("metadata: limit must be positive")
+	}
+
+	var records []Record
+	err := tenancy.WithTenant(ctx, db, tenant, func(ctx context.Context, tx *sql.Tx) error {
+		query := fmt.Sprintf(`SELECT %s FROM %s
+			WHERE tenant_id = ? AND archived_at IS NULL AND id > ?
+			ORDER BY id ASC LIMIT ?`,
+			selectColumns(c.schema), TableName(c.schema.ObjectName))
+		rows, err := tx.QueryContext(ctx, db.Rebind(query), string(tenant), after, limit)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = rows.Close() }()
+
+		for rows.Next() {
+			rec, err := scanRecord(rows, c.schema)
+			if err != nil {
+				return err
+			}
+			records = append(records, rec)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return records, nil
+}
+
+// GetMany returns the records with the given ids, **including archived ones**,
+// requiring the "read" permission.
+//
+// The archived rows are the point. This is what resolves change-feed pointers
+// into rows (WP-2.2a), and a replica that already holds a row and is told
+// nothing when it is deleted keeps it forever — a divergence no amount of
+// further syncing repairs, which is precisely what INV-S3 exists to catch. A
+// returned record carries archived_at when it is deleted, and the caller
+// removes it locally.
+//
+// Unknown ids are simply absent from the result; a pointer to a row that no
+// longer exists at all is not an error to the reader.
+func (c *CRUD) GetMany(ctx context.Context, db *storage.DB, tenant tenancy.ID, ids []string) ([]Record, error) {
+	if _, err := authz.Authorize(ctx, db, c.schema.ObjectName, "read"); err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+	args := make([]any, 0, len(ids)+1)
+	args = append(args, string(tenant))
+	for _, id := range ids {
+		args = append(args, id)
+	}
+
+	var records []Record
+	err := tenancy.WithTenant(ctx, db, tenant, func(ctx context.Context, tx *sql.Tx) error {
+		query := fmt.Sprintf(`SELECT %s FROM %s WHERE tenant_id = ? AND id IN (%s) ORDER BY id ASC`,
+			selectColumns(c.schema), TableName(c.schema.ObjectName), placeholders)
+		rows, err := tx.QueryContext(ctx, db.Rebind(query), args...)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = rows.Close() }()
+
+		for rows.Next() {
+			rec, err := scanRecord(rows, c.schema)
+			if err != nil {
+				return err
+			}
+			records = append(records, rec)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return records, nil
+}
+
 // List returns every non-archived record for tenant, requiring the
 // "read" permission.
 func (c *CRUD) List(ctx context.Context, db *storage.DB, tenant tenancy.ID) ([]Record, error) {

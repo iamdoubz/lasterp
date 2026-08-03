@@ -409,6 +409,10 @@ func fullGrants() map[string][]string {
 		"capability":   {"manage"},
 		"TaxRate":      {"manage"},
 		"FxRate":       {"manage"},
+		// Mirrors bootstrap.go's adminGrants: the change feed spans every
+		// object, so it carries its own grant rather than following from the
+		// per-object ones above (WP-2.1).
+		"sync": {"read"},
 	}
 }
 
