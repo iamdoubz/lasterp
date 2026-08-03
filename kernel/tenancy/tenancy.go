@@ -12,6 +12,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"math/rand/v2"
 	"time"
 
 	"github.com/iamdoubz/lasterp/kernel/storage"
@@ -75,7 +76,6 @@ func FromContext(ctx context.Context) (ID, bool) {
 // without retrying.
 func WithTenant(ctx context.Context, db *storage.DB, tenant ID, fn func(ctx context.Context, tx *sql.Tx) error) error {
 	const busyRetryBudget = 30 * time.Second
-	const maxBackoff = 200 * time.Millisecond
 
 	deadline := time.Now().Add(busyRetryBudget)
 	var err error
@@ -87,12 +87,40 @@ func WithTenant(ctx context.Context, db *storage.DB, tenant ID, fn func(ctx cont
 		if time.Now().After(deadline) {
 			return fmt.Errorf("tenancy: gave up after %s on SQLITE_BUSY: %w", busyRetryBudget, err)
 		}
-		backoff := time.Duration(attempt+1) * 5 * time.Millisecond
-		if backoff > maxBackoff {
-			backoff = maxBackoff
-		}
-		time.Sleep(backoff)
+		time.Sleep(busyBackoff(attempt))
 	}
+}
+
+// busyBackoff returns how long to wait before retrying a busy transaction:
+// uniformly random in (0, ceiling], where the ceiling grows with attempt.
+//
+// The randomness is the point, and the previous version had none — it slept
+// exactly (attempt+1)*5ms. Two things went wrong with that under the load this
+// retry exists for (kernel/eventstore's 1000-writer torture):
+//
+//   - **Lockstep.** Writers that collide sleep the same duration, wake
+//     together, and collide again. The retry storm re-forms every round
+//     instead of dispersing.
+//   - **The starved writer waited longest.** Backoff grew with a writer's own
+//     attempt count, so the one that had lost most often slept up to 200ms
+//     while a newly-arrived writer slept 5ms and took the lock ahead of it.
+//     That is backwards, and it is how a single writer burns a 30-second
+//     budget while every other writer finishes — the exact shape of the CI
+//     failure this replaced ("writer 624: gave up after 30s").
+//
+// Drawing from (0, ceiling] instead of sleeping the ceiling fixes both: colliding writers
+// get different delays, and a writer deep into its attempts can still draw a
+// short one, so progress does not depend on being lucky early. This is the
+// "full jitter" strategy from AWS's backoff-and-jitter work.
+func busyBackoff(attempt int) time.Duration {
+	const maxBackoff = 200 * time.Millisecond
+	ceiling := time.Duration(attempt+1) * 5 * time.Millisecond
+	if ceiling > maxBackoff {
+		ceiling = maxBackoff
+	}
+	// #nosec G404 -- scheduling jitter, not a security decision. Nothing here
+	// is a secret and nothing depends on the sequence being unpredictable.
+	return time.Duration(rand.Int64N(int64(ceiling))) + time.Millisecond
 }
 
 func withTenantOnce(ctx context.Context, db *storage.DB, tenant ID, fn func(ctx context.Context, tx *sql.Tx) error) error {

@@ -133,7 +133,18 @@ jobs:
         # join the gauntlet by adding the tag — no edit here. Includes the
         # composability suite (ADR-018 §7): every shipped profile boots,
         # closures resolve, disabled objects return capability-disabled.
-        run: go test -count=1 -tags integrity ./...
+        #
+        # -p 2 caps how many package binaries run at once. At the default (one
+        # per core) this suite puts ~20 Docker-heavy packages on a 4-core
+        # runner, and the contention is not evenly felt: kernel/eventstore's
+        # 1000-writer SQLite torture starves under it and fails on the
+        # busy-retry budget rather than on the invariant it exists to check —
+        # a false negative on a non-skippable gate. The same shape was already
+        # observed with parallel Docker locally (phase-1-review.md P3).
+        #
+        # The cost is wall-clock: the gauntlet is the slowest job either way,
+        # and this trades some of that for a result that means what it says.
+        run: go test -count=1 -tags integrity -p 2 ./...
 
   build:
     runs-on: ubuntu-latest
