@@ -4,6 +4,14 @@
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "module": "ESNext",
     "moduleResolution": "Bundler",
+    // src/sync writes its relative imports with explicit .ts extensions, which
+    // Bundler resolution otherwise forbids. The sync core has a third host
+    // besides Vite and vitest: plain Node runs it for the INV-S3 convergence
+    // harness (internal/app/sync_converge_integrity_test.go), and Node's ESM
+    // resolver has never supported extensionless specifiers. One flag is
+    // cheaper than a bundling step between the source and the thing proving the
+    // invariant. Everywhere else may keep omitting them.
+    "allowImportingTsExtensions": true,
     "jsx": "react-jsx",
     "strict": true,
     "noUnusedLocals": true,
@@ -15,5 +23,5 @@
     "noEmit": true,
     "types": ["vitest/globals", "node"]
   },
-  "include": ["src", "e2e", "playwright.config.ts"]
+  "include": ["src", "e2e", "browser", "playwright.config.ts", "playwright.browser.config.ts"]
 }

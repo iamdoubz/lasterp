@@ -107,6 +107,13 @@ jobs:
       - run: pnpm --dir web run build
       - run: pnpm --dir web exec playwright install --with-deps chromium
       - run: pnpm --dir web run e2e
+        # The browser half of WP-2.2b's AC: the sync core over SQLite-WASM/OPFS
+        # in a dedicated worker — the real VFS, the real slot pool, and a real
+        # second browsing context. Its own config because the harness page is
+        # scaffolding that must never enter the product bundle. (Replaces the
+        # WP-2.6 spike run, which said it would fold in here once ADR-017 chose
+        # a language.)
+      - run: pnpm --dir web run e2e:browser
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
@@ -127,6 +134,18 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: "1.26.5"
+        # INV-S3 (replica convergence) is proven by driving the real TypeScript
+        # sync core against the real server — ADR-017 put INV-S1–S5 in
+        # TypeScript, and its spike bar 4 was exactly "INV-S properties testable
+        # headlessly". Node 26 strips types natively, so there is no build step
+        # between the source under test and the thing proving the invariant, and
+        # no pnpm install: the driver imports only relative files and
+        # node:sqlite. The alternative — a token Go test naming INV-S3 while the
+        # real proof sat in a skippable job — is the green tick WP-2.2 §0
+        # refused for PR-A.
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "26"
       - name: run integrity gauntlet
         # Auto-discovery (WP-0.10): every INV/adversarial/composability test
         # file is tagged `//go:build integrity`, so new module invariant tests

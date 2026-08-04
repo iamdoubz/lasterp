@@ -78,7 +78,14 @@ var Catalog = []Invariant{
 	// Sync (INV-S) — Phase 2.
 	{ID: "INV-S1", Title: "No acknowledged write is ever lost (RPO 0)", Layer: LayerPipeline, Note: "lands with WP-2.3 sync"},
 	{ID: "INV-S2", Title: "Offline commands pass the identical validation pipeline as online writes", Layer: LayerPipeline, Note: "lands with WP-2.3 sync"},
-	{ID: "INV-S3", Title: "Client replica converges to server state; divergence is detected and repaired", Layer: LayerSentinel, Note: "lands with WP-2.2 sync"},
+	// INV-S3 flips here rather than in WP-2.2a because convergence is a
+	// property of a replica, and PR-A had no replica to converge. It is proven
+	// by TestReplicaConvergesToProjection (randomized operations, real server,
+	// both dialects, the real TypeScript core over node:sqlite) — and that
+	// proof is only worth what TestConvergenceHarnessDetectsASkippedFeed says
+	// it is: delete entries from the feed and the property must fail, or it was
+	// measuring that SELECT equals SELECT.
+	{ID: "INV-S3", Title: "Client replica converges to server state; divergence is detected and repaired", Layer: LayerSentinel, TestRequired: true},
 	{ID: "INV-S4", Title: "Rejected commands are surfaced to the user; no silent drops", Layer: LayerPipeline, Note: "lands with WP-2.3 sync"},
 	// INV-S5 is the downstream half of INV-S1, and lands early because the
 	// feed exists before the replica does (WP-2.1). It is separate rather than
