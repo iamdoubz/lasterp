@@ -123,7 +123,7 @@ func readChanges(db *storage.DB, res *resolver) api.HandlerFunc {
 		if n := len(changes); n > 0 {
 			cursor = changes[n-1].Cursor
 		}
-		body := map[string]any{"data": changes, "cursor": cursor}
+		body := map[string]any{"data": emptyIfNil(changes), "cursor": cursor}
 
 		if r.URL.Query().Get("include") == "rows" {
 			rows, err := materialize(r, res, tenant, changes)
@@ -261,9 +261,29 @@ func readSnapshot(db *storage.DB, res *resolver) api.HandlerFunc {
 			}
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"object": object, "data": records, "cursor": cursor, "next": next,
+			"object": object, "data": emptyIfNil(records), "cursor": cursor, "next": next,
 		})
 	}
+}
+
+// emptyIfNil renders an empty collection as `[]` rather than `null`.
+//
+// The kernel's readers build their result with `var xs []T`, which is nil when
+// nothing matched and marshals to `null`. That is fine inside Go and wrong on
+// the wire: `data` is documented as a list, every other collection route in
+// this package already emits `[]` (listMetaObjects builds with make), and a
+// client iterating the field crashes on the empty case — which is the *normal*
+// case for an object with no rows yet.
+//
+// Found by WP-2.2b: hydrating a fresh tenant asks for a snapshot of every
+// object, and the first one with no rows took the replica down. Same shape as
+// the two defects WP-2.2-decisions.md §1a records — a wire-format choice with
+// no consumer to check it against.
+func emptyIfNil[T any](xs []T) []T {
+	if xs == nil {
+		return []T{}
+	}
+	return xs
 }
 
 func feedLimit(r *http.Request) (int, error) {

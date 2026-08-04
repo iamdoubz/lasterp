@@ -341,3 +341,38 @@ func TestChangesWithoutIncludeCarryNoRows(t *testing.T) {
 		})
 	}
 }
+
+// An empty collection is `[]`, never `null`.
+//
+// The kernel's readers build results with `var xs []T`, which marshals to
+// `null` when nothing matched. That is fine inside Go and wrong on the wire:
+// a client iterating `data` crashes on the *normal* case of an object with no
+// rows yet. WP-2.2b found it by hydrating a fresh tenant, which asks every
+// object for a snapshot — the same shape as the two defects decisions §1a
+// records, a wire-format choice with no consumer to check it against.
+func TestEmptyCollectionsAreArraysNotNull(t *testing.T) {
+	for name, db := range bootDBs(t) {
+		t.Run(name, func(t *testing.T) {
+			e := seed(t, db)
+
+			// Account exists and has no rows in a fresh tenant.
+			status, body, parsed := e.get("/api/v1/sync/snapshot?object=Account&limit=10")
+			if status != http.StatusOK {
+				t.Fatalf("snapshot = %d; body=%s", status, body)
+			}
+			if _, ok := parsed["data"].([]any); !ok {
+				t.Fatalf("empty snapshot data = %#v (%s), want an empty array",
+					parsed["data"], body)
+			}
+
+			// The feed past its own high-water mark is the same case.
+			status, body, parsed = e.get("/api/v1/sync/changes?after=999999&limit=10")
+			if status != http.StatusOK {
+				t.Fatalf("changes = %d; body=%s", status, body)
+			}
+			if _, ok := parsed["data"].([]any); !ok {
+				t.Fatalf("empty feed data = %#v (%s), want an empty array", parsed["data"], body)
+			}
+		})
+	}
+}

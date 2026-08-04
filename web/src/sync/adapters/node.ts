@@ -9,7 +9,7 @@
 
 import { DatabaseSync } from "node:sqlite";
 
-import type { SqlValue, Store } from "../port";
+import type { SqlValue, Store } from "../port.ts";
 
 export function openNodeStore(path = ":memory:"): Store {
   const db = new DatabaseSync(path);

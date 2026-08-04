@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/iamdoubz/lasterp/kernel/idgen"
+	"github.com/iamdoubz/lasterp/kernel/metadata"
 	"github.com/iamdoubz/lasterp/kernel/storage"
 	"github.com/iamdoubz/lasterp/kernel/tenancy"
 )
@@ -157,4 +158,45 @@ func hasObject(t *testing.T, body []byte, name string) bool {
 		}
 	}
 	return false
+}
+
+// Every published object says how it is persisted, because a replica generating
+// its schema from this endpoint has to know which objects it can hydrate:
+// /api/v1/sync/snapshot 404s for event-sourced ones, and without this field the
+// only ways to find out are probing a 404 (which conflates event-sourced with
+// unknown and with disabled) or keeping the list client-side (a hand-written
+// duplicate of metadata, which ADR-006 and CLAUDE.md both forbid).
+// WP-2.2b-decisions.md §2.
+func TestMetaObjectsPublishPersistence(t *testing.T) {
+	for name, db := range bootDBs(t) {
+		t.Run(name, func(t *testing.T) {
+			e := seed(t, db)
+			objects := decodeMetaObjects(t, mustGet(t, e, "/api/v1/meta/objects"))
+			if len(objects) == 0 {
+				t.Fatal("no renderable objects returned")
+			}
+
+			for _, o := range objects {
+				switch o.Persistence {
+				case metadata.PersistenceCRUD, metadata.PersistenceEventSourced:
+				default:
+					t.Errorf("object %s publishes persistence %q, want one of %q/%q",
+						o.Name, o.Persistence, metadata.PersistenceCRUD, metadata.PersistenceEventSourced)
+				}
+
+				// The claim must be true: a crud object hydrates, and anything
+				// else does not. This is the assertion that keeps the field
+				// honest rather than merely present.
+				status, _, _ := e.get("/api/v1/sync/snapshot?object=" + o.Name + "&limit=1")
+				want := http.StatusOK
+				if o.Persistence != metadata.PersistenceCRUD {
+					want = http.StatusNotFound
+				}
+				if status != want {
+					t.Errorf("object %s says persistence=%q but snapshot returned %d, want %d",
+						o.Name, o.Persistence, status, want)
+				}
+			}
+		})
+	}
 }

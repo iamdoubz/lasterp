@@ -9,7 +9,7 @@
     "test": "vitest run",
     "lint": "eslint .",
     "e2e": "playwright test",
-    "spike:sync": "playwright test --config playwright.spike.config.ts"
+    "e2e:browser": "playwright test --config playwright.browser.config.ts"
   },
   "dependencies": {
     "@sqlite.org/sqlite-wasm": "3.53.0-build1",

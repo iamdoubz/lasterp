@@ -57,9 +57,32 @@ trusting `id > cursor` strands 5 permanently. A per-tenant ordering lock makes i
 equal commit order; cost and upgrade path in
 [WP-2.1-decisions.md](notes/WP-2.1-decisions.md) §2.
 
+## Implementation status (WP-2.2: the replica)
+
+The server half (**WP-2.2a**) materialises the feed's pointers into current row state
+(`GET /api/v1/sync/changes?include=rows`, re-authorised per object kind), pages a snapshot for
+hydration (`GET /api/v1/sync/snapshot`), and conveys archived rows flagged rather than
+filtering them — a delete a replica is never told about is a divergence no amount of syncing
+repairs.
+
+The client half (**WP-2.2b**) lives in [`web/src/sync/`](../web/src/sync/): the replica's
+tables are generated from `GET /api/v1/meta/objects` (never a hand-written mirror — ADR-006,
+and the schema is per-tenant), hydration pages each object and keeps the cursor from its
+*first* page, and the apply loop folds feed pages in order, exactly once, inside one
+transaction with the cursor. Values are checked against their declared field type on arrival
+(INV-T5) rather than coerced. Per [ADR-017](adr/ADR-017-sync-client-core.md) the core is
+TypeScript and the replica runs in a dedicated worker over the SAH-pool OPFS VFS.
+
+**INV-S3** is proven by `TestReplicaConvergesToProjection` — randomized operations against the
+real server on both dialects, with the real core on `node:sqlite` — plus one browser pass over
+OPFS. That proof is itself guarded: `TestConvergenceHarnessDetectsASkippedFeed` deletes feed
+entries and requires convergence to *fail*, because an apply loop writing current server state
+measured against current server state can otherwise pass by construction. Decisions:
+[WP-2.2b-decisions.md](notes/WP-2.2b-decisions.md).
+
 Not yet built: the streaming transport (steps 1–3 above are served by cursored polling plus
 an in-process notifier), scope computation (WP-2.4 — entries carry a scope tag, computed
-trivially), snapshot hydration (WP-2.2), and everything upstream (WP-2.3).
+trivially), and everything upstream (WP-2.3). The replica is **read-only** until then.
 
 ## Guarantees & limits
 - Acknowledged writes: RPO 0 (command accepted ⇔ events durably committed).

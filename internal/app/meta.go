@@ -42,10 +42,23 @@ type metaField struct {
 // fields in presentation order (WP-1.11 gave the schema real UI descriptors;
 // before that, field order was declaration order and nothing could change it).
 type metaObject struct {
-	Name     string      `json:"name"`
-	Resource string      `json:"resource"`
-	Module   string      `json:"module"`
-	Fields   []metaField `json:"fields"`
+	Name     string `json:"name"`
+	Resource string `json:"resource"`
+	Module   string `json:"module"`
+
+	// Persistence tells a replica which objects it can hydrate. Event-sourced
+	// objects have no CRUD surface, so /api/v1/sync/snapshot 404s for them
+	// (sync.go newResolver) — and without this field a client generating its
+	// schema from this endpoint has no way to know that before asking.
+	//
+	// The alternatives were to treat that 404 as "not replicable", which
+	// conflates it with an unknown object and a disabled module, or to keep the
+	// event-sourced list client-side, which is the hand-written duplicate of
+	// metadata that ADR-006 and CLAUDE.md both forbid. See
+	// WP-2.2b-decisions.md §2.
+	Persistence metadata.Persistence `json:"persistence"`
+
+	Fields []metaField `json:"fields"`
 }
 
 // metaActions serves the effective object schemas the web client renders
@@ -100,9 +113,10 @@ func toMetaObject(s *metadata.EffectiveSchema) metaObject {
 		})
 	}
 	return metaObject{
-		Name:     s.ObjectName,
-		Resource: api.ResourcePath(s.ObjectName),
-		Module:   s.Module,
-		Fields:   fields,
+		Name:        s.ObjectName,
+		Resource:    api.ResourcePath(s.ObjectName),
+		Module:      s.Module,
+		Persistence: s.Persistence,
+		Fields:      fields,
 	}
 }
