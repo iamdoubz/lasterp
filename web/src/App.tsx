@@ -6,6 +6,7 @@ import { useMemo, useState } from "react";
 import { ApiError, listCapabilities } from "./api";
 import { buildRouter } from "./router";
 import { Login } from "./routes/Login";
+import { ReplicaProvider } from "./sync/ReplicaContext";
 
 /**
  * App decides between the login screen and the authenticated shell.
@@ -62,7 +63,11 @@ export default function App() {
 
   return (
     <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
+      {/* Inside the signed-in branch only: the replica holds one tenant's data
+          and there is no session to bind it to before login. */}
+      <ReplicaProvider>
+        <RouterProvider router={router} />
+      </ReplicaProvider>
     </QueryClientProvider>
   );
 }

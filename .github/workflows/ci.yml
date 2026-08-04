@@ -163,7 +163,19 @@ jobs:
         #
         # The cost is wall-clock: the gauntlet is the slowest job either way,
         # and this trades some of that for a result that means what it says.
-        run: go test -count=1 -tags integrity -p 2 ./...
+        #
+        # -timeout is explicit because internal/app is now within a minute of
+        # Go's 10m default: it measured 540s at -p 2 on a developer machine
+        # when WP-2.3b landed, and it is the long pole (every sync scenario
+        # boots a server on both dialects and drives a real Node client
+        # through subprocesses, one per client per round). A per-package
+        # timeout is not an assertion — raising it weakens nothing — but
+        # leaving 60 seconds of headroom on a non-skippable gate means a
+        # slower runner reports a panic that looks like a hang and says
+        # nothing about any invariant. The number to watch is that 540s: if
+        # it approaches 20m, the answer is to split the package, not to raise
+        # this again.
+        run: go test -count=1 -tags integrity -p 2 -timeout 20m ./...
 
   build:
     runs-on: ubuntu-latest

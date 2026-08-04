@@ -59,12 +59,20 @@ const (
 	simSeed = 20260804
 )
 
-// fault is what happens to one client in one round. The zero value is a clean
-// sync, which is deliberate — most rounds for most clients should be ordinary,
-// or the harness only ever tests the exceptional path.
+// fault is one client's round: what its user did, and what went wrong. The
+// zero value is a clean sync with no offline work, which is deliberate — most
+// rounds for most clients should be ordinary, or the harness only ever tests
+// the exceptional path.
 type fault struct {
 	failAfter   int // >0: partition after this many transport calls
 	killInApply int // >0: exit inside the apply transaction, at this row write
+	// queue is work done offline before this round's sync (WP-2.3b). It is on
+	// this struct rather than beside it because the interesting scenarios are
+	// the combinations: queued work *and* a partition is a client that wrote
+	// something and then could not send it, which is the state INV-S1 is a
+	// promise about.
+	queue int
+	label string
 }
 
 func (f fault) args() []string {
@@ -74,6 +82,9 @@ func (f fault) args() []string {
 	}
 	if f.killInApply > 0 {
 		out = append(out, fmt.Sprintf("--kill-in-apply=%d", f.killInApply))
+	}
+	if f.queue > 0 {
+		out = append(out, fmt.Sprintf("--enqueue=%d", f.queue), "--label="+f.label)
 	}
 	return out
 }
@@ -136,11 +147,58 @@ func TestSimulationConvergesUnderFaults(t *testing.T) {
 			}
 
 			// The wire is back and nothing crashes: everyone must land on the
-			// same state as the server.
-			for _, c := range clients {
-				assertConverged(t, e, c.run.sync(0), c.name+" after the storm")
+			// same state as the server, and everything their users wrote
+			// offline must have got there.
+			//
+			// Two clean syncs each, not one: a client whose last round was cut
+			// mid-drain legitimately still holds commands, and stop-on-reject
+			// means a queue can need more than one pass. What is *not*
+			// legitimate is work that never settles, which is what the
+			// assertions below are for.
+			settled := make([]map[string][]map[string]any, len(clients))
+			for i, c := range clients {
+				c.run.sync(0)
+				settled[i] = c.run.sync(0)
+				assertConverged(t, e, settled[i], c.name+" after the storm")
 			}
+			assertNoWorkWasLost(t, e, clients, settled)
 		})
+	}
+}
+
+// assertNoWorkWasLost is INV-S1 and INV-S4 over the whole run: every command
+// any client queued is now on the server, nothing is still stuck in an outbox,
+// and no fault was mistaken for a rejection.
+//
+// The count is exact rather than a floor. "At least as many as we queued" would
+// pass on a client that sent one command twice, and that is the other half of
+// RPO 0 — a write that survives a crash is no good if it survives it twice
+// (INV-E4).
+// settled is each client's dump from its own final clean sync — read from
+// there rather than re-running the driver, which would be four more subprocess
+// spawns per dialect for state already in hand. internal/app is the gauntlet's
+// long pole and every avoidable driver run is paid on every CI run.
+func assertNoWorkWasLost(t *testing.T, e *env, clients []*simClient, settled []map[string][]map[string]any) {
+	t.Helper()
+
+	wanted := len(clients) * simRounds * offlineWritesPerRound
+	if got := serverCountNamed(t, e, clientWrittenPrefix); got != wanted {
+		t.Fatalf("%d offline writes reached the server, want exactly %d — the fleet %s work "+
+			"across partitions and crashes (INV-S1/INV-E4)", got, wanted,
+			map[bool]string{true: "duplicated", false: "lost"}[got > wanted])
+	}
+
+	for i, c := range clients {
+		dump := settled[i]
+		if queued := len(dump["_outbox"]); queued != 0 {
+			t.Fatalf("%s still has %d commands queued after the storm — they are neither "+
+				"accepted nor surfaced, which is the silent stall INV-S4 covers: %v",
+				c.name, queued, dump["_outbox"])
+		}
+		if filed := len(dump["_conflicts"]); filed != 0 {
+			t.Fatalf("%s filed %d conflicts for work the server had no reason to refuse: %v — "+
+				"a fault was mistaken for a rejection", c.name, filed, dump["_conflicts"])
+		}
 	}
 }
 
@@ -155,19 +213,39 @@ func TestSimulationConvergesUnderFaults(t *testing.T) {
 // — which is why every scheduled fault is now asserted rather than assumed.
 const crashFloor = 3
 
-// roundFaults is the schedule: one client partitioned and a different one
-// crashed each round, rotating, so every client is interrupted over the run and
-// no client is interrupted twice running.
+// offlineWritesPerRound is how much work each client's user does between
+// syncs. Every client, every round: the upstream path should be the ordinary
+// one, not a special case the schedule visits occasionally.
+const offlineWritesPerRound = 2
+
+// roundFaults is the schedule: every client queues offline work, one is
+// partitioned and a different one is crashed each round, rotating, so every
+// client is interrupted over the run and no client is interrupted twice
+// running.
 //
 // failAfter is 1, not a random value, and that is deliberate. Transport calls
 // are counted from the start of the sync, and a caught-up client makes exactly
 // two (metadata, then one feed page), so any threshold above 1 lets the sync
 // finish and the "partition" never happens. Deterministic beats varied when the
 // alternative is a fault that only sometimes exists.
+//
+// With WP-2.3b that threshold also lands somewhere new: the drain runs before
+// the pull (WP-2.3-decisions.md §4), so a partition after one call now cuts the
+// wire with commands still queued. That is the point — the partitioned client
+// of each round is one that wrote something offline and could not send it, and
+// the final assertion is that it eventually does.
 func roundFaults(n, round int) []fault {
 	faults := make([]fault, n)
-	faults[round%n] = fault{failAfter: 1}
-	faults[(round+1)%n] = fault{killInApply: 1 + round%crashFloor}
+	for i := range faults {
+		faults[i] = fault{
+			queue: offlineWritesPerRound,
+			// clientWrittenPrefix: randomOps must not archive these, or the
+			// count of delivered work would measure the churn instead.
+			label: fmt.Sprintf("%sc%d r%d", clientWrittenPrefix, i, round),
+		}
+	}
+	faults[round%n].failAfter = 1
+	faults[(round+1)%n].killInApply = 1 + round%crashFloor
 	return faults
 }
 

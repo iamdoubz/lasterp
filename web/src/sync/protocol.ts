@@ -9,11 +9,22 @@
 // dedicated worker — and requires the surface across it to be async even though
 // the core inside it is synchronous.
 
-/** What the host can ask of the replica worker. */
+import type { Command } from "./outbox.ts";
+
+/** What the host can ask of the replica worker.
+ *
+ * `write` is the whole upstream surface: one queued command, applied
+ * optimistically and sent on the next drain. There is deliberately no "send
+ * this now" variant — an offline-first client has one write path and the
+ * network is an optimization (commandment 4), so a screen that could choose
+ * would be a screen that behaves differently offline. */
 export type SyncCommand =
   | { kind: "sync" }
   | { kind: "status" }
-  | { kind: "list"; object: string };
+  | { kind: "list"; object: string }
+  | { kind: "write"; command: Command }
+  | { kind: "conflicts" }
+  | { kind: "discard"; commandId: string };
 
 /** A command with its correlation id. This is an intersection rather than a
  * union carrying `id` in each arm because `Omit<Union, "id">` collapses a union
@@ -27,9 +38,19 @@ export interface SyncStatus {
   /** The feed position the replica has applied up to. */
   cursor: number;
   /** navigator.storage.persist() was granted. When false the browser may evict
-   * this replica without warning; for a read-only replica that costs a
-   * re-hydration (WP-2.2b-decisions.md §7). */
+   * this replica without warning — and since WP-2.3b that replica holds work
+   * the server has never seen, which is the one thing no re-fetch reconstructs
+   * (WP-2.2b-decisions.md §7). */
   persisted: boolean;
+  /** Commands queued and not yet accepted. Shown from the first write rather
+   * than at the limit: the warning has to be true before anything is at risk,
+   * which is the only moment it can be (WP-2.3-decisions.md §6). */
+  pending: number;
+  /** Rejections waiting in the tray. */
+  conflicts: number;
+  /** The cap on `pending`, or null when persistence was granted and there is
+   * none — a replica that cannot be evicted has no blast radius to bound. */
+  limit: number | null;
 }
 
 /** Responses the worker sends back.

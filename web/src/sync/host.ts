@@ -7,7 +7,24 @@
 // place the client talks to the server", and a replica read replaces that
 // transport without a screen changing (WP-1.5-decisions.md §1).
 
+import type { Command, Conflict } from "./outbox.ts";
 import type { SyncCommand, SyncResponse, SyncStatus } from "./protocol.ts";
+
+/** rehydrate turns the worker's serialised error back into the type the shell
+ * branches on. Structured clone drops the prototype, so the name is carried
+ * explicitly and mapped here — an `instanceof` check on the far side of
+ * postMessage silently fails, and a locked replica or a full outbox would
+ * arrive as a generic failure with a state nobody rendered. */
+function rehydrate(name: string, message: string): Error {
+  switch (name) {
+    case "ReplicaLockedError":
+      return new ReplicaLocked(message);
+    case "OutboxFullError":
+      return new OutboxFull(message);
+    default:
+      return new Error(message);
+  }
+}
 
 /** ReplicaLocked is the host-side counterpart of the worker's
  * ReplicaLockedError: another tab holds the replica. It is a distinct type
@@ -20,14 +37,35 @@ export class ReplicaLocked extends Error {
   }
 }
 
-/** SyncClient is everything the UI can ask of the replica. Deliberately small:
- * this WP's replica is read-only, and the outbox that would widen it is
- * WP-2.3's. */
+/** OutboxFull is the host-side counterpart of the worker's OutboxFullError: the
+ * browser refused persistent storage and there are now as many unsent commands
+ * as WP-2.3-decisions.md §6 is willing to risk. Distinct for the same reason as
+ * ReplicaLocked — the shell renders it as a state ("go online to send your
+ * work") rather than as a save that failed for unknown reasons. */
+export class OutboxFull extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "OutboxFull";
+  }
+}
+
+/** SyncClient is everything the UI can ask of the replica. */
 export interface SyncClient {
-  /** Hydrate if needed, then catch up. Returns the cursor reached. */
+  /** Drain the outbox, hydrate if needed, then catch up. Returns the cursor
+   * reached. This is the reconnect path, in the order WP-2.3-decisions.md §4
+   * settles. */
   sync(): Promise<number>;
   status(): Promise<SyncStatus>;
   list<T = Record<string, unknown>>(object: string): Promise<T[]>;
+  /** Queue a write and apply it optimistically. Rejects with OutboxFull when an
+   * unpersisted replica is at its cap. */
+  write(command: Command): Promise<void>;
+  /** The tray: rejections the server explained and the user has not dealt
+   * with. */
+  conflicts(): Promise<Conflict[]>;
+  /** Drop one filed rejection. The only way a command leaves the system without
+   * reaching the server — loudly, and by the person whose work it is. */
+  discard(commandId: string): Promise<void>;
   close(): void;
 }
 
@@ -66,11 +104,7 @@ export function startReplica(spawn: () => WorkerLike = spawnWorker): SyncClient 
       waiter.resolve(response.value);
       return;
     }
-    waiter.reject(
-      response.name === "ReplicaLockedError"
-        ? new ReplicaLocked(response.message)
-        : new Error(response.message),
-    );
+    waiter.reject(rehydrate(response.name, response.message));
   };
 
   function send<T>(command: SyncCommand): Promise<T> {
@@ -85,6 +119,9 @@ export function startReplica(spawn: () => WorkerLike = spawnWorker): SyncClient 
     sync: () => send<number>({ kind: "sync" }),
     status: () => send<SyncStatus>({ kind: "status" }),
     list: <T>(object: string) => send<T[]>({ kind: "list", object }),
+    write: (command: Command) => send<void>({ kind: "write", command }),
+    conflicts: () => send<Conflict[]>({ kind: "conflicts" }),
+    discard: (commandId: string) => send<void>({ kind: "discard", commandId }),
     close: () => {
       // Reject anything outstanding rather than leaving promises that never
       // settle — a screen awaiting a reply from a terminated worker would hang.

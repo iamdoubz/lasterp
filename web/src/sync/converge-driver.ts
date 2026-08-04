@@ -9,28 +9,37 @@
 //
 // Usage: node converge-driver.ts <base-url> <token> <db-path> [faults...]
 //
-//   --drop-nth=N       discard every Nth feed entry and its row
-//   --fail-after=N     every transport call after the Nth throws (a partition)
-//   --kill-in-apply=N  process.exit at the Nth replica row write (a crash)
+//   --drop-nth=N            discard every Nth feed entry and its row
+//   --fail-after=N          every transport call after the Nth throws (a partition)
+//   --kill-in-apply=N       process.exit at the Nth replica row write (a crash)
+//   --enqueue=N             queue N offline creates before syncing
+//   --enqueue-invalid=N     queue N offline creates the server must reject
+//   --label=S               name prefix for queued rows, so the harness can find them
+//   --offline               queue the work and stop, without syncing
+//   --kill-after-command=N  process.exit after the Nth command's response, before
+//                           the outbox row is cleared (the INV-S1 crash window)
 //
 // The core is imported unmodified. Only the Transport differs from the browser:
 // an absolute URL and a bearer token instead of a same-origin cookie, which is
 // exactly why Transport is an interface.
 //
-// WP-2.3a adds the last two: docs/04 §Test plan asks for "N virtual clients ×
-// scripted partitions/crashes/interleavings", and a fault has to be injected
-// where the client cannot see it coming. Both are flags on this driver rather
-// than a second harness, because the thing under test is the same core reached
-// the same way — only the weather differs.
+// WP-2.3a added the partition and crash faults: docs/04 §Test plan asks for "N
+// virtual clients × scripted partitions/crashes/interleavings", and a fault has
+// to be injected where the client cannot see it coming. WP-2.3b adds the
+// upstream half — offline writes to queue, and the one crash window that makes
+// INV-S1 falsifiable.
 
 import { writeSync } from "node:fs";
 
 import { openNodeStore } from "./adapters/node.ts";
+import { indexSchema, initReplica } from "./core.ts";
+import { newId } from "./ids.ts";
+import { conflicts, enqueue, pendingCommands, type Command } from "./outbox.ts";
 import { sync } from "./replica.ts";
 import { replicableObjects, tableName, type MetaObject } from "./schema.ts";
 import type { FeedPage } from "./core.ts";
 import type { Store } from "./port.ts";
-import type { SnapshotPage, Transport } from "./transport.ts";
+import type { CommandResult, ReplayableCommand, SnapshotPage, Transport } from "./transport.ts";
 
 const [baseURL, token, dbPath, ...flags] = process.argv.slice(2);
 
@@ -38,6 +47,12 @@ const [baseURL, token, dbPath, ...flags] = process.argv.slice(2);
 function flag(name: string): number {
   const prefix = `--${name}=`;
   return Number(flags.find((f) => f.startsWith(prefix))?.slice(prefix.length) ?? 0);
+}
+
+/** textFlag reads `--name=S`. */
+function textFlag(name: string, fallback: string): string {
+  const prefix = `--${name}=`;
+  return flags.find((f) => f.startsWith(prefix))?.slice(prefix.length) ?? fallback;
 }
 
 /** dropNth simulates a feed that skips entries: every Nth change (and its rows)
@@ -73,6 +88,32 @@ const failAfter = flag("fail-after");
  * this page" is that. The caller is responsible for there being N rows to
  * write — the harness guarantees a floor, see crashFloor. */
 const killInApply = flag("kill-in-apply");
+
+/** enqueueCount / enqueueInvalid / label / offline are the upstream half: what
+ * the user did while disconnected.
+ *
+ * `enqueueInvalid` queues a command the **server** must refuse while the client
+ * cannot tell — a syntactically fine email that is not an address. That gap is
+ * the design, not a trick: the client does not re-validate business rules,
+ * because the server is the referee (ADR-004), so the only honest way to
+ * produce a rejection is to send something only the server knows is wrong.
+ * Anything the replica could have caught (an out-of-set enum, say) is refused
+ * by `conform` at enqueue time and never becomes a command at all. */
+const enqueueCount = flag("enqueue");
+const enqueueInvalid = flag("enqueue-invalid");
+const label = textFlag("label", "Offline");
+const offline = flags.includes("--offline");
+
+/** killAfterCommand exits after the Nth command's response has been read and
+ * *before* the transaction that clears its outbox row commits.
+ *
+ * This is the crash window INV-S1 is about, and nothing else reaches it: the
+ * server has committed, the client has the answer in hand, and the record of
+ * having sent it is not yet durable. A client that lost this race must re-send
+ * on the next drain and be deduplicated by the gateway (INV-E4) — never lose
+ * the write, never apply it twice. Either failure is invisible without killing
+ * the process exactly here. */
+const killAfterCommand = flag("kill-after-command");
 
 /** CRASH_MARKER is what a simulated crash prints to stderr immediately before
  * dying. The Go harness (sync_converge_integrity_test.go) matches on it. */
@@ -129,7 +170,47 @@ const transport: Transport = {
     const page = await get<FeedPage>(`/api/v1/sync/changes?${params}`);
     return dropNth > 0 ? withDroppedEntries(page) : page;
   },
+
+  // The drain, over the wire, into the ordinary route. Note what is absent:
+  // there is no sync command endpoint to call, because WP-2.3-decisions.md §1
+  // did not build one — this issues the same POST /api/v1/contact the online UI
+  // issues, and INV-S2 holds because there is nothing else to issue.
+  async command(command: ReplayableCommand): Promise<CommandResult> {
+    if (failAfter > 0 && ++calls > failAfter) {
+      throw new Partitioned(`simulated partition after ${failAfter} calls`);
+    }
+
+    const response = await fetch(baseURL + command.path, {
+      method: command.method,
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+        // The command_id *is* the Idempotency-Key (§1). One identifier, so the
+        // gateway's reserve-first store is what makes a re-send after a crash
+        // exactly-once (INV-E4) rather than something this client implements.
+        "Idempotency-Key": command.commandId,
+      },
+      body: command.body === null ? undefined : JSON.stringify(command.body),
+    });
+
+    const text = await response.text();
+    const result: CommandResult = {
+      status: response.status,
+      body: text === "" ? null : (JSON.parse(text) as unknown),
+    };
+
+    if (killAfterCommand > 0 && ++commandsSent >= killAfterCommand) {
+      // The server has committed and this process is about to die holding the
+      // only record that it did. See killAfterCommand.
+      writeSync(2, `${CRASH_MARKER}\n`);
+      process.exit(9);
+    }
+    return result;
+  },
 };
+
+let commandsSent = 0;
 
 /** withDroppedEntries removes every Nth entry *and the row it names*, which is
  * what a feed that skipped a commit would look like to a client. Dropping the
@@ -192,25 +273,82 @@ function killing(store: Store, after: number): Store {
 // still knows what to dump. It costs one request and removes the alternative,
 // which was reconstructing the object list from sqlite_master and mapping table
 // names back — thirty lines to work around a wire this driver cut itself.
-const objects = replicableObjects((await fetchJSON<{ data: MetaObject[] }>("/api/v1/meta/objects")).data);
+const metaObjects = (await fetchJSON<{ data: MetaObject[] }>("/api/v1/meta/objects")).data;
+const objects = replicableObjects(metaObjects);
 
-const store = killing(openNodeStore(dbPath), killInApply);
+const store = openNodeStore(dbPath);
 try {
-  try {
-    await sync(store, transport);
-  } catch (err) {
-    // A partition leaves a partway replica, which is a legitimate state to
-    // compare against: the harness reconnects and requires convergence then.
-    if (!(err instanceof Partitioned)) throw err;
-    writeSync(2, `${PARTITION_MARKER}\n`);
+  if (enqueueCount > 0 || enqueueInvalid > 0) {
+    // initReplica before sync() would run it: an offline client queues work
+    // into a replica it already has, and --offline never reaches open().
+    initReplica(store, metaObjects);
+    const index = indexSchema(metaObjects);
+    for (const command of offlineCommands()) {
+      // persisted = true: the cap is a browser-storage policy (§6) and this
+      // driver has no OPFS to be evicted from. Its own test asserts the cap.
+      enqueue(store, index, command, true);
+    }
   }
 
-  // Dump every replica table, ordered by id, for the Go side to compare.
+  if (!offline) {
+    try {
+      // The crash wrapper goes on *here*, not around the enqueue above.
+      // killInApply counts `INSERT INTO obj_` statements, and an optimistic
+      // create is one — so wrapping the store from the start meant a client
+      // scheduled to crash mid-apply died while queueing instead, rolling back
+      // work its user had already done and taking the fault nowhere near the
+      // window it was aimed at. Queueing is not part of the sync under test.
+      await sync(killing(store, killInApply), transport);
+    } catch (err) {
+      // A partition leaves a partway replica, which is a legitimate state to
+      // compare against: the harness reconnects and requires convergence then.
+      if (!(err instanceof Partitioned)) throw err;
+      writeSync(2, `${PARTITION_MARKER}\n`);
+    }
+  }
+
+  // Dump every replica table, ordered by id, for the Go side to compare, plus
+  // the outbox bookkeeping so the upstream properties are assertable: INV-S4's
+  // conservation is a statement about these three tables' counts.
   const dump: Record<string, unknown[]> = {};
   for (const object of objects) {
     dump[object.name] = store.query(`SELECT * FROM ${tableName(object.name)} ORDER BY id`);
   }
+  dump["_outbox"] = pendingCommands(store);
+  dump["_conflicts"] = conflicts(store);
+  dump["_pending"] = store.query(`SELECT * FROM _pending ORDER BY object, row_id`);
   process.stdout.write(JSON.stringify(dump));
 } finally {
   store.close();
+}
+
+/** offlineCommands is the work the user did while disconnected: valid creates,
+ * then any the server is required to refuse.
+ *
+ * Ids are minted here because the client owns them (§2) — the row the user sees
+ * offline is the row the server ends up with, so there is nothing to rewrite on
+ * acceptance and nothing for a queued command to point at that later moves. */
+function* offlineCommands(): Generator<Command> {
+  for (let i = 0; i < enqueueCount; i++) {
+    const id = newId();
+    yield {
+      commandId: newId(),
+      method: "POST",
+      object: "Contact",
+      rowId: id,
+      body: { id, name: `${label} ${i}`, email: `${id}@example.test`, kind: "customer" },
+    };
+  }
+  for (let i = 0; i < enqueueInvalid; i++) {
+    const id = newId();
+    yield {
+      commandId: newId(),
+      method: "POST",
+      object: "Contact",
+      rowId: id,
+      // A string, so `conform` accepts it; not an address, so the server does
+      // not. See enqueueInvalid.
+      body: { id, name: `${label} invalid ${i}`, email: "not-an-address", kind: "customer" },
+    };
+  }
 }

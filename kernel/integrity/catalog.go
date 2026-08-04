@@ -76,8 +76,21 @@ var Catalog = []Invariant{
 	{ID: "INV-T5", Title: "Every stored field value conforms to its object's effective schema (declared type and option set)", Layer: LayerPipeline, TestRequired: true},
 
 	// Sync (INV-S) — Phase 2.
-	{ID: "INV-S1", Title: "No acknowledged write is ever lost (RPO 0)", Layer: LayerPipeline, Note: "lands with WP-2.3 sync"},
-	{ID: "INV-S2", Title: "Offline commands pass the identical validation pipeline as online writes", Layer: LayerPipeline, Note: "lands with WP-2.3 sync"},
+	// INV-S1 flips in WP-2.3b, where there is an outbox to lose a write from.
+	// The proof is one crash window: the process dies after the server has
+	// committed and before the client's record of having sent it is durable
+	// (TestCrashBetweenAcceptanceAndAcknowledgementLosesNothing). Recovery must
+	// re-send and be deduplicated — the count on the server is asserted exactly,
+	// because a write that survives twice fails RPO 0 as surely as one that does
+	// not survive at all.
+	{ID: "INV-S1", Title: "No acknowledged write is ever lost (RPO 0)", Layer: LayerPipeline, TestRequired: true},
+	// INV-S2 is structural rather than behavioural: a command is a stored HTTP
+	// request replayed through the ordinary route, so there is no second write
+	// path to drift from the first (WP-2.3-decisions.md §1). The tests assert
+	// that no write endpoint exists under /api/v1/sync — in the action table and
+	// on the live mux — and that a drained command is refused with the identical
+	// status and title as the same body sent online.
+	{ID: "INV-S2", Title: "Offline commands pass the identical validation pipeline as online writes", Layer: LayerPipeline, TestRequired: true},
 	// INV-S3 flips here rather than in WP-2.2a because convergence is a
 	// property of a replica, and PR-A had no replica to converge. It is proven
 	// by TestReplicaConvergesToProjection (randomized operations, real server,
@@ -86,7 +99,13 @@ var Catalog = []Invariant{
 	// it is: delete entries from the feed and the property must fail, or it was
 	// measuring that SELECT equals SELECT.
 	{ID: "INV-S3", Title: "Client replica converges to server state; divergence is detected and repaired", Layer: LayerSentinel, TestRequired: true},
-	{ID: "INV-S4", Title: "Rejected commands are surfaced to the user; no silent drops", Layer: LayerPipeline, Note: "lands with WP-2.3 sync"},
+	// INV-S4 is conservation: every command that enters the outbox leaves it
+	// accepted or filed where a person can see it, and the counts add up
+	// (TestEveryCommandReachesExactlyOneTerminalState). "Surfaced" also covers
+	// the silent *stall* — a command retrying forever at the head of an ordered
+	// queue blocks everything behind it, so retries are capped and the survivor
+	// is filed like any other rejection.
+	{ID: "INV-S4", Title: "Rejected commands are surfaced to the user; no silent drops", Layer: LayerPipeline, TestRequired: true},
 	// INV-S5 is the downstream half of INV-S1, and lands early because the
 	// feed exists before the replica does (WP-2.1). It is separate rather than
 	// folded in: INV-S1 is the end-to-end RPO-0 promise that only completes

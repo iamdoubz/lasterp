@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -351,6 +352,42 @@ func TestAuthErrorNotLeakedIn401(t *testing.T) {
 	}
 	if body := rr.Body.String(); strings.Contains(body, "sk-abc123") || strings.Contains(body, secret) {
 		t.Fatalf("401 body leaked authenticator error: %s", body)
+	}
+	assertProblem(t, rr)
+}
+
+// TestAuthUnavailableIsNotA401: "I could not check" must not be reported as
+// "your credential is no good".
+//
+// The distinction is worth a test because a 401 is the one status this
+// product's clients act on destructively: the web client signs the user out
+// (web/src/api/client.ts isUnauthenticated), and the offline drain files queued
+// work as *rejected* into the conflict tray rather than retrying it (INV-S4).
+// Before WP-2.3b every Authenticator error landed here as a 401, so a database
+// too busy to answer the session lookup logged people out — found by the
+// simulation harness, whose concurrent clients put that read under contention
+// for the first time.
+func TestAuthUnavailableIsNotA401(t *testing.T) {
+	db := testSQLiteDB(t)
+	g := NewGateway(Config{
+		DB:      db,
+		Objects: []*metadata.EffectiveSchema{contactSchema(t, db)},
+		Authenticator: AuthenticatorFunc(func(*http.Request) (authz.Actor, tenancy.ID, error) {
+			return authz.Actor{}, "", fmt.Errorf("%w: database is locked (5) (SQLITE_BUSY)", ErrAuthUnavailable)
+		}),
+	})
+
+	rr := do(t, g, http.MethodGet, "/api/v1/contact", "", nil)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503 — a transient failure to reach the session store "+
+			"reported as 401 makes clients discard credentials and queued work", rr.Code)
+	}
+	if got := rr.Header().Get("Retry-After"); got == "" {
+		t.Error("no Retry-After on the 503: a client told to retry needs to know when")
+	}
+	// The same leak rule as the 401 path: the reason belongs in the logs.
+	if body := rr.Body.String(); strings.Contains(body, "SQLITE_BUSY") {
+		t.Fatalf("503 body leaked the authenticator error: %s", body)
 	}
 	assertProblem(t, rr)
 }

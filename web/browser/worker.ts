@@ -86,6 +86,12 @@ function stubTransport(): Transport {
         rows: { Contact: [contact("c0", "updated-by-feed")] },
       };
     },
+    // This spec's replica has an empty outbox, so a command reaching here means
+    // the drain invented one. The outbox's own behaviour runs above, in the
+    // shared suite, on this same OPFS store.
+    async command() {
+      throw new Error("the browser convergence pass queued no commands");
+    },
   };
 }
 
@@ -100,7 +106,7 @@ async function run(): Promise<BrowserResults> {
   for (const [i, c] of cases.entries()) {
     const store = await openOpfsStore(`case-${i}.sqlite3`);
     try {
-      c.run(store);
+      await c.run(store);
       results.suite.push({ name: c.name, ok: true });
     } catch (err) {
       results.suite.push({ name: c.name, ok: false, error: String(err) });

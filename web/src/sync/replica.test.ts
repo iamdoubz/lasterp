@@ -11,7 +11,7 @@ import { openNodeStore } from "./adapters/node.ts";
 import { currentCursor, indexSchema, initReplica, rowCount, type FeedPage, type ServerRecord } from "./core.ts";
 import { hydrate, hydrated, open, pull, sync } from "./replica.ts";
 import { SUITE_OBJECTS } from "./suite.ts";
-import type { SnapshotPage, Transport } from "./transport.ts";
+import type { CommandResult, SnapshotPage, Transport } from "./transport.ts";
 import type { Store } from "./port.ts";
 
 const TENANT = "t-hydrate";
@@ -59,6 +59,13 @@ class FakeTransport implements Transport {
 
   async changes(): Promise<FeedPage> {
     return this.feed.shift() ?? { data: [], cursor: 0, rows: {} };
+  }
+
+  /** These tests are downstream-only, so a command reaching the wire means the
+   * outbox leaked one — hence a failure rather than a stub. The drain's own
+   * behaviour is outbox.test.ts. */
+  async command(): Promise<CommandResult> {
+    throw new Error("hydration tests should never replay a command");
   }
 }
 

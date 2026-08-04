@@ -19,11 +19,22 @@ import (
 	"github.com/iamdoubz/lasterp/kernel/tenancy"
 )
 
+// ErrAuthUnavailable is how an Authenticator says "I could not decide",
+// as distinct from "this caller is not authenticated".
+//
+// The distinction is the whole point: a 401 tells a client its credential is
+// no good, and clients act on that — they sign the user out, and an offline
+// outbox files its queued work as refused. A transient failure to *reach* the
+// session store must not say that, so it becomes a 503 with Retry-After.
+// Authenticators wrap infrastructure errors with this; a genuinely invalid
+// credential is returned bare.
+var ErrAuthUnavailable = errors.New("api: authentication backend unavailable")
+
 // Authenticator resolves a request to the authenticated actor and tenant.
 // It is the gateway's authn seam: token/session verification (OAuth 2.1,
 // PATs — WP-3.7, docs/15) is not built in this WP, so the concrete
 // implementation is injected. Returning an error fails the request closed
-// (401). See WP-0.6-decisions.md, decision 5.
+// (401, or 503 for ErrAuthUnavailable). See WP-0.6-decisions.md, decision 5.
 type Authenticator interface {
 	Authenticate(r *http.Request) (authz.Actor, tenancy.ID, error)
 }
@@ -323,6 +334,21 @@ func (g *Gateway) guard(h apiHandler) http.HandlerFunc {
 		}
 		actor, tenant, err := g.auth.Authenticate(r)
 		if err != nil {
+			// "Could not check" is not "not authenticated". Every Authenticator
+			// error used to land here as a 401, which meant a database too busy
+			// to answer the session lookup was reported as a bad credential —
+			// and a 401 is the one status this product's clients act on
+			// destructively: the web client signs the user out on it
+			// (api/client.ts isUnauthenticated), and the sync drain would file
+			// queued offline work as rejected rather than retrying it
+			// (INV-S4). Found by the WP-2.3b simulation harness, whose
+			// concurrent writers put the SQLite session lookup under contention
+			// for the first time.
+			if errors.Is(err, ErrAuthUnavailable) {
+				w.Header().Set("Retry-After", "1")
+				writeProblem(w, Problem{Status: http.StatusServiceUnavailable, Title: "authentication temporarily unavailable", Instance: r.URL.Path})
+				return
+			}
 			// Do not echo the Authenticator's error into the body: it can carry
 			// token/session internals (info leak, phase-0-review WP-0.6 nit).
 			// The reason belongs in server logs, not the 401 to the caller.
@@ -469,7 +495,15 @@ func (g *Gateway) handleWrite(exec writeExec, credentialed bool) apiHandler {
 			writeStored(w, stored)
 			return
 		case errors.Is(err, errKeyConflict):
-			writeProblem(w, Problem{Status: http.StatusConflict, Title: "idempotency key conflict", Detail: "the Idempotency-Key was already used for a different or in-flight request", Instance: r.URL.Path})
+			// Typed, because a client cannot act on it otherwise. This 409
+			// covers a key reused with a different fingerprint *and* a key
+			// whose original request is still in flight — and the second is
+			// the ordinary consequence of a client crashing mid-write and
+			// re-sending. An offline outbox that read it as a rejection would
+			// file a conflict for a command that is at that moment succeeding
+			// (WP-2.3-decisions.md §11), so the drain has to be able to tell
+			// this apart from "the server refused your work" and retry.
+			writeProblem(w, Problem{Type: ProblemIdempotencyConflict, Status: http.StatusConflict, Title: "idempotency key conflict", Detail: "the Idempotency-Key was already used for a different or in-flight request", Instance: r.URL.Path})
 			return
 		case !errors.Is(err, errReserved):
 			writeProblem(w, problemForError(err, r.URL.Path))

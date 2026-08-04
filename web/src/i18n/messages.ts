@@ -167,6 +167,28 @@ export const messages = {
   "metric.ar_overdue": "Accounts receivable overdue",
   "metric.open_invoice_count": "Open invoices",
 
+  // Offline sync — the outbox and its tray (WP-2.3b, docs/04 §Upstream)
+  "sync.pending": "{count, plural, one {# unsent change} other {# unsent changes}}",
+  "sync.pendingCapped": "{count} of {limit} unsent changes",
+  "sync.unpersisted":
+    "This browser has not granted permanent storage, so it may discard unsent changes without warning. Reconnect to send them.",
+  "sync.outboxFull":
+    "There are as many unsent changes as can be held safely without permanent storage. Reconnect to send them before making more.",
+  "sync.lockedInAnotherTab": "Your offline data is open in another tab. Close it to work here.",
+  "sync.unavailable": "Offline data is not available in this browser session.",
+  "sync.conflicts.title": "Needs attention",
+  "sync.conflicts.none": "Nothing needs your attention. Every change you made offline was accepted.",
+  "sync.conflicts.intro":
+    "{count, plural, one {# change you made offline was refused} other {# changes you made offline were refused}}. Nothing has been discarded — review each one below.",
+  "sync.conflicts.column.change": "Change",
+  "sync.conflicts.column.reason": "Why it was refused",
+  "sync.conflicts.column.action": "Action",
+  "sync.conflicts.change.create": "New {object}",
+  "sync.conflicts.change.update": "Edit to a {object}",
+  "sync.conflicts.change.delete": "Deletion of a {object}",
+  "sync.conflicts.discard": "Discard this change",
+  "nav.needsAttention": "Needs attention",
+
   // Shared status
   "status.loading": "Loading…",
   "status.error": "Something went wrong.",

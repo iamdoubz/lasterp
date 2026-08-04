@@ -218,3 +218,100 @@ the same argument as `conform` (schema.ts) one table over, and the roadmap names
 - **Replica encryption** — still WP-2.5, still unresolved as WP-2.2b-decisions §10 recorded it,
   and now holding user work the server has never seen, which raises its stakes without changing
   its answer.
+
+---
+
+# Addendum — decided while building WP-2.3b
+
+§0–§9 were written in WP-2.3a, from the design. These four were not visible from there: each is
+something the outbox turned out to need once it existed.
+
+## 10. An optimistic row's `tenant_id` is learned from the replica, not from the session
+
+Every generated table has `tenant_id TEXT NOT NULL` (schema.ts `KERNEL_COLUMNS`), so an
+optimistically-applied create has to put *something* there, and the worker has no idea what. There
+is no `GET /api/v1/sessions/current` — the tenant is returned once by `POST /api/v1/sessions` and
+lives in the shell's memory, on the other side of the worker boundary.
+
+Three options, and the cheap one is also the right one:
+
+- **Pass it across the worker boundary at open.** Correct, and it makes every caller of
+  `startReplica` responsible for knowing something none of them currently track.
+- **Fetch it.** A new server route, on a WP whose §1 is "no new endpoints".
+- **Learn it.** `applyRecord` already writes `tenant_id` on every row it lands. It records the
+  value once, in `_sync_state.tenant`, and optimistic rows read it from there.
+
+Learning it is chosen. The window where it is unknown is narrow to the point of theoretical: a
+replica exists only after `/meta/objects` and a hydration, so a tenant would have to hold **zero
+rows of every replicable object** and then write offline. In that window the optimistic row carries
+`''`, and the server's own row overwrites it on acceptance (`ON CONFLICT DO UPDATE` covers
+`tenant_id`). The INV-S3 oracle compares declared fields and `updated_at`, so it never sees the
+difference either way — which is stated here rather than relied on silently.
+
+## 11. A 409 from the idempotency store is a retry, not a rejection
+
+§1 leans on the gateway's reserve-first store for exactly-once. What §1 did not account for is that
+the same store answers **409** in two different situations (`kernel/api/gateway.go`):
+
+- the key was reused with a *different* request fingerprint, and
+- the key is **still in flight** — a reservation exists and no response is stored yet.
+
+The second is the ordinary consequence of the crash §1 designed for. A client that dies after the
+server began the write re-sends on the next drain, and if the original request is still executing it
+gets a 409. Treating that as a rejection would file a conflict for a command that is at that moment
+succeeding — inventing the user-visible failure INV-S4 exists to prevent, on the exact path INV-S1
+is about. So the drain must retry it.
+
+Telling the two 409s apart needs the server to say which it is, so the gateway now sets
+`Type: "idempotency-conflict"` on that problem. This is the `capability-disabled` precedent
+(`web/src/api/client.ts` already branches on a problem `type`), not a new mechanism.
+
+Both 409s retry — a fingerprint mismatch cannot happen legitimately, since a `command_id` is minted
+per command and never reused, so the honest reading of one is "something is wrong locally" rather
+than "the server refused this work". What stops a retry loop is `_outbox.attempts`: past
+`MAX_ATTEMPTS` the command is filed as a conflict like any other. An outbox entry that retries
+forever is not a silent drop, but it is a silent *stall*, and the tray is where the user finds out.
+
+<!-- ponytail: fixed attempt cap, no backoff schedule. The drain already only runs on
+     reconnect/visibility, which is the backoff. -->
+
+## 12. The drain orders by an integer `seq`, not by `command_id`
+
+`command_id` is a UUIDv7 and UUIDv7s sort chronologically, so ordering by it is free and almost
+right. Almost: two commands minted in the same millisecond order by their random bits. A PATCH
+sorted ahead of the POST that creates its row is a 404, which the drain would file as a conflict —
+a fabricated rejection for work that was perfectly valid, caused entirely by how the queue was
+sorted.
+
+`seq INTEGER PRIMARY KEY AUTOINCREMENT` is the same one column and orders by insertion. Laziness is
+supposed to buy fewer moving parts, not a worse algorithm for the same price.
+
+## 13. Screens still write online-first; the tray is what this WP wires in
+
+This WP lands the outbox, the optimistic apply, the drain, the conflict tray and the pending /
+unpersisted states. It does **not** route `ObjectForm`'s writes through the outbox.
+
+The reason is the read path. Screens read through `web/src/api/client.ts`, not through the replica —
+WP-2.2b left the replica read-only and WP-1.5-decisions §1 records the swap as a seam, not a
+setting. A screen writing to the replica while reading from the server would show the user a form
+that saves into a store it cannot see, which is worse than either end state. The swap is one change
+to one file and it belongs with the WP that makes the replica the read path.
+
+So the honest statement of what "offline is the default" means after this WP: the machinery is
+there, proven end-to-end by the simulation harness against a real server, and one seam remains
+before the shipped UI uses it.
+
+Two of the tray's three affordances wait on that same seam. docs/04 §Upstream 3 describes "view
+server state, edit & resubmit, or discard"; this WP ships **view and discard**.
+
+- **Edit & resubmit** is `write` called with an edited body — the client side of it is one line.
+  What it needs is a form to edit *in*, and the only form there is submits online. Wiring it to
+  the tray before the screens write through the outbox would produce a button whose two paths
+  disagree about where the change goes.
+- **View server state** is deliberately narrower than it sounds here. The tray shows what the
+  user tried and the server's own explanation of the refusal, which is the information the
+  decision actually needs; fetching the current row adds a round trip, has nothing to show for a
+  rejected create, and duplicates the object screen one click away.
+
+Neither is a silent gap: INV-S4 is about a rejected command being *surfaced* and not dropped,
+and both halves of that are here.
