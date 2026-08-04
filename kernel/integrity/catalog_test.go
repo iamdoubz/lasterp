@@ -40,7 +40,16 @@ func TestEveryRequiredInvariantHasATaggedTest(t *testing.T) {
 			return err
 		}
 		if d.IsDir() {
-			if d.Name() == "node_modules" || d.Name() == ".git" {
+			// `.claude` holds agent worktrees — full checkouts of this repo at
+			// other commits, gitignored and invisible to CI but present on a
+			// developer's machine. Without this skip the gate harvests invariant
+			// tags from those copies: a stale worktree measured here supplied 57
+			// test files and 18 distinct IDs, so deleting every tagged test for
+			// an invariant in the *real* tree would still go green locally
+			// (phase-2-review.md P1.1). CI is unaffected — a clean checkout has
+			// no worktrees — which is exactly why it went unnoticed: the gate
+			// was weakest on the machine where it is checked before pushing.
+			if d.Name() == "node_modules" || d.Name() == ".git" || d.Name() == ".claude" {
 				return filepath.SkipDir
 			}
 			return nil
