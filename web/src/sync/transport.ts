@@ -58,6 +58,10 @@ export interface Transport {
   meta(): Promise<MetaObject[]>;
   snapshot(object: string, after: string, limit: number): Promise<SnapshotPage>;
   changes(after: number, limit: number): Promise<FeedPage>;
+  /** The scope keys this principal may replicate (WP-2.4). A list rather than a
+   * version stamp: the client re-shapes by diffing it against what it holds, so
+   * "did it change" and "to what" are one answer (WP-2.4-decisions.md §2). */
+  scope(): Promise<string[]>;
   /** Replay one queued command. */
   command(command: ReplayableCommand): Promise<CommandResult>;
 }
@@ -74,6 +78,11 @@ export function httpTransport(): Transport {
       const params = new URLSearchParams({ object, limit: String(limit) });
       if (after !== "") params.set("after", after);
       return request<SnapshotPage>(`/api/v1/sync/snapshot?${params}`);
+    },
+
+    async scope(): Promise<string[]> {
+      const body = await request<{ data: string[] }>("/api/v1/sync/scope");
+      return body.data;
     },
 
     async changes(after: number, limit: number): Promise<FeedPage> {

@@ -86,6 +86,9 @@ function stubTransport(): Transport {
         rows: { Contact: [contact("c0", "updated-by-feed")] },
       };
     },
+    async scope(): Promise<string[]> {
+      return ["Contact"];
+    },
     // This spec's replica has an empty outbox, so a command reaching here means
     // the drain invented one. The outbox's own behaviour runs above, in the
     // shared suite, on this same OPFS store.

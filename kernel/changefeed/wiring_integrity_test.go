@@ -26,7 +26,7 @@ func TestFeedIsTenantScoped(t *testing.T) {
 			appendCommitted(t, db, tenantB, "b-1")
 			appendCommitted(t, db, tenantB, "b-2")
 
-			feedA, err := Read(ctx, db, tenantA, 0, 100)
+			feedA, err := Read(ctx, db, tenantA, 0, 100, nil)
 			if err != nil {
 				t.Fatalf("read A: %v", err)
 			}
@@ -34,7 +34,7 @@ func TestFeedIsTenantScoped(t *testing.T) {
 				t.Fatalf("tenant A's feed = %+v, want exactly its own one change", feedA)
 			}
 
-			feedB, err := Read(ctx, db, tenantB, 0, 100)
+			feedB, err := Read(ctx, db, tenantB, 0, 100, nil)
 			if err != nil {
 				t.Fatalf("read B: %v", err)
 			}
@@ -71,7 +71,7 @@ func TestFeedAppendIsTransactional(t *testing.T) {
 				t.Fatalf("WithTenant err = %v, want %v", err, wantErr)
 			}
 
-			got, err := Read(ctx, db, tenant, 0, 100)
+			got, err := Read(ctx, db, tenant, 0, 100, nil)
 			if err != nil {
 				t.Fatalf("read: %v", err)
 			}
@@ -82,7 +82,7 @@ func TestFeedAppendIsTransactional(t *testing.T) {
 			// And the committed one after it still works — the failed attempt
 			// did not wedge the ordering lock.
 			appendCommitted(t, db, tenant, "committed")
-			got, err = Read(ctx, db, tenant, 0, 100)
+			got, err = Read(ctx, db, tenant, 0, 100, nil)
 			if err != nil {
 				t.Fatalf("read after commit: %v", err)
 			}
@@ -118,7 +118,7 @@ func TestFeedIsAppendOnly(t *testing.T) {
 				}
 			}
 
-			got, err := Read(ctx, db, tenant, 0, 100)
+			got, err := Read(ctx, db, tenant, 0, 100, nil)
 			if err != nil {
 				t.Fatalf("read: %v", err)
 			}
@@ -150,7 +150,7 @@ func TestNotifierDropDoesNotLoseChanges(t *testing.T) {
 				n.Notify(tenant, int64(i))
 			}
 
-			got, err := Read(ctx, db, tenant, 0, total+10)
+			got, err := Read(ctx, db, tenant, 0, total+10, nil)
 			if err != nil {
 				t.Fatalf("read: %v", err)
 			}

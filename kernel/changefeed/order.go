@@ -28,9 +28,17 @@ import (
 // other.
 //
 // ponytail: one feed append at a time per tenant. If a single tenant's write
-// throughput ever hits that ceiling, the upgrade path is a per-scope lock
-// (scope keys already exist, WP-2.4 fills them in) or a Postgres-only WAL tail
-// behind the reader interface — not a weaker ordering guarantee.
+// throughput ever hits that ceiling, the upgrade path is a Postgres-only WAL
+// tail behind the reader interface — not a weaker ordering guarantee.
+//
+// It is NOT a per-scope lock, which is what this comment said until WP-2.4 and
+// which is wrong (WP-2.4-decisions.md §8). Ordering per scope under a single
+// global bigint cursor reintroduces the very stranding above: two scopes
+// ordering independently means a reader trusting id > cursor can observe 7 from
+// one scope while 5 from another is still uncommitted, and 5 is stranded
+// forever. Making it safe needs per-scope *cursors* — a rewrite of the reader,
+// of the replica's _sync_state, of the acknowledgement path and of INV-S5's own
+// wording. That is a design, not a relief valve.
 //
 // SQLite needs nothing: it holds a write lock for the whole write transaction,
 // so only one writer can hold an unassigned id at a time and id order is

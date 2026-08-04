@@ -76,7 +76,7 @@ func TestFeedNeverSkipsAnOpenTransaction(t *testing.T) {
 			// commit order with nothing skipped.
 			appendCommitted(t, db, tenant, "B")
 
-			got, err := Read(ctx, db, tenant, 0, 100)
+			got, err := Read(ctx, db, tenant, 0, 100, nil)
 			if err != nil {
 				t.Fatalf("read: %v", err)
 			}
@@ -157,7 +157,7 @@ func TestFeedObservesEveryCommittedChangeUnderConcurrency(t *testing.T) {
 			cursor := int64(0)
 			drain := func() {
 				for {
-					page, err := Read(ctx, db, tenant, cursor, 10)
+					page, err := Read(ctx, db, tenant, cursor, 10, nil)
 					if err != nil {
 						t.Errorf("read at cursor %d: %v", cursor, err)
 						return
@@ -234,7 +234,7 @@ func TestFeedResumeFromAnyCursor(t *testing.T) {
 				appendCommitted(t, db, tenant, fmt.Sprintf("e%02d", i))
 			}
 
-			full, err := Read(ctx, db, tenant, 0, total+10)
+			full, err := Read(ctx, db, tenant, 0, total+10, nil)
 			if err != nil {
 				t.Fatalf("read (full): %v", err)
 			}
@@ -245,7 +245,7 @@ func TestFeedResumeFromAnyCursor(t *testing.T) {
 			// Resuming at every position in the sequence must yield the same
 			// tail the uninterrupted read produced.
 			for split := 0; split < total; split++ {
-				resumed, err := Read(ctx, db, tenant, full[split].Cursor, total+10)
+				resumed, err := Read(ctx, db, tenant, full[split].Cursor, total+10, nil)
 				if err != nil {
 					t.Fatalf("read (resume at %d): %v", split, err)
 				}

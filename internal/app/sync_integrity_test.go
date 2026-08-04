@@ -117,9 +117,25 @@ func TestMaterializationDeduplicatesRepeatedChanges(t *testing.T) {
 	}
 }
 
-// INV-T2: materialisation re-authorises per object kind. WP-2.1's threat notes
-// leaned on the pointer design to bound an over-broad sync:read to names and
-// ids; this is the test that the bound is re-established now that rows travel.
+// INV-T2: a caller receives nothing for an object they may not read — not the
+// rows, and since WP-2.4 not the pointers either.
+//
+// **This assertion was deliberately weaker until WP-2.4, and the change is the
+// point rather than a regression.** WP-2.1 conveyed every pointer under one
+// `sync:read` grant and bounded the disclosure by argument: a pointer is object
+// names and row ids, not contents. WP-2.2 §3 kept that asymmetry on purpose
+// when rows started travelling — "the pointer is the weaker disclosure and
+// suppressing it would make cursors non-contiguous for no gain".
+//
+// WP-2.4 removes the "for no gain": the feed is filtered to the principal's
+// scope, and the cursor stays honest because a short page reports the feed's
+// high-water mark as its resume position instead of its last visible entry
+// (WP-2.4-decisions.md §7). So the contiguity objection is answered and the
+// pointers go too.
+//
+// Materialisation still re-authorises per object kind. With scope and
+// readability computed from the same grants that check is now belt-and-braces,
+// which is where a check on the last hop before data leaves belongs.
 func TestMaterializationRefusesObjectsTheCallerCannotRead(t *testing.T) {
 	for name, db := range bootDBs(t) {
 		t.Run(name, func(t *testing.T) {
@@ -133,15 +149,38 @@ func TestMaterializationRefusesObjectsTheCallerCannotRead(t *testing.T) {
 				t.Fatalf("sync/changes as feed-only user = %d; body=%s", status, body)
 			}
 
-			if pointers, _ := parsed["data"].([]any); len(pointers) == 0 {
-				t.Fatal("feed-only principal got no pointers; the feed grant should still work")
-			}
 			rows, _ := parsed["rows"].(map[string]any)
 			if got := rowsFor(rows, "Contact"); len(got) != 0 {
 				t.Fatalf("caller without Contact:read received %d contact row(s): %v", len(got), got)
 			}
+			for _, raw := range asSlice(parsed["data"]) {
+				entry, _ := raw.(map[string]any)
+				if entry["scope_key"] == "Contact" {
+					t.Fatalf("caller without Contact:read received a contact pointer: %v", entry)
+				}
+			}
+
+			// The grant still does its job for a principal who has the object
+			// too — the filter narrows the feed, it does not close it.
+			full := e.issueUser(t, map[string][]string{"sync": {"read"}, "Contact": {"read"}})
+			status, body, parsed = e.call("GET", "/api/v1/sync/changes?include=rows&limit=1000", full, "", nil)
+			if status != http.StatusOK {
+				t.Fatalf("sync/changes as contact reader = %d; body=%s", status, body)
+			}
+			if len(asSlice(parsed["data"])) == 0 {
+				t.Fatal("a principal holding Contact:read got no pointers at all")
+			}
+			rows, _ = parsed["rows"].(map[string]any)
+			if got := rowsFor(rows, "Contact"); len(got) == 0 {
+				t.Fatal("a principal holding Contact:read got no contact rows")
+			}
 		})
 	}
+}
+
+func asSlice(v any) []any {
+	xs, _ := v.([]any)
+	return xs
 }
 
 // A deletion must reach the replica. CRUD soft-deletes and List hides archived

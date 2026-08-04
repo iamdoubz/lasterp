@@ -61,6 +61,15 @@ class FakeTransport implements Transport {
     return this.feed.shift() ?? { data: [], cursor: 0, rows: {} };
   }
 
+  /** Everything replicable is in scope unless a test narrows it. The re-shape's
+   * own behaviour is reshape.test.ts; here the scope exists so `sync` does not
+   * purge the very rows the hydration assertions are about. */
+  scopeKeys: string[] = ["Contact"];
+
+  async scope(): Promise<string[]> {
+    return this.scopeKeys;
+  }
+
   /** These tests are downstream-only, so a command reaching the wire means the
    * outbox leaked one — hence a failure rather than a stub. The drain's own
    * behaviour is outbox.test.ts. */

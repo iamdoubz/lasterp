@@ -18,6 +18,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/iamdoubz/lasterp/kernel/storage"
@@ -92,24 +93,50 @@ func Append(ctx context.Context, tx *sql.Tx, db *storage.DB, e Entry) error {
 // Read returns up to limit changes for tenant after the given cursor, in
 // ascending cursor order.
 //
-// Callers resume by passing back the last Change's Cursor. A reader that has
-// consumed everything currently visible gets an empty slice, not an error.
-func Read(ctx context.Context, db *storage.DB, tenant tenancy.ID, after int64, limit int) ([]Change, error) {
+// keys narrows the result to entries carrying one of those scope keys — the
+// reader's sync scope (WP-2.4). A nil slice means no filter, which is what the
+// feed's own tests and any tenant-wide reader want; an empty non-nil slice
+// means an empty scope and correctly matches nothing.
+//
+// A filtered page can be short while the feed has more, so the caller cannot
+// infer "caught up" from its length or take the resume position from its last
+// entry. Handlers pair this with HighWater — see internal/app/sync.go and
+// WP-2.4-decisions.md §7.
+//
+// Callers resume by passing back the cursor the handler reported. A reader that
+// has consumed everything currently visible gets an empty slice, not an error.
+func Read(ctx context.Context, db *storage.DB, tenant tenancy.ID, after int64, limit int, keys []string) ([]Change, error) {
 	if tenant == "" {
 		return nil, errors.New("changefeed: tenant is required")
 	}
 	if limit <= 0 {
 		return nil, errors.New("changefeed: limit must be positive")
 	}
+	if keys != nil && len(keys) == 0 {
+		// An empty scope matches nothing. Returning early rather than building
+		// `IN ()`, which is a syntax error on both dialects.
+		return nil, nil
+	}
+
+	// The IN list is built from placeholders, never from the values (SQL
+	// commandment: parameterized only).
+	filter, args := "", []any{string(tenant), after}
+	if keys != nil {
+		filter = " AND scope_key IN (" + strings.TrimSuffix(strings.Repeat("?, ", len(keys)), ", ") + ")"
+		for _, k := range keys {
+			args = append(args, k)
+		}
+	}
+	args = append(args, limit)
 
 	var changes []Change
 	err := tenancy.WithTenant(ctx, db, tenant, func(ctx context.Context, tx *sql.Tx) error {
 		rows, err := tx.QueryContext(ctx, db.Rebind(`
 			SELECT id, tenant_id, source, ref_id, object, scope_key, recorded_at
 			FROM change_feed
-			WHERE tenant_id = ? AND id > ?
+			WHERE tenant_id = ? AND id > ?`+filter+`
 			ORDER BY id ASC LIMIT ?`),
-			string(tenant), after, limit)
+			args...)
 		if err != nil {
 			return err
 		}

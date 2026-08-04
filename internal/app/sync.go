@@ -46,6 +46,9 @@ func syncActions(db *storage.DB, objects []*metadata.EffectiveSchema, reg *capab
 		{Method: "GET", Path: "/api/v1/sync/snapshot", Object: objectSync,
 			Summary: "Page one object's rows for initial replica hydration",
 			Handler: readSnapshot(db, res)},
+		{Method: "GET", Path: "/api/v1/sync/scope", Object: objectSync,
+			Summary: "List the scope keys this principal may replicate",
+			Handler: readScope(db, res)},
 	}
 }
 
@@ -90,10 +93,10 @@ func (res *resolver) crudFor(r *http.Request, tenant tenancy.ID, object string) 
 
 func readChanges(db *storage.DB, res *resolver) api.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request, tenant tenancy.ID) {
-		// Explicit authorization, not merely authentication (INV-T2). Until
-		// WP-2.4 computes per-device scopes, holding sync:read means seeing the
-		// tenant's whole feed, so it is a privileged grant — see the scope note
-		// in WP-2.1-decisions.md §4.
+		// Explicit authorization, not merely authentication (INV-T2). sync:read
+		// is the right to follow *your own* scope: WP-2.1 conceded that it
+		// meant the tenant's whole feed, bounded only by pointers being weaker
+		// than rows, and the filter below is what closes that (decisions §1).
 		if _, err := authz.Authorize(r.Context(), db, objectSync, "read"); err != nil {
 			fail(w, r, err)
 			return
@@ -110,18 +113,47 @@ func readChanges(db *storage.DB, res *resolver) api.HandlerFunc {
 			return
 		}
 
-		changes, err := changefeed.Read(r.Context(), db, tenant, after, limit)
+		scope, err := computeScope(r, res, tenant)
 		if err != nil {
 			fail(w, r, err)
 			return
 		}
 
-		// cursor is the position to resume from. It is the last change's
-		// cursor, or the caller's own when the page is empty — never zero,
-		// which would silently rewind a caught-up client to the beginning.
+		// The high-water mark is read BEFORE the page, and that order is the
+		// whole correctness argument for reporting it as a resume position
+		// (decisions §7). An entry committed after this read has an id above it
+		// and is seen next time; an entry below it is committed already,
+		// because the per-tenant ordering lock makes id order equal commit
+		// order (INV-S5, kernel/changefeed/order.go). Taking it *after* the
+		// page would skip anything that landed in between.
+		high, err := changefeed.HighWater(r.Context(), db, tenant)
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+
+		changes, err := changefeed.Read(r.Context(), db, tenant, after, limit, scope)
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+
+		// cursor is the position to resume from — never zero, which would
+		// silently rewind a caught-up client to the beginning.
+		//
+		// A full page resumes from its last entry, as it always did. A SHORT
+		// page now means something new: with a scope filter, short no longer
+		// means "the feed ends here" but "nothing else in your scope is at or
+		// below the high-water mark". Reporting the last visible entry would
+		// leave the client re-scanning the filtered range on every poll for
+		// ever, and — because the client stops on a short page — believing it
+		// was caught up while the entries it can see lie beyond it.
 		cursor := after
 		if n := len(changes); n > 0 {
 			cursor = changes[n-1].Cursor
+		}
+		if len(changes) < limit && high > cursor {
+			cursor = high
 		}
 		body := map[string]any{"data": emptyIfNil(changes), "cursor": cursor}
 

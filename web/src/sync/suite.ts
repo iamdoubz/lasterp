@@ -152,6 +152,9 @@ function acceptWith(reply: () => CommandResult): Transport {
     async changes(): Promise<never> {
       throw new Error("the drain must not pull");
     },
+    async scope(): Promise<never> {
+      throw new Error("the drain must not re-shape");
+    },
     async command(): Promise<CommandResult> {
       return reply();
     },
@@ -237,6 +240,41 @@ export const cases: Case[] = [
       applyPage(store, index, page([1]));
       const cursor = applyPage(store, index, { data: [], cursor: 1, rows: {} });
       assert(cursor === 1, `cursor = ${cursor}, want 1`);
+    },
+  },
+  {
+    // WP-2.4-decisions.md §7. A scoped client's page can be short or empty
+    // while the feed has more, because the entries in between were filtered
+    // out before it was sent. The cursor cannot be derived from the entries any
+    // more, so the server's resume position is taken when it is ahead — without
+    // that, the client re-scans the filtered range on every poll for ever.
+    name: "a filtered page advances the cursor past what it did not deliver",
+    run(store) {
+      const index = setUp(store);
+      applyPage(store, index, page([1]));
+      const cursor = applyPage(store, index, { data: [], cursor: 40, rows: {} });
+      assert(cursor === 40, `cursor = ${cursor}, want 40`);
+      assert(currentCursor(store) === 40, `stored cursor = ${currentCursor(store)}, want 40`);
+    },
+  },
+  {
+    // The other direction is fatal, not clamped. A page reporting a resume
+    // point below an entry it just delivered would strand every entry between
+    // the two on the next request — the exact loss INV-S5 exists to prevent, so
+    // it fails loudly rather than being quietly repaired into something that
+    // looks healthy.
+    name: "a page resuming behind an entry it delivered is refused",
+    run(store) {
+      const index = setUp(store);
+      let threw = false;
+      try {
+        applyPage(store, index, { ...page([5, 6]), cursor: 4 });
+      } catch {
+        threw = true;
+      }
+      assert(threw, "a page resuming behind its own entries must be refused");
+      assert(currentCursor(store) === 0, `cursor = ${currentCursor(store)}, want 0`);
+      assert(rowCount(store, "Contact") === 0, "a refused page must leave no rows");
     },
   },
   {
