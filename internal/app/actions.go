@@ -43,6 +43,7 @@ func actions(db *storage.DB, reg *capability.Registry, objects []*metadata.Effec
 	out = append(out, reportActions(db)...)
 	out = append(out, dashboardActions(db)...)
 	out = append(out, syncActions(db, objects, reg)...)
+	out = append(out, deviceActions(db)...)
 	return append(out, []api.Action{
 		// --- Invoice (bespoke, NOT generic CRUD: posting pipeline is the only
 		// path to posted/GL — INV-F2/F5/F6, decisions §2) ---

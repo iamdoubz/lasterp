@@ -30,6 +30,16 @@ import (
 // credential is returned bare.
 var ErrAuthUnavailable = errors.New("api: authentication backend unavailable")
 
+// ErrDeviceWiped is how an Authenticator says "this credential is good and the
+// device it belongs to has been remotely wiped" (WP-2.5, INV-D1).
+//
+// Same shape of distinction as ErrAuthUnavailable above and the opposite
+// intent: that one exists so a client does *not* act destructively on a
+// transient failure, this one exists so a client *does* act destructively on a
+// deliberate instruction. A bare 401 would have the device sign the user out
+// and keep its replica, which is precisely what a wipe must prevent.
+var ErrDeviceWiped = errors.New("api: device has been wiped")
+
 // Authenticator resolves a request to the authenticated actor and tenant.
 // It is the gateway's authn seam: token/session verification (OAuth 2.1,
 // PATs — WP-3.7, docs/15) is not built in this WP, so the concrete
@@ -347,6 +357,21 @@ func (g *Gateway) guard(h apiHandler) http.HandlerFunc {
 			if errors.Is(err, ErrAuthUnavailable) {
 				w.Header().Set("Retry-After", "1")
 				writeProblem(w, Problem{Status: http.StatusServiceUnavailable, Title: "authentication temporarily unavailable", Instance: r.URL.Path})
+				return
+			}
+			// The one 401 that carries a reason. Everything below this line is
+			// deliberately opaque so a caller cannot probe which half of a
+			// credential was wrong; a wipe is the documented exception, because
+			// the instruction is useless unless the device can recognise it
+			// (INV-D1, WP-2.5-decisions.md §3).
+			if errors.Is(err, ErrDeviceWiped) {
+				writeProblem(w, Problem{
+					Type:     ProblemDeviceWiped,
+					Status:   http.StatusUnauthorized,
+					Title:    "device has been wiped",
+					Detail:   "this device was remotely wiped by an administrator; its local data must be destroyed",
+					Instance: r.URL.Path,
+				})
 				return
 			}
 			// Do not echo the Authenticator's error into the body: it can carry

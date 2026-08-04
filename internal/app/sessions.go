@@ -136,7 +136,14 @@ func refresh(db *storage.DB) api.HandlerFunc {
 		}
 		issued, err := identity.RefreshSession(r.Context(), db, token, device)
 		if err != nil {
-			// Device mismatch and an unknown token are both just "no".
+			// A wiped device is told so, here as everywhere else: an expiring
+			// client reaches refresh before it reaches anything else, so this
+			// is often where a wipe is first delivered. Everything else —
+			// device mismatch, unknown token — is just "no" (WP-2.5 §3).
+			if errors.Is(err, identity.ErrDeviceWiped) {
+				deviceWiped(w, r)
+				return
+			}
 			unauthorized(w, r)
 			return
 		}
@@ -235,4 +242,13 @@ func cookieValue(r *http.Request, name string) string {
 
 func unauthorized(w http.ResponseWriter, r *http.Request) {
 	writeProblem(w, http.StatusUnauthorized, "invalid credentials", "", r.URL.Path)
+}
+
+// deviceWiped is unauthorized with a reason attached — the same typed problem
+// the gateway emits for authenticated routes, so a client has one thing to
+// recognise no matter which route delivered it (WP-2.5, INV-D1).
+func deviceWiped(w http.ResponseWriter, r *http.Request) {
+	writeProblemTyped(w, api.ProblemDeviceWiped, http.StatusUnauthorized, "device has been wiped",
+		"this device was remotely wiped by an administrator; its local data must be destroyed",
+		r.URL.Path)
 }

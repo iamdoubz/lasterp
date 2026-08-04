@@ -33,6 +33,13 @@ func sessionAuthenticator(db *storage.DB) api.Authenticator {
 		}
 		s, err := identity.ValidateSession(r.Context(), db, tok)
 		if err != nil {
+			// A wiped device is a decision, not an outage. It must be checked
+			// before the fallthrough below, which would otherwise wrap it as
+			// ErrAuthUnavailable and answer 503 — telling the device to retry
+			// the very request that was supposed to end it (INV-D1).
+			if errors.Is(err, identity.ErrDeviceWiped) {
+				return authz.Actor{}, "", fmt.Errorf("%w: %w", api.ErrDeviceWiped, err)
+			}
 			// ValidateSession already separates "no such session" from "the
 			// database did not answer" (ErrSessionInvalid vs a wrapped driver
 			// error); this is where that distinction has to survive, because

@@ -10,6 +10,7 @@
 import { ApiError, request } from "../api/client.ts";
 import type { FeedPage, ServerRecord } from "./core.ts";
 import type { MetaObject } from "./schema.ts";
+import { DeviceWipedError } from "./wipe.ts";
 
 /** maxPage is the server's own cap (internal/app/sync.go maxFeedLimit). Asking
  * for more is a 400, so the client does not guess. */
@@ -66,22 +67,39 @@ export interface Transport {
   command(command: ReplayableCommand): Promise<CommandResult>;
 }
 
+/** get is `request` with one translation: the wipe 401 becomes a
+ * DeviceWipedError.
+ *
+ * It wraps every read rather than only the drain, because a wipe must be
+ * honored at whichever request happens to be first on reconnect — the sync
+ * cycle opens with `meta()`, so in practice that is usually a GET and not a
+ * command at all (WP-2.5-decisions.md §2: the signal rides the auth path, so
+ * *every* route carries it). */
+async function get<T>(path: string): Promise<T> {
+  try {
+    return await request<T>(path);
+  } catch (err) {
+    if (err instanceof ApiError && err.isDeviceWiped) throw new DeviceWipedError();
+    throw err;
+  }
+}
+
 /** httpTransport talks to a live server. */
 export function httpTransport(): Transport {
   return {
     async meta(): Promise<MetaObject[]> {
-      const body = await request<{ data: MetaObject[] }>("/api/v1/meta/objects");
+      const body = await get<{ data: MetaObject[] }>("/api/v1/meta/objects");
       return body.data;
     },
 
     async snapshot(object: string, after: string, limit: number): Promise<SnapshotPage> {
       const params = new URLSearchParams({ object, limit: String(limit) });
       if (after !== "") params.set("after", after);
-      return request<SnapshotPage>(`/api/v1/sync/snapshot?${params}`);
+      return get<SnapshotPage>(`/api/v1/sync/snapshot?${params}`);
     },
 
     async scope(): Promise<string[]> {
-      const body = await request<{ data: string[] }>("/api/v1/sync/scope");
+      const body = await get<{ data: string[] }>("/api/v1/sync/scope");
       return body.data;
     },
 
@@ -91,7 +109,7 @@ export function httpTransport(): Transport {
         limit: String(limit),
         include: "rows",
       });
-      return request<FeedPage>(`/api/v1/sync/changes?${params}`);
+      return get<FeedPage>(`/api/v1/sync/changes?${params}`);
     },
 
     // The whole of WP-2.3-decisions.md §1, in nine lines: a queued command is
@@ -115,6 +133,12 @@ export function httpTransport(): Transport {
         });
         return { status: body === undefined ? 204 : 200, body: body ?? null };
       } catch (err) {
+        // A wipe is not a rejection of *this* command, so it must not become
+        // one. Returning it as a result would have the drain roll the row back
+        // and file a conflict — bookkeeping written into a replica that is
+        // about to be destroyed, and a tray entry nobody will ever read
+        // (WP-2.5-decisions.md §6). It throws past the drain instead.
+        if (err instanceof ApiError && err.isDeviceWiped) throw new DeviceWipedError();
         if (err instanceof ApiError) {
           return { status: err.problem.status, body: err.problem };
         }

@@ -31,6 +31,17 @@ export class ApiError extends Error {
     return this.problem.status === 401;
   }
 
+  /** True when this device has been remotely wiped (WP-2.5, INV-D1).
+   *
+   * A subset of `isUnauthenticated`, and callers must test it **first**: the
+   * ordinary 401 path signs the user out and leaves the replica on disk, which
+   * is the one outcome a wipe exists to prevent. This is the only 401 that
+   * carries a machine-readable reason, for exactly that purpose
+   * (WP-2.5-decisions.md §3). */
+  get isDeviceWiped(): boolean {
+    return this.problem.status === 401 && this.problem.type === "device-wiped";
+  }
+
   /** True when the object's module is switched off for this tenant (ADR-018). */
   get isCapabilityDisabled(): boolean {
     return this.problem.type === "capability-disabled";

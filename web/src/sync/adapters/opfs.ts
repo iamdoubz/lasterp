@@ -117,6 +117,26 @@ export async function poolCapacity(): Promise<number> {
   return pool.getCapacity();
 }
 
+/** wipePool returns the replica's storage to the browser (WP-2.5, INV-D1).
+ *
+ * `wipeReplica` in wipe.ts deletes rows; **that is not enough on its own.**
+ * SQLite frees pages into the file's freelist rather than to the filesystem, so
+ * after a DELETE the data is still sitting in the OPFS file, recoverable by
+ * anyone who can read the origin's storage — which on a stolen device is
+ * whoever has the machine. This is the call that actually reclaims it.
+ *
+ * The caller closes the database first: the pool holds its access handles
+ * exclusively, and wiping underneath an open connection is how a half-erased
+ * file gets left behind.
+ *
+ * Best-effort by necessity (decisions §7). A tab closing mid-wipe cannot be
+ * made atomic from in here, so the local wipe is idempotent instead: the server
+ * keeps refusing the device, so the next open is told again and tries again. */
+export async function wipePool(): Promise<void> {
+  const pool = await acquirePool();
+  await pool.wipeFiles();
+}
+
 /** Opens (and on first call initialises) an OPFS-backed replica. */
 export async function openOpfsStore(name = "lasterp-replica.sqlite3"): Promise<Store> {
   const pool = await acquirePool();

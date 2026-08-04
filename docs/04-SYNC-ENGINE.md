@@ -163,6 +163,34 @@ Row-level scopes ("my region's customers, open documents last 24 months") are **
 they need `authz` condition evaluation, which does not exist, and they subdivide these keys
 rather than replacing them when it does. Decisions: [WP-2.4-decisions.md](notes/WP-2.4-decisions.md).
 
+## Implementation status (WP-2.5: devices and remote wipe)
+
+A device is now an entity (`devices`), registered implicitly when a session is issued — an
+enrolment call a client could skip is one that leaves an untracked replica. Administrators
+list, revoke and wipe them over `/api/v1/devices`.
+
+**The wipe rides the authenticator, not an endpoint.** docs/08 says "honored at connect", and
+the cheapest reading of that is a route the client polls — which a client can simply not call.
+Instead `identity.ValidateSession` resolves the device behind the session, so a wiped device is
+refused on *every* authenticated path (**INV-D1**) and the reconnect cycle honors the wipe at
+whichever request happens to come first. Consequences worth knowing:
+
+- **It is the one 401 that says why** (`type: "device-wiped"`). Every other authentication
+  failure is deliberately undifferentiated to avoid a token oracle; this one is not, because a
+  client that cannot tell a wipe from an expiry signs the user out and *keeps the replica*.
+- **A wipe does not revoke the device's sessions.** If it did, session validation would fail
+  first and the client would get a bare 401 with nothing to act on. The device keeps a session
+  that can do exactly one thing: learn it has been wiped.
+- **A wipe destroys unsent work — the deliberate opposite of WP-2.4's scope purge.** A purge
+  spares `_outbox` because the queued command is the user's own work; a wipe takes it, because
+  the device is presumed to be in the wrong hands. Both rules carry a test naming the other.
+- **Delivery is recorded, erasure is not claimed.** `wipe_delivered_at` is stamped when the
+  server first refuses the device. Nothing can prove a remote client deleted anything.
+
+Replica at-rest encryption is **not** part of this: [ADR-021](adr/ADR-021-replica-at-rest-encryption.md)
+makes it a native-shell control (WP-4.8) and amends docs/08 to state what protects a browser
+replica instead. Decisions: [WP-2.5-decisions.md](notes/WP-2.5-decisions.md).
+
 ## Guarantees & limits
 - Acknowledged writes: RPO 0 (command accepted ⇔ events durably committed).
 - Offline writes: at-least-once delivery, exactly-once effect (command_id dedupe).

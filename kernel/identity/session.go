@@ -94,6 +94,21 @@ func IssueSession(ctx context.Context, db *storage.DB, tenant tenancy.ID, user U
 		ExpiresAt:    now.Add(SessionTTL),
 	}
 
+	// A device an administrator has acted on cannot get a fresh session by
+	// logging in again — otherwise revocation and wipe would both be undone by
+	// the most ordinary action a user takes. Checked before the insert so no
+	// session exists for a device that may not have one.
+	switch device, err := GetDevice(ctx, db, tenant, deviceID); {
+	case errors.Is(err, sql.ErrNoRows):
+		// First time this device is seen: registered below.
+	case err != nil:
+		return nil, err
+	case device.Wiped():
+		return nil, ErrDeviceWiped
+	case device.Revoked():
+		return nil, ErrSessionInvalid
+	}
+
 	_, err = db.ExecContext(ctx, db.Rebind(`
 		INSERT INTO sessions (id, tenant_id, user_id, device_id, token_hash, refresh_token_hash, created_at, expires_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`),
@@ -101,6 +116,13 @@ func IssueSession(ctx context.Context, db *storage.DB, tenant tenancy.ID, user U
 		hashToken(token), hashToken(refresh), now, issued.ExpiresAt)
 	if err != nil {
 		return nil, fmt.Errorf("identity: issue session: %w", err)
+	}
+
+	// Registration is implicit (decisions §1): a device that can hold a session
+	// is a device worth tracking, and an enrolment step a client could skip is
+	// one that leaves an untracked replica.
+	if err := RegisterDevice(ctx, db, tenant, user, deviceID); err != nil {
+		return nil, err
 	}
 	return issued, nil
 }
@@ -152,6 +174,41 @@ func validateSessionOnce(ctx context.Context, db *storage.DB, token string) (*Se
 	if s.RevokedAt != nil || time.Now().UTC().After(s.ExpiresAt) {
 		return nil, ErrSessionInvalid
 	}
+
+	// The device behind the session — INV-D1, WP-2.5. Checked here rather than
+	// at any single endpoint because a wiped device must be refused on *every*
+	// authenticated path; there is no request it can make that succeeds while
+	// skipping this.
+	//
+	// **This is a second query and it must not be folded into the SELECT
+	// above.** `devices` carries FORCE ROW LEVEL SECURITY, and this function
+	// necessarily runs before tenant context exists — the token is what
+	// determines the tenant, which is why `sessions` is RLS-exempt
+	// (WP-0.3-decisions.md). A LEFT JOIN would therefore evaluate the devices
+	// policy with `app.tenant_id` unset, match no rows, and produce NULL device
+	// columns — i.e. every wiped device would silently pass the check while the
+	// code read as though it were enforcing it. GetDevice runs inside
+	// tenancy.WithTenant, using the tenant this session just resolved.
+	device, err := GetDevice(ctx, db, s.TenantID, s.DeviceID)
+	if errors.Is(err, sql.ErrNoRows) {
+		// A session predating this table, or one whose device row was deleted.
+		// Not a wipe: absence of a wipe instruction is not a wipe instruction,
+		// and failing closed here would lock out every session issued before
+		// WP-2.5 shipped.
+		return s, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if device.Wiped() {
+		// Record delivery here, where the refusal is decided, so no caller of
+		// ValidateSession can forget to. Best-effort on purpose: the refusal is
+		// the control and it must happen whether or not the bookkeeping write
+		// lands, so a failure here is swallowed rather than turned into a 503
+		// that would let the device keep operating (decisions §4).
+		_ = MarkWipeDelivered(ctx, db, s.TenantID, s.DeviceID)
+		return nil, ErrDeviceWiped
+	}
 	return s, nil
 }
 
@@ -182,6 +239,27 @@ func RefreshSession(ctx context.Context, db *storage.DB, refreshToken, deviceID 
 	}
 	if s.DeviceID != deviceID {
 		return nil, ErrDeviceMismatch
+	}
+
+	// Refresh is a *public* route, so INV-D1's "every authenticated path" does
+	// not reach it — and without this check a wiped device would keep minting
+	// fresh access tokens indefinitely, each one useless for data but each one
+	// extending a session that should be over. Revoked devices are stopped here
+	// too, for the same reason IssueSession stops them: an administrator's
+	// decision must not be undone by the most routine thing a client does.
+	switch device, err := GetDevice(ctx, db, s.TenantID, s.DeviceID); {
+	case errors.Is(err, sql.ErrNoRows):
+		// Predates the devices table; not a wipe.
+	case err != nil:
+		return nil, err
+	case device.Wiped():
+		// Deliberately the typed error rather than a bare refusal: an expiring
+		// client hits refresh before it hits anything else, so this is often
+		// the first place a wipe can be delivered.
+		_ = MarkWipeDelivered(ctx, db, s.TenantID, s.DeviceID)
+		return nil, ErrDeviceWiped
+	case device.Revoked():
+		return nil, ErrSessionInvalid
 	}
 
 	newToken, err := randomToken()

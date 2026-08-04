@@ -105,6 +105,13 @@ var Catalog = []Invariant{
 	// the silent *stall* — a command retrying forever at the head of an ordered
 	// queue blocks everything behind it, so retries are capped and the survivor
 	// is filed like any other rejection.
+	//
+	// **One sanctioned exception, added by WP-2.5: a remote wipe.** A wipe
+	// destroys queued commands that reached no terminal state. The
+	// reconciliation is that INV-S4 is a promise to *the user of a device*, and
+	// a wipe is an administrator's statement that this device has no legitimate
+	// user — there is nobody on it to surface anything to. Nothing else may
+	// claim this exemption without amending this note (WP-2.5-decisions.md §5).
 	{ID: "INV-S4", Title: "Rejected commands are surfaced to the user; no silent drops", Layer: LayerPipeline, TestRequired: true},
 	// INV-S5 is the downstream half of INV-S1, and lands early because the
 	// feed exists before the replica does (WP-2.1). It is separate rather than
@@ -112,6 +119,21 @@ var Catalog = []Invariant{
 	// once upstream command replay exists in WP-2.3, and claiming it here
 	// would overstate what is proven.
 	{ID: "INV-S5", Title: "No committed change is skipped by the feed: every entry is observed exactly once, in a stable total order", Layer: LayerPipeline, TestRequired: true, AppendOnlyTables: []string{"change_feed"}},
+
+	// Device (INV-D) — Phase 2, WP-2.5.
+	//
+	// INV-D1 is why the wipe check lives in the authenticator rather than at
+	// any endpoint: a control the subject can decline to receive is not one.
+	// The test enumerates the live mux and asserts no authenticated route
+	// serves a wiped device, in the same shape as WP-2.3b's
+	// TestNoSyncWriteEndpointExists — a property of the whole surface, not of
+	// the handlers somebody remembered to check.
+	//
+	// Note what it deliberately does NOT claim: that the device deleted
+	// anything. The server can prove refusal and delivery; it cannot prove
+	// erasure on a disk it does not own (WP-2.5-decisions.md §4). At-rest
+	// protection of the replica itself is ADR-021 and WP-4.8.
+	{ID: "INV-D1", Title: "A device marked wiped is refused on every authenticated path", Layer: LayerPipeline, TestRequired: true},
 
 	// Extension & autonomy (INV-X) — Phase 3 / Phase 6.
 	{ID: "INV-X1", Title: "Plugins touch data only via capability-checked host functions — no ambient authority", Layer: LayerPipeline, Note: "lands with WP-3.1 plugin host"},

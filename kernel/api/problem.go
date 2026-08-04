@@ -30,6 +30,17 @@ type Problem struct {
 // retrying. See gateway.go and WP-2.3-decisions.md §11.
 const ProblemIdempotencyConflict = "idempotency-conflict"
 
+// ProblemDeviceWiped is the `type` on the 401 a remotely-wiped device gets
+// (WP-2.5, INV-D1). Exported for the same reason as the constant above: the
+// client must branch on it, and here the branch is the entire feature.
+//
+// An undifferentiated 401 makes a client sign the user out and leave the
+// replica on disk. Only this type tells it to destroy what it holds — which is
+// why identity.ErrDeviceWiped is the one authentication outcome allowed to be
+// distinguishable from the deliberately-opaque ErrSessionInvalid
+// (WP-2.5-decisions.md §3).
+const ProblemDeviceWiped = "device-wiped"
+
 // writeProblem renders p as application/problem+json.
 func writeProblem(w http.ResponseWriter, p Problem) {
 	if p.Type == "" {

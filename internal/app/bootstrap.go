@@ -47,6 +47,10 @@ var adminGrants = map[string][]string{
 	// The change feed spans every object in the tenant, so it is its own
 	// grant rather than a consequence of the ones above (WP-2.1).
 	"sync": {"read"},
+	// Device management is separate again (WP-2.5): `sync:read` is the right
+	// to follow your own scope, `device:manage` is the right to destroy what
+	// someone else's machine holds.
+	"device": {"read", "manage"},
 }
 
 // ErrTenantExists is returned when the tenant is already provisioned, so

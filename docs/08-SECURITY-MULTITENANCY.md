@@ -16,7 +16,10 @@
 ## Data protection
 - TLS everywhere; HSTS; modern cipher suites only.
 - At rest: disk/volume encryption assumed; field-level encryption (kernel envelope encryption, keys in KMS/age file for self-host) for designated sensitive fields.
-- **Client replicas:** SQLite encrypted (SQLCipher/OS keystore-derived key); device registration + remote-wipe token honored at connect (documented limit: an offline stolen device retains data until wipe — encryption is the real control).
+- **Client replicas — the controls differ by shell, and this line used to overstate them.** It read *"SQLite encrypted (SQLCipher/OS keystore-derived key) … encryption is the real control"*, which was written before [ADR-017](adr/ADR-017-sync-client-core.md) fixed the browser client on SQLite-WASM's SAH-pool VFS. There is no OS keystore in a browser and no cipher in that VFS, and the gap is not a missing library: SAH-pool's `xRead`/`xWrite` are synchronous while WebCrypto is async, so a page cipher needs extractable key bytes in JS memory — sitting next to the ciphertext, reachable by the same thief. [ADR-021](adr/ADR-021-replica-at-rest-encryption.md) resolves it:
+  - *Browser shell (today):* **scoped replicas** (a device replicates only what its principal may read — WP-2.4), **remote wipe honored at the next authenticated request** (WP-2.5, INV-D1), device registration and revocation, short-lived device-bound tokens, and the operating system's own full-disk encryption, which is where whole-device protection legitimately lives for a browser client.
+  - *Native shells (Tauri desktop/mobile, WP-4.8):* at-rest encryption of the replica with an OS keystore-derived key. This is where the original sentence becomes true, and it is tracked as a numbered work package rather than an aspiration.
+  - *Documented limit, unchanged and now the honest one:* a stolen device that never reconnects keeps what it holds, and on the browser shell that data is protected by the OS's disk encryption rather than by ours. A wipe is delivered, never confirmed — the server can prove it refused the device and told it why; it cannot prove erasure on a disk it does not own.
 - Secrets vault for connector/plugin credentials; secrets never enter logs, events, or plugin memory unread (capability-gated `secrets.get`).
 - PII tagging in metadata → drives export redaction, retention policies, GDPR erasure workflow (erasure of PII on CRUD objects; event payload crypto-shredding for event-sourced ones).
 
@@ -35,6 +38,7 @@
 | Cross-tenant leak via app bug | RLS as backstop + CI gates |
 | Malicious plugin | WASM sandbox, capabilities, no ambient authority, audit |
 | Rogue/compromised AI agent | Role limits, budgets, approval gates, kill switch, dedicated audit |
-| Offline device theft | Replica encryption, scoped replicas, remote wipe |
+| Offline device theft (browser shell) | Scoped replicas, remote wipe at next connect, device revocation, short-lived device-bound tokens, **OS disk encryption** — *not* in-page replica encryption, see Data protection above and [ADR-021](adr/ADR-021-replica-at-rest-encryption.md) |
+| Offline device theft (native shells, WP-4.8) | The above **plus** replica at-rest encryption with an OS keystore-derived key |
 | Sync replay/forgery | Device-bound tokens, command_id dedupe, server revalidation |
 | Insider financial fraud | Immutability, 4-eyes approvals, anomaly detection, hash-chained trails |
