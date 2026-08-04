@@ -21,6 +21,7 @@ import type { SchemaIndex } from "./core.ts";
 import { drain } from "./outbox.ts";
 import { reshape } from "./reshape.ts";
 import { replicableObjects, type MetaObject } from "./schema.ts";
+import { DeviceWipedError, wipeReplica } from "./wipe.ts";
 import { MAX_PAGE, type Transport } from "./transport.ts";
 import type { Store } from "./port.ts";
 
@@ -197,11 +198,29 @@ export async function pull(
  * now that the server no longer sends out-of-scope rows at all
  * (WP-2.4-decisions.md §4). */
 export async function sync(store: Store, transport: Transport): Promise<number> {
-  const index = await open(store, transport);
-  await drain(store, index, transport);
-  reshape(store, await transport.scope());
-  await hydrate(store, index, transport);
-  return pull(store, index, transport);
+  const cached = cachedMeta(store);
+  try {
+    const index = await open(store, transport);
+    await drain(store, index, transport);
+    reshape(store, await transport.scope());
+    await hydrate(store, index, transport);
+    return pull(store, index, transport);
+  } catch (err) {
+    // A remote wipe (WP-2.5, INV-D1). Caught here — above the drain, above the
+    // re-shape, above everything — because it is a statement about the device
+    // and not about any one request. Letting it surface as a per-command
+    // rejection would file conflict rows into a database being destroyed
+    // (WP-2.5-decisions.md §6).
+    //
+    // The object list comes from the cache read *before* the cycle: by the time
+    // this fires the server is refusing every request, so `meta()` cannot be
+    // asked what tables exist. A replica that never reached the server has no
+    // cache and no tables to clear, which wipeReplica handles as a no-op.
+    if (err instanceof DeviceWipedError) {
+      wipeReplica(store, cached ?? []);
+    }
+    throw err;
+  }
 }
 
 /** replicatedObjects lists what this replica holds, for a UI that wants to say

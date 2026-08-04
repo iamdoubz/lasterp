@@ -12,7 +12,15 @@ import (
 )
 
 // invRef matches an invariant ID mention, e.g. "INV-E1", "INV-T4".
-var invRef = regexp.MustCompile(`INV-[FETSX][0-9]+`)
+//
+// The family letters are enumerated rather than `[A-Z]` so that a typo like
+// "INV-Q1" is caught as malformed by TestCatalogWellFormed instead of silently
+// becoming a family of its own. Adding a family therefore means editing this
+// line — which is the intended friction: a new class of invariant is a docs/19
+// change, not something that appears by writing a comment.
+//
+// D — device (WP-2.5).
+var invRef = regexp.MustCompile(`INV-[FETSXD][0-9]+`)
 
 // TestEveryRequiredInvariantHasATaggedTest is the registry gate docs/19 §1
 // demands: "CI fails if an invariant has no tagged tests." It walks every

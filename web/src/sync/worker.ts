@@ -12,7 +12,8 @@
 // accidentally await across). The async surface is exactly this file's
 // postMessage boundary and no deeper.
 
-import { openOpfsStore, requestPersistence, ReplicaLockedError } from "./adapters/opfs.ts";
+import { openOpfsStore, requestPersistence, ReplicaLockedError, wipePool } from "./adapters/opfs.ts";
+import { DeviceWipedError } from "./wipe.ts";
 import { currentCursor, type SchemaIndex } from "./core.ts";
 import {
   conflicts,
@@ -55,10 +56,43 @@ async function replica(): Promise<Replica> {
   return replicaState;
 }
 
+/** wipeStorage finishes what wipeReplica starts (WP-2.5-decisions.md §7).
+ *
+ * `wipeReplica` has already deleted every row by the time this runs, and that
+ * is **not enough on its own**: SQLite frees pages into the file's freelist
+ * rather than to the filesystem, so the data is still sitting in the OPFS file
+ * afterwards — readable by whoever has the machine, which on a stolen device is
+ * the whole threat. `wipePool` is what actually returns the storage.
+ *
+ * The store is closed and forgotten first: the pool holds its access handles
+ * exclusively, and wiping underneath an open connection is how a half-erased
+ * file gets left behind. Dropping `replicaState` also means the next request
+ * re-opens — into a server that keeps refusing, so the device is told again.
+ * That is the idempotence §7 relies on instead of atomicity it cannot have. */
+async function wipeStorage(): Promise<void> {
+  const state = replicaState;
+  replicaState = undefined;
+  try {
+    state?.store.close();
+  } catch {
+    // Already closed, or closing failed — either way the pool wipe below is
+    // the operation that matters and it must still be attempted.
+  }
+  await wipePool();
+}
+
 async function handle(request: SyncRequest): Promise<unknown> {
   switch (request.kind) {
     case "sync":
-      return sync((await replica()).store, transport);
+      try {
+        return await sync((await replica()).store, transport);
+      } catch (err) {
+        // sync() has already emptied the tables by the time it rethrows; this
+        // is the half that needs the adapter, which the core deliberately
+        // cannot reach through the port (INV-D1, WP-2.5).
+        if (err instanceof DeviceWipedError) await wipeStorage();
+        throw err;
+      }
 
     case "status": {
       const { store } = await replica();

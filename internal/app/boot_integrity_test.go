@@ -413,6 +413,9 @@ func fullGrants() map[string][]string {
 		// object, so it carries its own grant rather than following from the
 		// per-object ones above (WP-2.1).
 		"sync": {"read"},
+		// Device management, likewise its own grant (WP-2.5): replicating is
+		// not the same power as destroying what another machine holds.
+		"device": {"read", "manage"},
 	}
 }
 

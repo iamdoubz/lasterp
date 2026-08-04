@@ -32,11 +32,12 @@
 import { writeSync } from "node:fs";
 
 import { openNodeStore } from "./adapters/node.ts";
-import { indexSchema, initReplica } from "./core.ts";
+import { cachedMeta, indexSchema, initReplica } from "./core.ts";
 import { newId } from "./ids.ts";
 import { conflicts, enqueue, pendingCommands, type Command } from "./outbox.ts";
 import { sync } from "./replica.ts";
 import { replicableObjects, tableName, type MetaObject } from "./schema.ts";
+import { DeviceWipedError } from "./wipe.ts";
 import type { FeedPage } from "./core.ts";
 import type { Store } from "./port.ts";
 import type { CommandResult, ReplayableCommand, SnapshotPage, Transport } from "./transport.ts";
@@ -125,6 +126,11 @@ const CRASH_MARKER = "lasterp-sync-crash-injected";
  * into an ordinary one that still reports green. */
 const PARTITION_MARKER = "lasterp-sync-partition-injected";
 
+/** WIPE_MARKER is written when a remote wipe was received and honored (WP-2.5).
+ * Like the markers above it exists so the harness can assert the event actually
+ * happened: an empty replica proves a wipe only if a wipe is what emptied it. */
+const WIPE_MARKER = "lasterp-device-wiped";
+
 /** Partitioned marks the simulated network failure, so the driver can tell it
  * apart from a real defect and still dump. Anything else propagates. */
 class Partitioned extends Error {}
@@ -136,7 +142,16 @@ async function fetchJSON<T>(path: string): Promise<T> {
     headers: { Accept: "application/json", Authorization: `Bearer ${token}` },
   });
   if (!response.ok) {
-    throw new Error(`${path} -> ${response.status} ${await response.text()}`);
+    const text = await response.text();
+    // This driver has its own fetch rather than api/client.ts (absolute URL and
+    // a bearer token instead of a same-origin cookie), so it must repeat the
+    // one translation that matters: a wipe 401 is not a request failure, it is
+    // an instruction (WP-2.5). Without this the driver would report a generic
+    // error and never exercise the client-side wipe at all.
+    if (response.status === 401 && text.includes(`"device-wiped"`)) {
+      throw new DeviceWipedError();
+    }
+    throw new Error(`${path} -> ${response.status} ${text}`);
   }
   return (await response.json()) as T;
 }
@@ -199,6 +214,12 @@ const transport: Transport = {
     });
 
     const text = await response.text();
+    // Same translation as the GET path above, and for the same reason the real
+    // transport does it: a wipe must throw past the drain rather than be filed
+    // as this command's rejection (WP-2.5-decisions.md §6).
+    if (response.status === 401 && text.includes(`"device-wiped"`)) {
+      throw new DeviceWipedError();
+    }
     const result: CommandResult = {
       status: response.status,
       body: text === "" ? null : (JSON.parse(text) as unknown),
@@ -277,10 +298,26 @@ function killing(store: Store, after: number): Store {
 // still knows what to dump. It costs one request and removes the alternative,
 // which was reconstructing the object list from sqlite_master and mapping table
 // names back — thirty lines to work around a wire this driver cut itself.
-const metaObjects = (await fetchJSON<{ data: MetaObject[] }>("/api/v1/meta/objects")).data;
-const objects = replicableObjects(metaObjects);
-
 const store = openNodeStore(dbPath);
+
+// The object list, fetched before any fault can fire so a partitioned run still
+// knows what to dump.
+//
+// A **wiped** device cannot fetch it at all — the server refuses every request,
+// which is the whole of INV-D1 — so it falls back to the schema this replica
+// cached, exactly as the real client does in replica.ts `open()`. Without the
+// fallback the driver dies here with an unhandled error and the wipe tests pass
+// or fail for reasons unrelated to the wipe. The list is read *before* sync()
+// runs, so it still names the tables afterwards even though the wipe clears
+// `_meta` along with everything else.
+let metaObjects: MetaObject[];
+try {
+  metaObjects = (await fetchJSON<{ data: MetaObject[] }>("/api/v1/meta/objects")).data;
+} catch (err) {
+  if (!(err instanceof DeviceWipedError)) throw err;
+  metaObjects = cachedMeta(store) ?? [];
+}
+const objects = replicableObjects(metaObjects);
 try {
   if (enqueueCount > 0 || enqueueInvalid > 0) {
     // initReplica before sync() would run it: an offline client queues work
@@ -304,10 +341,21 @@ try {
       // window it was aimed at. Queueing is not part of the sync under test.
       await sync(killing(store, killInApply), transport);
     } catch (err) {
-      // A partition leaves a partway replica, which is a legitimate state to
-      // compare against: the harness reconnects and requires convergence then.
-      if (!(err instanceof Partitioned)) throw err;
-      writeSync(2, `${PARTITION_MARKER}\n`);
+      // A remote wipe is a *successful* outcome for this driver, not a failure:
+      // sync() has already destroyed the replica by the time it rethrows
+      // (WP-2.5). The marker lets the Go harness assert the wipe actually fired
+      // rather than inferring it from an empty dump — an empty replica is also
+      // what a driver that never synced produces, and a wipe test that passes
+      // against a replica which was never populated is testing nothing.
+      if (err instanceof DeviceWipedError) {
+        writeSync(2, `${WIPE_MARKER}\n`);
+      } else if (err instanceof Partitioned) {
+        // A partition leaves a partway replica, which is a legitimate state to
+        // compare against: the harness reconnects and requires convergence then.
+        writeSync(2, `${PARTITION_MARKER}\n`);
+      } else {
+        throw err;
+      }
     }
   }
 

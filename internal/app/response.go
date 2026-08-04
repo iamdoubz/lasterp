@@ -27,10 +27,16 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 // writeProblem renders an RFC 7807 problem+json document (matching
 // kernel/api's problem shape) for the action routes.
 func writeProblem(w http.ResponseWriter, status int, title, detail, instance string) {
+	writeProblemTyped(w, "about:blank", status, title, detail, instance)
+}
+
+// writeProblemTyped is writeProblem with a machine-readable `type`, for the few
+// failures a client must branch on rather than merely display.
+func writeProblemTyped(w http.ResponseWriter, problemType string, status int, title, detail, instance string) {
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"type": "about:blank", "title": title, "status": status,
+		"type": problemType, "title": title, "status": status,
 		"detail": detail, "instance": instance,
 	})
 }
