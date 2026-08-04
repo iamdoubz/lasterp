@@ -92,3 +92,12 @@ trivially), and everything upstream (WP-2.3). The replica is **read-only** until
 
 ## Test plan (non-negotiable, see CLAUDE.md)
 Deterministic simulation harness: N virtual clients × scripted partitions/crashes/interleavings × property checks (no lost accepted write, no double-entry violation, replica converges to server projection). Runs in CI on every kernel/sync PR.
+
+**Built in WP-2.3a** as [`internal/app/sync_simulation_integrity_test.go`](../internal/app/sync_simulation_integrity_test.go): four virtual clients, each its own replica file and its own driver process, synced concurrently against one server on both dialects, under a rotating schedule of two faults —
+
+- **partition** (`--fail-after`): the wire is cut mid-sync, leaving the client partway;
+- **crash** (`--kill-in-apply`): the process dies *inside* an apply transaction, after rows are written and before the cursor moves. This is the only fault that cannot be injected through the transport, and it is what turns the core's crash-safety claim into something a test can refute — an exception unwinds cleanly, a killed tab does not.
+
+Two things keep the green tick meaningful. `TestSimulationHarnessDetectsADivergentClient` runs one client of the four against a feed with entries deleted and requires the suite to *fail*. And **every scheduled fault is asserted to have fired**, via a marker the driver writes at the injection point: the first version of this harness injected ten crashes across six rounds on both dialects, fired none of them, and reported green. A fault-injection suite that silently stops injecting is indistinguishable from one that passes.
+
+The upstream properties (INV-S1/S2/S4) need an outbox and land with WP-2.3b, which adds scenarios to this harness rather than building another. Decisions: [WP-2.3-decisions.md](notes/WP-2.3-decisions.md).
