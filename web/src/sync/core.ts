@@ -72,22 +72,120 @@ const BOOKKEEPING = [
      after_id TEXT NOT NULL DEFAULT '',
      done INTEGER NOT NULL DEFAULT 0
    )`,
+
+  // WP-2.3b, docs/04 §Replica: "_outbox (pending commands) … _conflicts".
+  //
+  // The DDL lives here rather than in outbox.ts so the dependency runs one way
+  // (outbox.ts needs applyRecord; this file needs nothing back) and so that
+  // "what a replica is made of" stays readable in one place.
+  //
+  // `seq` orders the drain. A command_id is a UUIDv7 and sorts chronologically,
+  // but two minted in the same millisecond order by their random bits, and a
+  // PATCH ahead of the POST that creates its row is a 404 the drain would file
+  // as a rejection — a conflict fabricated by the sort (WP-2.3-decisions.md
+  // §12). `command_id` is unique because it is also the Idempotency-Key, and
+  // queueing one twice would mean two commands sharing an outcome.
+  //
+  // `before` is the pre-image for rollback. A rejected *update* has nothing to
+  // recover from otherwise: server state never changed, so no amount of pulling
+  // repairs the local edit.
+  `CREATE TABLE IF NOT EXISTS _outbox (
+     seq INTEGER PRIMARY KEY AUTOINCREMENT,
+     command_id TEXT NOT NULL UNIQUE,
+     method TEXT NOT NULL,
+     path TEXT NOT NULL,
+     body TEXT,
+     object TEXT NOT NULL,
+     row_id TEXT NOT NULL,
+     before TEXT,
+     attempts INTEGER NOT NULL DEFAULT 0,
+     created_at TEXT NOT NULL
+   )`,
+
+  // The `pending` flag docs/04 §Upstream 1 describes, as a sidecar rather than
+  // a column on every generated table (WP-2.3-decisions.md §3): a column would
+  // have to be excluded from the INV-S3 convergence comparison, which is the
+  // translation layer WP-2.2b-decisions.md §1 kept out of the oracle on purpose.
+  // A sidecar is invisible to it, and outlives the row being deleted.
+  `CREATE TABLE IF NOT EXISTS _pending (
+     object TEXT NOT NULL,
+     row_id TEXT NOT NULL,
+     command_id TEXT NOT NULL,
+     PRIMARY KEY (object, row_id, command_id)
+   )`,
+
+  // The tray. Columns are the server's own problem+json, because the point of
+  // replaying an ordinary request is that the rejection is already a rendered,
+  // localized explanation — the client shows what the server said rather than a
+  // translation of it (WP-2.3-decisions.md §1).
+  `CREATE TABLE IF NOT EXISTS _conflicts (
+     command_id TEXT PRIMARY KEY,
+     method TEXT NOT NULL,
+     path TEXT NOT NULL,
+     object TEXT NOT NULL,
+     row_id TEXT NOT NULL,
+     body TEXT,
+     status INTEGER NOT NULL,
+     type TEXT NOT NULL,
+     title TEXT NOT NULL,
+     detail TEXT NOT NULL,
+     filed_at TEXT NOT NULL
+   )`,
+
+  // The schema this replica was generated from, kept so it can be opened with
+  // no network. Until WP-2.3b that was not needed: a read-only replica with no
+  // server is a stale read, and `open` could simply require /meta/objects. An
+  // outbox changes it — a tab reloaded offline must still be able to accept a
+  // write, and it cannot resolve one without knowing its objects' fields.
+  //
+  // It is a cache and never a source: a successful fetch overwrites it, so
+  // ADR-006's "the effective schema is per-tenant and can change" is unaffected.
+  `CREATE TABLE IF NOT EXISTS _meta (
+     id INTEGER PRIMARY KEY CHECK (id = 1),
+     objects TEXT NOT NULL
+   )`,
 ];
 
 /** The single scope this WP tracks. WP-2.4 makes scopes plural. */
 export const SCOPE = "default";
 
+/** initBookkeeping creates the replica's own tables — everything that is not
+ * generated from metadata. Split out because the metadata cache has to be
+ * readable *before* there is a schema to generate from: a client opening
+ * offline reads its objects out of this. */
+export function initBookkeeping(store: Store): void {
+  for (const stmt of BOOKKEEPING) store.exec(stmt);
+  store.exec(`INSERT OR IGNORE INTO _sync_state (scope, cursor) VALUES (?, 0)`, [SCOPE]);
+}
+
 /** initReplica creates the bookkeeping tables and one table per replicable
  * object. Idempotent: opening an existing replica is the same call. */
 export function initReplica(store: Store, objects: MetaObject[]): void {
   store.transaction(() => {
-    for (const stmt of BOOKKEEPING) store.exec(stmt);
-    store.exec(`INSERT OR IGNORE INTO _sync_state (scope, cursor) VALUES (?, 0)`, [SCOPE]);
+    initBookkeeping(store);
     for (const object of replicableObjects(objects)) {
       store.exec(createTableSQL(object));
       store.exec(`INSERT OR IGNORE INTO _hydration (object) VALUES (?)`, [object.name]);
     }
   });
+}
+
+/** cacheMeta records the schema this replica was generated from. */
+export function cacheMeta(store: Store, objects: MetaObject[]): void {
+  store.exec(
+    `INSERT INTO _meta (id, objects) VALUES (1, ?) ON CONFLICT (id) DO UPDATE SET objects = excluded.objects`,
+    [JSON.stringify(objects)],
+  );
+}
+
+/** cachedMeta returns the last schema fetched, or null when this replica has
+ * never reached the server. */
+export function cachedMeta(store: Store): MetaObject[] | null {
+  initBookkeeping(store);
+  const rows = store.query<{ objects: string }>(`SELECT objects FROM _meta WHERE id = 1`);
+  if (rows.length === 0) return null;
+  const parsed: unknown = JSON.parse(String(rows[0].objects));
+  return Array.isArray(parsed) ? (parsed as MetaObject[]) : null;
 }
 
 export function currentCursor(store: Store): number {

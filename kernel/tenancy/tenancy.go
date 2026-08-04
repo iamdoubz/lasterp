@@ -87,11 +87,11 @@ func WithTenant(ctx context.Context, db *storage.DB, tenant ID, fn func(ctx cont
 		if time.Now().After(deadline) {
 			return fmt.Errorf("tenancy: gave up after %s on SQLITE_BUSY: %w", busyRetryBudget, err)
 		}
-		time.Sleep(busyBackoff(attempt))
+		time.Sleep(BusyBackoff(attempt))
 	}
 }
 
-// busyBackoff returns how long to wait before retrying a busy transaction:
+// BusyBackoff returns how long to wait before retrying a busy statement:
 // uniformly random in (0, ceiling], where the ceiling grows with attempt.
 //
 // The randomness is the point, and the previous version had none — it slept
@@ -112,7 +112,7 @@ func WithTenant(ctx context.Context, db *storage.DB, tenant ID, fn func(ctx cont
 // get different delays, and a writer deep into its attempts can still draw a
 // short one, so progress does not depend on being lucky early. This is the
 // "full jitter" strategy from AWS's backoff-and-jitter work.
-func busyBackoff(attempt int) time.Duration {
+func BusyBackoff(attempt int) time.Duration {
 	const maxBackoff = 200 * time.Millisecond
 	ceiling := time.Duration(attempt+1) * 5 * time.Millisecond
 	if ceiling > maxBackoff {

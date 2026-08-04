@@ -110,10 +110,37 @@ func IssueSession(ctx context.Context, db *storage.DB, tenant tenancy.ID, user U
 // necessarily runs before tenant context exists — the token is what
 // determines the tenant — which is why sessions is exempt from RLS
 // (docs/notes/WP-0.3-decisions.md).
+//
+// A transient SQLITE_BUSY is retried rather than returned. Every other write
+// path in the kernel goes through tenancy.WithTenant, which has retried busy
+// for the same reason since WP-0.3; this read is outside a tenant transaction
+// (it is what *determines* the tenant) and so had no retry at all. That gap is
+// worse here than anywhere else: session validation runs on every single
+// request, and the failure surfaces to the caller as a refused credential.
+// WP-2.3b's simulation harness put four concurrent clients through it and got
+// a spurious authentication failure within three rounds.
 func ValidateSession(ctx context.Context, db *storage.DB, token string) (*Session, error) {
 	if token == "" {
 		return nil, ErrSessionInvalid
 	}
+
+	// A shorter budget than WithTenant's 30s: that one is protecting a write
+	// that must not be lost, this is one read on the front of a request that
+	// has a caller waiting. Past a second, failing and letting the client
+	// retry is the better answer.
+	const busyRetryBudget = time.Second
+
+	deadline := time.Now().Add(busyRetryBudget)
+	for attempt := 0; ; attempt++ {
+		s, err := validateSessionOnce(ctx, db, token)
+		if err == nil || !storage.IsBusy(err) || time.Now().After(deadline) {
+			return s, err
+		}
+		time.Sleep(tenancy.BusyBackoff(attempt))
+	}
+}
+
+func validateSessionOnce(ctx context.Context, db *storage.DB, token string) (*Session, error) {
 	row := db.QueryRowContext(ctx, db.Rebind(`
 		SELECT id, tenant_id, user_id, device_id, expires_at, revoked_at
 		FROM sessions WHERE token_hash = ?`), hashToken(token))

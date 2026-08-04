@@ -9,7 +9,21 @@
 // it(); the browser runner calls them in a loop and reports.
 
 import { applyPage, currentCursor, indexSchema, initReplica, rowCount, type FeedPage } from "./core.ts";
+import {
+  conflicts,
+  drain,
+  enqueue,
+  MAX_ATTEMPTS,
+  outboxDepth,
+  OutboxFullError,
+  OutboxParseError,
+  pendingCommands,
+  pendingRows,
+  UNPERSISTED_OUTBOX_LIMIT,
+  type Command,
+} from "./outbox.ts";
 import { ConformanceError, type MetaObject } from "./schema.ts";
+import type { CommandResult, Transport } from "./transport.ts";
 import type { Store } from "./port.ts";
 
 /** The schema the suite replicates. Small on purpose, but it carries one of
@@ -19,7 +33,11 @@ import type { Store } from "./port.ts";
 export const SUITE_OBJECTS: MetaObject[] = [
   {
     name: "Contact",
-    resource: "/api/v1/contact",
+    // The bare segment `/meta/objects` publishes (api.ResourcePath), not a full
+    // path. The outbox builds its request URLs from this, so a fixture that
+    // spelled it differently from the server would let the drain's route
+    // construction pass a test it does not deserve.
+    resource: "contact",
     module: "contacts",
     persistence: "crud",
     fields: [
@@ -30,7 +48,7 @@ export const SUITE_OBJECTS: MetaObject[] = [
   },
   {
     name: "JournalEntry",
-    resource: "/api/v1/journalentry",
+    resource: "journalentry",
     module: "ledger",
     persistence: "event_sourced",
     fields: [{ name: "memo", type: "text", required: false }],
@@ -77,7 +95,11 @@ function page(cursors: number[], records = cursors.map((c) => contact(`r${c}`)))
 
 export interface Case {
   name: string;
-  run(store: Store): void;
+  /** Async is allowed for the outbox cases only: the drain is the one part of
+   * the core that talks to a transport, so its cases have to await one. Both
+   * runners await this, and everything downstream stays synchronous — port.ts
+   * is a synchronous interface on purpose. */
+  run(store: Store): void | Promise<void>;
 }
 
 function assert(condition: boolean, message: string): void {
@@ -87,6 +109,58 @@ function assert(condition: boolean, message: string): void {
 function setUp(store: Store) {
   initReplica(store, SUITE_OBJECTS);
   return indexSchema(SUITE_OBJECTS);
+}
+
+// --- outbox fixtures ---
+
+let commandSeq = 0;
+
+/** commandId mints an id shaped like the UUIDv7 the client uses, but ordered
+ * rather than random: these cases assert queue order, and a fixture whose ids
+ * happened to sort differently from their insertion would make the drain look
+ * wrong when the *fixture* was. Real ids come from crypto.randomUUID-class
+ * sources; the queue orders by `seq`, never by this. */
+function commandId(): string {
+  return `018f0000-0000-7000-8000-${String(++commandSeq).padStart(12, "0")}`;
+}
+
+function create(rowId: string, name: string): Command {
+  return {
+    commandId: commandId(),
+    method: "POST",
+    object: "Contact",
+    rowId,
+    body: { id: rowId, name, kind: "customer" },
+  };
+}
+
+function patch(rowId: string, body: Record<string, unknown>): Command {
+  return { commandId: commandId(), method: "PATCH", object: "Contact", rowId, body };
+}
+
+/** acceptWith builds a Transport whose only working method is `command`: these
+ * cases drive the drain, and a downstream call from one would mean the drain
+ * reached for something it has no business touching. */
+function acceptWith(reply: () => CommandResult): Transport {
+  return {
+    async meta(): Promise<MetaObject[]> {
+      throw new Error("the drain must not fetch metadata");
+    },
+    async snapshot(): Promise<never> {
+      throw new Error("the drain must not hydrate");
+    },
+    async changes(): Promise<never> {
+      throw new Error("the drain must not pull");
+    },
+    async command(): Promise<CommandResult> {
+      return reply();
+    },
+  };
+}
+
+function nameOf(store: Store, id: string): string {
+  const rows = store.query<{ name: string }>(`SELECT name FROM obj_contact WHERE id = ?`, [id]);
+  return rows.length === 0 ? "" : String(rows[0].name);
 }
 
 export const cases: Case[] = [
@@ -265,6 +339,272 @@ export const cases: Case[] = [
         threw = true;
       }
       assert(threw, "rows for an unknown object were silently dropped");
+    },
+  },
+
+  // --- WP-2.3b: the outbox ---
+
+  {
+    // docs/04 §Upstream 1: the command is queued *and* the row appears, as one
+    // act. A user who wrote something offline and cannot see it has been lied
+    // to; a row with no command behind it is work that will never be sent.
+    name: "an offline create is queued and visible immediately",
+    run(store) {
+      const index = setUp(store);
+      enqueue(store, index, create("o1", "Offline Ada"), true);
+
+      assert(rowCount(store, "Contact") === 1, "the optimistic row is not in the replica");
+      assert(outboxDepth(store) === 1, `outbox depth = ${outboxDepth(store)}, want 1`);
+      assert(pendingRows(store, "Contact").join() === "o1", "the row is not flagged pending");
+
+      const queued = pendingCommands(store)[0];
+      assert(queued.method === "POST", `method = ${queued.method}`);
+      assert(queued.path === "/api/v1/contact", `path = ${queued.path} — the drain would 404`);
+      assert(queued.before === null, "a create recorded a pre-image");
+    },
+  },
+  {
+    // The accepted path, end to end. The response body is current server state,
+    // so applying it *is* the rebase (ADR-004 §Upstream 3) — here the server
+    // hands back a name it normalised, and the replica must end up holding the
+    // server's version rather than the one the user typed.
+    name: "an accepted command clears the outbox and lands the server's version",
+    async run(store) {
+      const index = setUp(store);
+      enqueue(store, index, create("o2", "offline ada"), true);
+
+      const report = await drain(
+        store,
+        index,
+        acceptWith(() => ({ status: 201, body: contact("o2", "Offline Ada") })),
+      );
+
+      assert(report.accepted === 1, `accepted = ${report.accepted}, want 1`);
+      assert(report.conflicted === 0, `conflicted = ${report.conflicted}, want 0`);
+      assert(outboxDepth(store) === 0, "an accepted command stayed in the outbox");
+      assert(pendingRows(store, "Contact").length === 0, "the pending flag survived acceptance");
+
+      const rows = store.query<{ name: string }>(`SELECT name FROM obj_contact WHERE id = 'o2'`);
+      assert(rows[0]?.name === "Offline Ada", `name = ${rows[0]?.name}, want the server's value`);
+    },
+  },
+  {
+    // INV-S4, and the rollback docs/04 §Upstream 3 requires. A rejected
+    // *update* is the case with teeth: server state never changed, so nothing
+    // downstream will ever repair the local edit. Without a pre-image the
+    // replica silently disagrees with the server forever.
+    name: "a rejected update rolls back to its pre-image and files a conflict",
+    async run(store) {
+      const index = setUp(store);
+      applyPage(store, index, page([1], [contact("o3", "Original")]));
+
+      enqueue(store, index, patch("o3", { name: "Edited offline" }), true);
+      assert(nameOf(store, "o3") === "Edited offline", "the optimistic edit is not visible");
+
+      const report = await drain(
+        store,
+        index,
+        acceptWith(() => ({
+          status: 422,
+          body: {
+            type: "about:blank",
+            title: "validation failed",
+            detail: "field \"name\" is required",
+            status: 422,
+          },
+        })),
+      );
+
+      assert(report.conflicted === 1, `conflicted = ${report.conflicted}, want 1`);
+      assert(nameOf(store, "o3") === "Original", `name = ${nameOf(store, "o3")}, want the pre-image`);
+      assert(outboxDepth(store) === 0, "a rejected command stayed queued");
+
+      const filed = conflicts(store);
+      assert(filed.length === 1, `${filed.length} conflicts filed, want 1`);
+      assert(filed[0].status === 422, `status = ${filed[0].status}`);
+      // The server's own words, not a translation of them.
+      assert(filed[0].detail.includes("required"), `detail = ${filed[0].detail}`);
+    },
+  },
+  {
+    // A rejected create leaves nothing behind: there was no row before it.
+    name: "a rejected create removes its optimistic row",
+    async run(store) {
+      const index = setUp(store);
+      enqueue(store, index, create("o4", "Doomed"), true);
+
+      await drain(
+        store,
+        index,
+        acceptWith(() => ({ status: 403, body: { title: "permission denied", status: 403 } })),
+      );
+
+      assert(rowCount(store, "Contact") === 0, "a rejected create left its row in the replica");
+      assert(conflicts(store).length === 1, "the rejection was not filed");
+    },
+  },
+  {
+    // INV-S1. A transport that throws means the request may or may not have
+    // arrived, which is the one outcome that must change nothing: the command
+    // stays queued and the next drain re-sends it, deduped by command_id
+    // (INV-E4). Dropping it here would be the silent loss the invariant names.
+    name: "a partitioned drain leaves every command queued",
+    async run(store) {
+      const index = setUp(store);
+      enqueue(store, index, create("o5", "Unsent"), true);
+
+      const report = await drain(store, index, acceptWith(() => {
+        throw new Error("network down");
+      }));
+
+      assert(report.accepted === 0, `accepted = ${report.accepted}, want 0`);
+      assert(report.conflicted === 0, "a partition was mistaken for a rejection");
+      assert(report.pending === 1, `pending = ${report.pending}, want 1`);
+      assert(rowCount(store, "Contact") === 1, "the optimistic row was rolled back by a partition");
+    },
+  },
+  {
+    // WP-2.3-decisions.md §11. The gateway raises 409 both for a reused key and
+    // for one whose original request is still in flight — the second being the
+    // ordinary consequence of the crash the outbox exists to survive. Filing it
+    // would show the user a conflict for a command that is succeeding.
+    name: "an in-flight idempotency conflict is retried, not filed",
+    async run(store) {
+      const index = setUp(store);
+      enqueue(store, index, create("o6", "Racing"), true);
+
+      const report = await drain(
+        store,
+        index,
+        acceptWith(() => ({
+          status: 409,
+          body: { type: "idempotency-conflict", title: "idempotency key conflict", status: 409 },
+        })),
+      );
+
+      assert(report.conflicted === 0, "an in-flight key was filed as a rejection");
+      assert(report.pending === 1, "the command was not left for the next drain");
+      assert(conflicts(store).length === 0, "a spurious conflict reached the tray");
+    },
+  },
+  {
+    // …but not forever. A command that will never succeed sits at the head of a
+    // strictly-ordered queue blocking everything behind it, which is not a
+    // silent drop but is a silent stall — and INV-S4's "surfaced to the user"
+    // covers both.
+    name: "a command that keeps failing is eventually surfaced",
+    async run(store) {
+      const index = setUp(store);
+      enqueue(store, index, create("o7", "Doomed retry"), true);
+
+      const transport = acceptWith(() => ({ status: 503, body: { title: "unavailable" } }));
+      for (let i = 0; i < MAX_ATTEMPTS + 1; i++) await drain(store, index, transport);
+
+      assert(outboxDepth(store) === 0, "a permanently failing command never left the queue");
+      assert(conflicts(store).length === 1, "it was dropped rather than surfaced");
+    },
+  },
+  {
+    // Stop-on-reject (WP-2.3-decisions.md §9). No command runs whose
+    // predecessor may have been its precondition, so a rejection halts the
+    // drain and everything behind it stays queued rather than being attempted
+    // against a state that never happened.
+    name: "the drain stops at the first rejection",
+    async run(store) {
+      const index = setUp(store);
+      enqueue(store, index, create("o8", "First"), true);
+      enqueue(store, index, create("o9", "Second"), true);
+
+      let calls = 0;
+      const report = await drain(
+        store,
+        index,
+        acceptWith(() => {
+          calls++;
+          return { status: 422, body: { title: "validation failed", status: 422 } };
+        }),
+      );
+
+      assert(calls === 1, `${calls} commands were sent; the drain did not stop at the rejection`);
+      assert(report.conflicted === 1, `conflicted = ${report.conflicted}, want 1`);
+      assert(report.pending === 1, `pending = ${report.pending}, want 1`);
+    },
+  },
+  {
+    // WP-2.3-decisions.md §6: when persistence is *denied* the outbox is capped,
+    // because the browser may evict the whole origin without warning and the
+    // work in it is the one thing no re-fetch reconstructs.
+    name: "an unpersisted outbox is capped and a granted one is not",
+    run(store) {
+      const index = setUp(store);
+      for (let i = 0; i < UNPERSISTED_OUTBOX_LIMIT; i++) {
+        enqueue(store, index, create(`cap${i}`, `Capped ${i}`), false);
+      }
+
+      let refused = false;
+      try {
+        enqueue(store, index, create("over", "One too many"), false);
+      } catch (err) {
+        refused = err instanceof OutboxFullError;
+      }
+      assert(refused, "the unpersisted outbox accepted a command past its limit");
+
+      // Granted persistence has no cap: a replica that cannot be evicted has no
+      // blast radius to bound.
+      enqueue(store, index, create("granted", "Persisted"), true);
+      assert(
+        outboxDepth(store) === UNPERSISTED_OUTBOX_LIMIT + 1,
+        `depth = ${outboxDepth(store)}, want the limit plus the persisted write`,
+      );
+    },
+  },
+  {
+    // An accepted command whose *answer* cannot be applied must still leave the
+    // queue. The command succeeded; only the client's ability to reflect it
+    // failed (INV-T5 — here, a value outside the option set this replica knows
+    // about). Leaving it queued would re-send an applied write on every
+    // reconnect forever, because a replay returns the same 2xx and never
+    // reaches the retry cap — a stall nothing would ever surface.
+    name: "an accepted command whose response will not conform does not stick the queue",
+    async run(store) {
+      const index = setUp(store);
+      enqueue(store, index, create("o11", "Poisonous"), true);
+
+      let threw = false;
+      try {
+        await drain(
+          store,
+          index,
+          acceptWith(() => ({ status: 201, body: contact("o11", "Poisonous", { kind: "banana" }) })),
+        );
+      } catch {
+        // Loud, which is the point: the same check fails again when the row
+        // arrives through the feed.
+        threw = true;
+      }
+
+      assert(threw, "a non-conforming acceptance was swallowed");
+      assert(outboxDepth(store) === 0, "the command is still queued and will be re-sent forever");
+    },
+  },
+  {
+    // The port boundary (WP-2.2b-decisions.md §7). Every other read in this
+    // client can be cast because the server is the source of truth for it; a
+    // corrupt outbox row is work that is gone, so it is refused loudly at the
+    // boundary rather than discovered as a malformed request at the wire.
+    name: "a corrupt outbox row is refused rather than replayed",
+    run(store) {
+      const index = setUp(store);
+      enqueue(store, index, create("o10", "Readable"), true);
+
+      store.exec(`UPDATE _outbox SET body = 'not json'`);
+      let threw = false;
+      try {
+        pendingCommands(store);
+      } catch (err) {
+        threw = err instanceof OutboxParseError;
+      }
+      assert(threw, "an unparseable outbox row was handed back as a command");
     },
   },
 ];

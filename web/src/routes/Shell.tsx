@@ -6,6 +6,7 @@ import { Link, Outlet } from "@tanstack/react-router";
 import { listObjects, logout, type MetaObject } from "../api";
 import { LOCALE_NAMES, useI18n, type LocaleId } from "../i18n";
 import { objectLabel } from "../meta/render";
+import { useDrainOnReconnect, useSyncStatus } from "../sync/ReplicaContext";
 import { Alert, Busy, Button, Select } from "../ui";
 
 /** useObjects fetches the tenant's renderable schemas. Navigation is built from
@@ -46,12 +47,15 @@ export function Shell({ onSignedOut }: { onSignedOut: () => void }) {
             LastERP
           </Link>
           <div className="flex items-center gap-3">
+            <OfflineIndicator />
             <LocaleSwitcher />
             <Button onClick={() => signOut.mutate()} disabled={signOut.isPending}>
               {t("nav.signOut")}
             </Button>
           </div>
         </div>
+
+        <UnpersistedWarning />
 
         <nav aria-label={t("nav.label")} className="mx-auto max-w-5xl px-4 pb-3">
           {isPending && <Busy label={t("status.loading")} />}
@@ -63,6 +67,61 @@ export function Shell({ onSignedOut }: { onSignedOut: () => void }) {
       <main id="main" className="mx-auto max-w-5xl px-4 py-6">
         <Outlet />
       </main>
+    </div>
+  );
+}
+
+/** OfflineIndicator shows how much unsent work exists and how much of it is at
+ * risk, and links to the tray when anything needs a decision.
+ *
+ * It renders nothing when there is nothing to say. A permanently-visible sync
+ * badge trains people to ignore it, and the two things worth interrupting for —
+ * work that has not reached the server, and work the server refused — are both
+ * countable rather than perpetual. */
+function OfflineIndicator() {
+  const { t } = useI18n();
+  const status = useSyncStatus();
+  useDrainOnReconnect();
+
+  if (status === null || (status.pending === 0 && status.conflicts === 0)) {
+    return null;
+  }
+
+  return (
+    <div className="flex items-center gap-3 text-sm">
+      {status.pending > 0 && (
+        <span className="text-slate-600 dark:text-slate-300">
+          {status.limit === null
+            ? t("sync.pending", { count: status.pending })
+            : t("sync.pendingCapped", { count: status.pending, limit: status.limit })}
+        </span>
+      )}
+      {status.conflicts > 0 && (
+        <Link to="/sync" className="font-medium text-red-700 underline dark:text-red-300">
+          {t("nav.needsAttention")}
+        </Link>
+      )}
+    </div>
+  );
+}
+
+/** UnpersistedWarning is WP-2.3-decisions.md §6.1: when the browser refuses
+ * persistent storage, say so *before* the first offline write rather than after
+ * an eviction.
+ *
+ * Not a toast, and not dismissable. Eviction clears the whole origin, so there
+ * is no afterwards in which to apologise — the only moment this can be true is
+ * before anything depends on it. */
+function UnpersistedWarning() {
+  const { t } = useI18n();
+  const status = useSyncStatus();
+
+  if (status === null || status.persisted) {
+    return null;
+  }
+  return (
+    <div className="mx-auto max-w-5xl px-4 pb-2">
+      <Alert tone="info">{t("sync.unpersisted")}</Alert>
     </div>
   );
 }

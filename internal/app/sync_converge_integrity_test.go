@@ -325,7 +325,18 @@ func randomOps(t *testing.T, e *env, rng *rand.Rand) {
 	}
 }
 
+// clientWrittenPrefix marks rows a simulated *client* created offline, which
+// randomOps must leave alone.
+//
+// randomOps is server-side churn, and churn deleting rows is exactly what makes
+// the downstream property interesting. But the upstream assertion counts how
+// much offline work reached the server, and `List` hides archived rows — so
+// when the random delete happened to pick one of those rows, delivered work
+// looked lost. The assertion was reporting the churn rather than the drain.
+const clientWrittenPrefix = "Sim "
+
 // anyLiveID returns some non-archived row's id, or "" when there are none.
+// Rows written by a simulated client are skipped: see clientWrittenPrefix.
 func anyLiveID(t *testing.T, e *env, resource string) string {
 	t.Helper()
 	status, body, parsed := e.get("/api/v1/" + resource)
@@ -333,12 +344,15 @@ func anyLiveID(t *testing.T, e *env, resource string) string {
 		t.Fatalf("list %s = %d; body=%s", resource, status, body)
 	}
 	rows, _ := parsed["data"].([]any)
-	if len(rows) == 0 {
-		return ""
+	for i := len(rows) - 1; i >= 0; i-- {
+		rec, _ := rows[i].(map[string]any)
+		if name, _ := rec["name"].(string); strings.HasPrefix(name, clientWrittenPrefix) {
+			continue
+		}
+		id, _ := rec["id"].(string)
+		return id
 	}
-	rec, _ := rows[len(rows)-1].(map[string]any)
-	id, _ := rec["id"].(string)
-	return id
+	return ""
 }
 
 // seedConvergenceFixture plants rows the generator did not create: one with

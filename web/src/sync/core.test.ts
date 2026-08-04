@@ -13,10 +13,10 @@ import { benchPage, cases, SUITE_OBJECTS } from "./suite.ts";
 
 describe("sync core (node:sqlite driver)", () => {
   for (const c of cases) {
-    it(c.name, () => {
+    it(c.name, async () => {
       const store = openNodeStore();
       try {
-        c.run(store);
+        await c.run(store);
       } finally {
         store.close();
       }

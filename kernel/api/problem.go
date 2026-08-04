@@ -23,6 +23,13 @@ type Problem struct {
 	Instance string `json:"instance,omitempty"`
 }
 
+// ProblemIdempotencyConflict is the `type` on the 409 the idempotency store
+// raises. It is exported because a client has to branch on it: the same
+// status covers a key reused with a different request and a key whose
+// original request has not finished yet, and only the second is worth
+// retrying. See gateway.go and WP-2.3-decisions.md §11.
+const ProblemIdempotencyConflict = "idempotency-conflict"
+
 // writeProblem renders p as application/problem+json.
 func writeProblem(w http.ResponseWriter, p Problem) {
 	if p.Type == "" {
@@ -47,6 +54,12 @@ func problemForError(err error, instance string) Problem {
 		// Supplying translations for a field the schema does not localize is a
 		// bad request body: nothing would ever read them back.
 		return Problem{Status: http.StatusUnprocessableEntity, Title: "field is not localized", Detail: err.Error(), Instance: instance}
+	case errors.Is(err, metadata.ErrIDTaken):
+		// Detail deliberately says nothing beyond "taken". The primary key is
+		// global per table, so naming the holder — or even confirming it is a
+		// live row of this tenant — would turn a caller-supplied id into an
+		// existence oracle across tenants (INV-T1).
+		return Problem{Status: http.StatusConflict, Title: "id already exists", Detail: "the supplied id is already taken", Instance: instance}
 	case errors.Is(err, metadata.ErrRecordNotFound):
 		return Problem{Status: http.StatusNotFound, Title: "record not found", Instance: instance}
 	case errors.Is(err, authz.ErrPermissionDenied):

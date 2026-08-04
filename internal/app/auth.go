@@ -4,6 +4,7 @@ package app
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -32,6 +33,14 @@ func sessionAuthenticator(db *storage.DB) api.Authenticator {
 		}
 		s, err := identity.ValidateSession(r.Context(), db, tok)
 		if err != nil {
+			// ValidateSession already separates "no such session" from "the
+			// database did not answer" (ErrSessionInvalid vs a wrapped driver
+			// error); this is where that distinction has to survive, because
+			// the gateway turns everything else into a 401 and a 401 makes
+			// clients discard credentials and queued work.
+			if !errors.Is(err, identity.ErrSessionInvalid) {
+				return authz.Actor{}, "", fmt.Errorf("%w: %w", api.ErrAuthUnavailable, err)
+			}
 			return authz.Actor{}, "", err
 		}
 		return authz.Actor{TenantID: s.TenantID, UserID: s.UserID}, s.TenantID, nil

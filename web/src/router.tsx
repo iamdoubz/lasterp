@@ -14,6 +14,7 @@ import {
 import { getRecord } from "./api";
 import { useT } from "./i18n";
 import { Account } from "./routes/Account";
+import { Conflicts } from "./routes/Conflicts";
 import { DashboardScreen } from "./routes/DashboardView";
 import { InvoiceDetail } from "./routes/InvoiceDetail";
 import { ObjectDetail } from "./routes/ObjectDetail";
@@ -96,6 +97,16 @@ const accountRoute = createRoute({
   component: Account,
 });
 
+// The conflict tray. A fixed route for the same reason as /account: it is about
+// this device's queued work, not about one object, so there is no :resource to
+// parameterise. Reachable by URL as well as from the shell indicator — a user
+// told "some of your changes were refused" must be able to get back to them.
+const syncRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/sync",
+  component: Conflicts,
+});
+
 const listRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/o/$resource",
@@ -174,6 +185,7 @@ const invoiceRoute = createRoute({
 const routeTree = rootRoute.addChildren([
   indexRoute,
   accountRoute,
+  syncRoute,
   dashboardRoute,
   listRoute,
   newRoute,

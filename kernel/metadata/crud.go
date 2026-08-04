@@ -49,6 +49,12 @@ var ErrValidation = errors.New("metadata: validation failed")
 // (or another tenant's) id.
 var ErrRecordNotFound = errors.New("metadata: record not found")
 
+// ErrIDTaken is returned by Create when the caller supplied an id that
+// already exists. It maps to a 409 whose detail says only that the id is
+// taken: the primary key is global per table, so a fuller answer would tell
+// a caller whether some other tenant holds that row (INV-T1).
+var ErrIDTaken = errors.New("metadata: id already exists")
+
 // NewCRUD builds a CRUD engine for schema.
 func NewCRUD(schema *EffectiveSchema) (*CRUD, error) {
 	if schema.Persistence != PersistenceCRUD {
@@ -92,6 +98,38 @@ func (c *CRUD) validated(rec Record, partial bool) (Record, error) {
 	return out, nil
 }
 
+// recordID resolves the primary key for a new row: the caller's, when it
+// supplied one, and a fresh UUIDv7 otherwise.
+//
+// Honouring a caller-supplied id is what lets an offline client apply a
+// create optimistically and have the row it is looking at *be* the row the
+// server ends up with (WP-2.3-decisions.md §2). The alternative — a
+// provisional local id rewritten on acceptance, and every queued command
+// that references it rewritten too — is the largest single piece of client
+// logic the outbox could have contained, and it buys nothing: this is a
+// UUIDv7 surrogate key, not a sequence. INV-F6's human-visible numbers
+// (invoice numbers) are unaffected; they are still allocated server-side at
+// acceptance.
+//
+// A malformed id is refused rather than quietly replaced. Inventing an id
+// for a caller that sent a bad one means the row it believes it created is
+// not the row that exists — the same silent divergence, arrived at from the
+// other side.
+func recordID(rec Record) (string, error) {
+	raw, present := rec["id"]
+	if !present || raw == nil || raw == "" {
+		return idgen.New(), nil
+	}
+	s, ok := raw.(string)
+	if !ok {
+		return "", fmt.Errorf("%w: field %q must be a UUIDv7 string, got %T", ErrValidation, "id", raw)
+	}
+	if !idgen.IsV7(s) {
+		return "", fmt.Errorf("%w: field %q is not a canonical UUIDv7", ErrValidation, "id")
+	}
+	return s, nil
+}
+
 // Create inserts rec, requiring the "create" permission (authz.Authorize)
 // and recording an audit_log entry in the same transaction as the insert.
 func (c *CRUD) Create(ctx context.Context, db *storage.DB, tenant tenancy.ID, rec Record) (Record, error) {
@@ -112,7 +150,10 @@ func (c *CRUD) Create(ctx context.Context, db *storage.DB, tenant tenancy.ID, re
 		return nil, err
 	}
 
-	id := idgen.New()
+	id, err := recordID(rec)
+	if err != nil {
+		return nil, err
+	}
 	now := time.Now().UTC()
 	table := TableName(c.schema.ObjectName)
 
@@ -144,6 +185,12 @@ func (c *CRUD) Create(ctx context.Context, db *storage.DB, tenant tenancy.ID, re
 		placeholders := strings.TrimSuffix(strings.Repeat("?, ", len(cols)), ", ")
 		query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", table, strings.Join(cols, ", "), placeholders)
 		if _, err := tx.ExecContext(ctx, db.Rebind(query), vals...); err != nil {
+			// A generated table declares no unique constraint but its primary
+			// key (GenerateDDL), so a unique violation here is that key and
+			// nothing else — which only a caller-supplied id can collide with.
+			if storage.IsUniqueViolation(err) {
+				return fmt.Errorf("%w", ErrIDTaken)
+			}
 			return err
 		}
 

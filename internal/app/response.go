@@ -96,7 +96,8 @@ func isConflict(err error) bool {
 	// refused for a legitimate reason (ADR-018 dependency closure) — the caller
 	// needs to see which modules block it, not an opaque 500.
 	var inUse capability.ErrModuleInUse
-	return errors.Is(err, invoicing.ErrNotDraft) ||
+	return errors.Is(err, metadata.ErrIDTaken) ||
+		errors.Is(err, invoicing.ErrNotDraft) ||
 		errors.Is(err, ledger.ErrPeriodNotOpen) ||
 		errors.Is(err, ledger.ErrPeriodNotClosed) ||
 		errors.Is(err, capability.ErrKernelNotDisableable) ||

@@ -7,7 +7,7 @@
 // the seam it plugs into, so it reuses the one place this product talks to its
 // server (cookie credentials, problem+json errors) instead of opening a second.
 
-import { request } from "../api/client.ts";
+import { ApiError, request } from "../api/client.ts";
 import type { FeedPage, ServerRecord } from "./core.ts";
 import type { MetaObject } from "./schema.ts";
 
@@ -26,6 +26,30 @@ export interface SnapshotPage {
   next: string;
 }
 
+/** One stored command, as the drain replays it. Structurally the subset of
+ * `OutboxCommand` a request needs — declared here rather than imported so
+ * outbox.ts depends on this file and not the other way round. */
+export interface ReplayableCommand {
+  commandId: string;
+  method: string;
+  path: string;
+  body: Record<string, unknown> | null;
+}
+
+/** What replaying a command produced.
+ *
+ * A non-2xx is a *result*, not a thrown error: the drain has to read the status
+ * and the problem+json to decide between retrying, filing a conflict, and
+ * accepting. Throwing is reserved for "the request may or may not have been
+ * received", which is the one case where the command must stay queued
+ * (WP-2.3-decisions.md §1). */
+export interface CommandResult {
+  status: number;
+  /** The parsed body: the record on success, the problem document on failure,
+   * and null for a 204. */
+  body: unknown;
+}
+
 /** Transport is the replica's whole dependency on the network. It is an
  * interface so the convergence harness can drive the core against a recorded
  * or mutated feed without a server, which is what makes §8's mutation check
@@ -34,6 +58,8 @@ export interface Transport {
   meta(): Promise<MetaObject[]>;
   snapshot(object: string, after: string, limit: number): Promise<SnapshotPage>;
   changes(after: number, limit: number): Promise<FeedPage>;
+  /** Replay one queued command. */
+  command(command: ReplayableCommand): Promise<CommandResult>;
 }
 
 /** httpTransport talks to a live server. */
@@ -57,6 +83,34 @@ export function httpTransport(): Transport {
         include: "rows",
       });
       return request<FeedPage>(`/api/v1/sync/changes?${params}`);
+    },
+
+    // The whole of WP-2.3-decisions.md §1, in nine lines: a queued command is
+    // replayed as the ordinary request it always was, through the same
+    // `request()` every screen uses, at the same route, with the command_id as
+    // the Idempotency-Key. There is no sync write endpoint to prefer, so INV-S2
+    // ("no privileged sync side door") is not a property under test here — it
+    // is a property there is no way to express a violation of.
+    //
+    // ApiError is unwrapped rather than propagated because a rejection is an
+    // answer: the drain needs the status and the problem document to choose
+    // between retrying, filing a conflict and accepting. A thrown error keeps
+    // its meaning of "the request may not have arrived", which is the only case
+    // that must leave the command queued.
+    async command(command: ReplayableCommand): Promise<CommandResult> {
+      try {
+        const body = await request<unknown>(command.path, {
+          method: command.method,
+          body: command.body ?? undefined,
+          idempotencyKey: command.commandId,
+        });
+        return { status: body === undefined ? 204 : 200, body: body ?? null };
+      } catch (err) {
+        if (err instanceof ApiError) {
+          return { status: err.problem.status, body: err.problem };
+        }
+        throw err;
+      }
     },
   };
 }

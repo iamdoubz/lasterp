@@ -81,8 +81,49 @@ measured against current server state can otherwise pass by construction. Decisi
 [WP-2.2b-decisions.md](notes/WP-2.2b-decisions.md).
 
 Not yet built: the streaming transport (steps 1–3 above are served by cursored polling plus
-an in-process notifier), scope computation (WP-2.4 — entries carry a scope tag, computed
-trivially), and everything upstream (WP-2.3). The replica is **read-only** until then.
+an in-process notifier) and scope computation (WP-2.4 — entries carry a scope tag, computed
+trivially).
+
+## Implementation status (WP-2.3: the outbox)
+
+The replica writes as of **WP-2.3b**, in [`web/src/sync/outbox.ts`](../web/src/sync/outbox.ts).
+One sentence carries the design: **a command is a stored HTTP request, and the drain is a
+replay of it**. `_outbox` holds `{method, path, body, command_id}`; draining means issuing that
+exact request through the same `web/src/api/client.ts` the online UI uses, at the same route.
+
+**There is no sync write endpoint, and that is the decision.** INV-S2 — "offline commands pass
+the identical validation pipeline; no privileged sync side door" — stops being a property to
+test and becomes one there is no way to express a violation of. Three things then fall out
+rather than being built: exactly-once is the gateway's idempotency store, because the
+`command_id` *is* the `Idempotency-Key` (INV-E4); accept-with-rebase is the response body
+applied to the replica; and a rejection is already problem+json, so the tray renders what the
+server said rather than a translation of it.
+
+- **Optimistic apply** writes the row and queues the command in one transaction, with the row's
+  pre-image kept for rollback — a rejected *update* has nothing else to recover from, since
+  server state never changed. Rows carrying unsent changes are flagged in a `_pending` sidecar
+  rather than a column, so the INV-S3 convergence oracle stays a direct equality.
+- **Reconnect order is drain → hydrate → pull**, with WP-2.4's revocation purge after it (a
+  purge that runs first deletes rows queued commands reference).
+- **The server accepts a client-supplied UUIDv7 row id**, so the row a user sees offline *is*
+  the row the server ends up with — no provisional id to rewrite, and no queued command left
+  pointing at something that moved. Document numbers are untouched: INV-F6 still allocates them
+  server-side at acceptance.
+- **The drain stops at the first rejection.** No command runs whose predecessor may have been
+  its precondition; dependent-command chains (§Upstream 4) need no graph to be safe, only to be
+  faster.
+- **A denied `navigator.storage.persist()`** warns before the first write and caps the outbox
+  rather than refusing offline writes outright — the browser can evict the origin without
+  warning, and unsent work is the one thing no re-fetch reconstructs.
+
+Upstream properties **INV-S1** (nothing acknowledged is lost), **INV-S2** and **INV-S4** (every
+command ends accepted or in the tray) are carried by the scenarios WP-2.3b added to the
+simulation harness below, plus
+[`internal/app/sync_outbox_integrity_test.go`](../internal/app/sync_outbox_integrity_test.go).
+Decisions: [WP-2.3-decisions.md](notes/WP-2.3-decisions.md).
+
+The shipped screens still write online-first: routing `ObjectForm` through the outbox needs the
+replica to be the *read* path too, which is one seam away and is not this WP (decisions §13).
 
 ## Guarantees & limits
 - Acknowledged writes: RPO 0 (command accepted ⇔ events durably committed).
@@ -100,4 +141,11 @@ Deterministic simulation harness: N virtual clients × scripted partitions/crash
 
 Two things keep the green tick meaningful. `TestSimulationHarnessDetectsADivergentClient` runs one client of the four against a feed with entries deleted and requires the suite to *fail*. And **every scheduled fault is asserted to have fired**, via a marker the driver writes at the injection point: the first version of this harness injected ten crashes across six rounds on both dialects, fired none of them, and reported green. A fault-injection suite that silently stops injecting is indistinguishable from one that passes.
 
-The upstream properties (INV-S1/S2/S4) need an outbox and land with WP-2.3b, which adds scenarios to this harness rather than building another. Decisions: [WP-2.3-decisions.md](notes/WP-2.3-decisions.md).
+**WP-2.3b added the upstream half** to this same harness rather than building another. Every client now also writes offline between rounds, so the partitioned client of each round is one that queued work it could not send, and the crashed one dies with commands in flight. After the storm the fleet's delivered work is counted **exactly**: too few means a write was lost, too many means one was applied twice, and both fail INV-S1.
+
+One crash window is isolated separately, because nothing else reaches it: the process dies after the server has committed and before the client's record of having sent it is durable (`--kill-after-command`). Recovery must re-send and be deduplicated by the gateway (INV-E4). That is the difference between RPO 0 and "usually fine".
+
+The harness is also what found two defects that were not in this WP's code:
+
+- a `SQLITE_BUSY` on session validation surfaced as **401** rather than a retry, because the gateway mapped every authenticator error to "authentication required" — and a 401 is the one status clients act on destructively (the web client signs out; the drain would have filed queued work as *rejected*). Session validation now retries busy like every transactional path already did, and an unresolvable one is a 503;
+- the crash injection counted `INSERT INTO obj_…`, which an optimistic create also is, so a client scheduled to crash mid-apply died while *queueing* instead — rolling back work and firing the fault nowhere near the window it was aimed at.
