@@ -60,11 +60,16 @@ type replicaRun struct {
 	t      *testing.T
 	e      *env
 	dbPath string
+	// token is the bearer the driver syncs as. It defaults to the env's
+	// fully-granted one; WP-2.4's scope tests override it, because a scope is
+	// computed from the principal and a principal who may read everything has
+	// no scope worth testing.
+	token string
 }
 
 func newReplicaRun(t *testing.T, e *env) *replicaRun {
 	t.Helper()
-	return &replicaRun{t: t, e: e, dbPath: filepath.Join(t.TempDir(), "replica.sqlite3")}
+	return &replicaRun{t: t, e: e, dbPath: filepath.Join(t.TempDir(), "replica.sqlite3"), token: e.token}
 }
 
 // sync runs one full downstream cycle in the driver and returns the replica's
@@ -190,7 +195,7 @@ func (r *replicaRun) exec(faults ...string) ([]byte, string, error) {
 	_, thisFile, _, _ := runtime.Caller(0)
 	driver := filepath.Join(filepath.Dir(thisFile), "..", "..", "web", "src", "sync", "converge-driver.ts")
 
-	args := append([]string{driver, r.e.server.URL, r.e.token, r.dbPath}, faults...)
+	args := append([]string{driver, r.e.server.URL, r.token, r.dbPath}, faults...)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -281,6 +286,14 @@ func TestReplicaNeverReceivesAnotherTenantsRows(t *testing.T) {
 
 			dump := newReplicaRun(t, e).sync(0)
 			for object, rows := range dump {
+				// The replica's own bookkeeping is not tenant-stamped and never
+				// was: `_outbox` and `_conflicts` hold requests, `_hydration`
+				// holds object names. Named explicitly rather than left to pass
+				// by being empty — which is how `_hydration` slipped in.
+				switch object {
+				case "_outbox", "_conflicts", "_pending", "_hydration":
+					continue
+				}
 				for _, row := range rows {
 					if got := fmt.Sprint(row["tenant_id"]); got != string(e.tenant) {
 						t.Fatalf("%s row %v carries tenant %s, want %s — a replica holding "+
@@ -391,6 +404,16 @@ func assertConverged(t *testing.T, e *env, dump map[string][]map[string]any, whe
 // API agrees with itself.
 func convergence(t *testing.T, e *env, dump map[string][]map[string]any) (bool, string) {
 	t.Helper()
+	return convergenceIn(t, e, dump, nil)
+}
+
+// convergenceIn is convergence over a named set of objects. WP-2.4 needs it:
+// a scoped principal's replica is *meant* to be missing everything outside its
+// scope, so an oracle that walks every object the server holds would report the
+// scope itself as divergence. A nil scope means every object, which is what
+// every caller before WP-2.4 wants and what convergence passes.
+func convergenceIn(t *testing.T, e *env, dump map[string][]map[string]any, scope []string) (bool, string) {
+	t.Helper()
 	ctx := e.actorCtx(t, fullGrants())
 
 	schemas, err := crudObjects()
@@ -400,6 +423,9 @@ func convergence(t *testing.T, e *env, dump map[string][]map[string]any) (bool, 
 
 	var problems []string
 	for _, schema := range schemas {
+		if scope != nil && !contains(scope, schema.ObjectName) {
+			continue
+		}
 		crud, err := metadata.NewCRUD(schema)
 		if err != nil {
 			t.Fatalf("NewCRUD %s: %v", schema.ObjectName, err)

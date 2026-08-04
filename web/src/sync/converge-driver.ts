@@ -171,6 +171,10 @@ const transport: Transport = {
     return dropNth > 0 ? withDroppedEntries(page) : page;
   },
 
+  async scope(): Promise<string[]> {
+    return (await get<{ data: string[] }>("/api/v1/sync/scope")).data;
+  },
+
   // The drain, over the wire, into the ordinary route. Note what is absent:
   // there is no sync command endpoint to call, because WP-2.3-decisions.md §1
   // did not build one — this issues the same POST /api/v1/contact the online UI
@@ -317,6 +321,10 @@ try {
   dump["_outbox"] = pendingCommands(store);
   dump["_conflicts"] = conflicts(store);
   dump["_pending"] = store.query(`SELECT * FROM _pending ORDER BY object, row_id`);
+  // WP-2.4: `_hydration` is what this replica claims to hold, so it is how the
+  // scope tests read the re-shape — an object purged by a revocation leaves
+  // here as well as leaving its table (WP-2.4-decisions.md §3).
+  dump["_hydration"] = store.query(`SELECT * FROM _hydration ORDER BY object`);
   process.stdout.write(JSON.stringify(dump));
 } finally {
   store.close();

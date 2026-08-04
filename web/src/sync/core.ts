@@ -254,6 +254,24 @@ export function applyPage(store: Store, index: SchemaIndex, page: FeedPage): num
       for (const record of records) applyRecord(store, schema, record);
     }
 
+    // The server's own resume position. Until WP-2.4 the cursor could be
+    // derived entirely from the entries in the page, and deriving it was the
+    // conservative choice. A scope filter ends that: the entries this page's
+    // cursor covers may have been filtered out before it was sent, so there is
+    // nothing local to derive from and the server's number is the only one that
+    // knows what was skipped (WP-2.4-decisions.md §7).
+    //
+    // Ahead is taken, behind is fatal. A page reporting a resume point *below*
+    // an entry it just delivered would strand every entry in between on the
+    // next request — the exact failure INV-S5 exists to prevent — so it fails
+    // loudly here rather than being quietly clamped.
+    if (page.cursor < previous) {
+      throw new Error(
+        `sync: feed page resumes at ${page.cursor}, behind entry ${previous} it delivered`,
+      );
+    }
+    if (page.cursor > cursor) cursor = page.cursor;
+
     store.exec(`UPDATE _sync_state SET cursor = ? WHERE scope = ?`, [cursor, SCOPE]);
     return cursor;
   });

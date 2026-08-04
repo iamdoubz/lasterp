@@ -138,6 +138,51 @@ func Can(ctx context.Context, db *storage.DB, actor Actor, object, action string
 	return n > 0, nil
 }
 
+// GrantedObjects lists, sorted, every object actor holds the given action on
+// through any assigned role.
+//
+// It is Can inverted: one query instead of one per candidate object, which is
+// what a caller building a *set* needs. WP-2.4's sync scope is that caller —
+// "which objects may this principal read" is asked on every feed page, and
+// asking it object-by-object is a query per object per request.
+//
+// It is not an authorization decision and nothing may treat it as one: Can and
+// Authorize remain the only gates (INV-T2). This answers a question about
+// grants; a gate answers a question about one access.
+func GrantedObjects(ctx context.Context, db *storage.DB, actor Actor, action string) ([]string, error) {
+	if !actor.valid() {
+		return nil, ErrNoActor
+	}
+	if action == "" {
+		return nil, errors.New("authz: action is required")
+	}
+	var objects []string
+	err := tenancy.WithTenant(ctx, db, actor.TenantID, func(ctx context.Context, tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, db.Rebind(`
+			SELECT DISTINCT rp.object FROM role_permissions rp
+			JOIN user_roles ur ON ur.role_id = rp.role_id AND ur.tenant_id = rp.tenant_id
+			WHERE rp.tenant_id = ? AND ur.user_id = ? AND rp.action = ?
+			ORDER BY rp.object`),
+			string(actor.TenantID), string(actor.UserID), action)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = rows.Close() }()
+		for rows.Next() {
+			var object string
+			if err := rows.Scan(&object); err != nil {
+				return err
+			}
+			objects = append(objects, object)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, fmt.Errorf("authz: list granted objects: %w", err)
+	}
+	return objects, nil
+}
+
 // Authorize is the single choke point write paths call before mutating
 // anything: it requires both an attributable actor (INV-T4, via
 // ActorFromContext) and an explicit permission grant (INV-T2, via Can) —

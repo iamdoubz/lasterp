@@ -34,7 +34,7 @@ func TestAppendPublishesToChangeFeed(t *testing.T) {
 				ids = append(ids, ev.ID)
 			}
 
-			changes, err := changefeed.Read(ctx, db, tenant, 0, 100)
+			changes, err := changefeed.Read(ctx, db, tenant, 0, 100, nil)
 			if err != nil {
 				t.Fatalf("read feed: %v", err)
 			}
@@ -81,7 +81,7 @@ func TestReplayedCommandPublishesOnce(t *testing.T) {
 				t.Fatalf("replay produced a new event %d, want the original %d", second.ID, first.ID)
 			}
 
-			changes, err := changefeed.Read(ctx, db, tenant, 0, 100)
+			changes, err := changefeed.Read(ctx, db, tenant, 0, 100, nil)
 			if err != nil {
 				t.Fatalf("read feed: %v", err)
 			}

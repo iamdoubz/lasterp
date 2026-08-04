@@ -80,9 +80,8 @@ entries and requires convergence to *fail*, because an apply loop writing curren
 measured against current server state can otherwise pass by construction. Decisions:
 [WP-2.2b-decisions.md](notes/WP-2.2b-decisions.md).
 
-Not yet built: the streaming transport (steps 1–3 above are served by cursored polling plus
-an in-process notifier) and scope computation (WP-2.4 — entries carry a scope tag, computed
-trivially).
+Not yet built here: the streaming transport (steps 1–3 above are served by cursored polling
+plus an in-process notifier). Scope computation landed in WP-2.4, below.
 
 ## Implementation status (WP-2.3: the outbox)
 
@@ -124,6 +123,45 @@ Decisions: [WP-2.3-decisions.md](notes/WP-2.3-decisions.md).
 
 The shipped screens still write online-first: routing `ObjectForm` through the outbox needs the
 replica to be the *read* path too, which is one seam away and is not this WP (decisions §13).
+
+## Implementation status (WP-2.4: scopes)
+
+A **scope** is the set of scope keys a principal may replicate, computed from their role
+grants: the objects they hold `read` on, intersected with what is replicable (a CRUD surface
+exists) and what the tenant has enabled. `GET /api/v1/sync/scope` returns it, and
+`GET /api/v1/sync/changes` is filtered to it — **pointers included**.
+
+That last word is the change. WP-2.1 conveyed every pointer under one `sync:read` grant and
+bounded the disclosure by argument ("names and ids, not contents"); WP-2.2 §3 kept the
+asymmetry on purpose. Both are superseded: `sync:read` is now the right to follow *your own*
+scope, and the objection that suppressing pointers would make cursors non-contiguous is
+answered by §7 below rather than lived with.
+
+- **Re-shape is a diff, and it has no state.** `_hydration` already records what a replica
+  holds, so the client compares the server's scope against it: what left is purged, what
+  arrived gets a `_hydration` row and is filled by the next hydration. There is no scope
+  version and no server-side purge queue — docs/04 §Downstream 4 describes both, and a client
+  that fetches the list on every reconnect gets the same behaviour from one round trip it was
+  making anyway ([decisions](notes/WP-2.4-decisions.md) §2, §3).
+- **A purge takes the server's data and never the user's.** It deletes replicated rows and
+  nothing from `_outbox`, `_conflicts` or `_pending`. The row is a copy of something the
+  server still holds; the queued command is work no re-fetch reconstructs. The re-shape
+  therefore runs **after the drain** (WP-2.3 §4's rule, honoured) and **before the hydrate**
+  (its refinement — a newly entitled object has no `_hydration` row to fill until the
+  re-shape has added one). Order: `open → drain → reshape → hydrate → pull`.
+- **The tray survives a revocation.** `_conflicts` carries the command's own body and the
+  server's problem+json, so work refused *because* access was withdrawn still renders after
+  its rows are gone. That was already true and is now tested, because nothing else would
+  notice a later change that made the tray read the replica instead.
+- **A filtered page still advances the cursor.** A scoped page can be short or empty while the
+  feed has more, so the handler reports the feed's high-water mark — read *before* the page,
+  which is what makes it safe under the ordering lock — as the resume position, and the client
+  takes the server's cursor when it is ahead and refuses it when it is behind an entry the
+  same page delivered.
+
+Row-level scopes ("my region's customers, open documents last 24 months") are **not** built:
+they need `authz` condition evaluation, which does not exist, and they subdivide these keys
+rather than replacing them when it does. Decisions: [WP-2.4-decisions.md](notes/WP-2.4-decisions.md).
 
 ## Guarantees & limits
 - Acknowledged writes: RPO 0 (command accepted ⇔ events durably committed).

@@ -19,6 +19,7 @@ import {
 } from "./core.ts";
 import type { SchemaIndex } from "./core.ts";
 import { drain } from "./outbox.ts";
+import { reshape } from "./reshape.ts";
 import { replicableObjects, type MetaObject } from "./schema.ts";
 import { MAX_PAGE, type Transport } from "./transport.ts";
 import type { Store } from "./port.ts";
@@ -145,9 +146,14 @@ function hydrationStarted(store: Store): boolean {
  * returns the cursor it reached.
  *
  * A short page means caught up: the server returns up to `limit` entries and
- * fewer only when there are no more. An empty page leaves the cursor where it
- * was (the server echoes the caller's own cursor rather than zero, which would
- * rewind a caught-up client to the beginning). */
+ * fewer only when there are no more *in scope*.
+ *
+ * An empty page is applied rather than skipped, which it was not before WP-2.4.
+ * With a scope filter the server can have delivered nothing and still moved the
+ * resume position past everything it filtered out, and dropping that page on
+ * the floor would leave the client re-scanning the same range on every poll for
+ * ever (WP-2.4-decisions.md §7). Committing an empty page is one transaction
+ * that writes one number. */
 export async function pull(
   store: Store,
   index: SchemaIndex,
@@ -160,8 +166,6 @@ export async function pull(
   let cursor = currentCursor(store);
   for (;;) {
     const page = await transport.changes(cursor, PAGE_SIZE);
-    if (page.data.length === 0) return cursor;
-
     cursor = applyPage(store, index, page);
     if (page.data.length < PAGE_SIZE) return cursor;
   }
@@ -185,12 +189,17 @@ export async function pull(
  * there is nothing to drain anyway. It is in that position on principle: the
  * outbox is the one thing in this replica hydration cannot reconstruct.
  *
- * WP-2.4's revocation purge goes **after** the drain, for the reason §4 records
- * — a purge that runs first deletes rows that queued commands reference. This
- * WP does not build the purge; it fixes the contract 2.4 has to honour. */
+ * The re-shape goes **after the drain**, which is the load-bearing half of §4's
+ * rule: a purge that runs first deletes rows that queued commands reference.
+ * It goes **before the hydrate**, which refines the rest of it — a newly
+ * entitled object has no `_hydration` row for hydration to act on until the
+ * re-shape has added one, and the purge gains nothing from waiting for the pull
+ * now that the server no longer sends out-of-scope rows at all
+ * (WP-2.4-decisions.md §4). */
 export async function sync(store: Store, transport: Transport): Promise<number> {
   const index = await open(store, transport);
   await drain(store, index, transport);
+  reshape(store, await transport.scope());
   await hydrate(store, index, transport);
   return pull(store, index, transport);
 }
