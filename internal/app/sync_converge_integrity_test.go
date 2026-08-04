@@ -5,9 +5,9 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"math/rand"
 	"net/http"
@@ -71,25 +71,20 @@ func newReplicaRun(t *testing.T, e *env) *replicaRun {
 // tables. dropNth > 0 makes the driver discard every Nth feed entry.
 func (r *replicaRun) sync(dropNth int) map[string][]map[string]any {
 	r.t.Helper()
-
-	_, thisFile, _, _ := runtime.Caller(0)
-	driver := filepath.Join(filepath.Dir(thisFile), "..", "..", "web", "src", "sync", "converge-driver.ts")
-
-	args := []string{driver, r.e.server.URL, r.e.token, r.dbPath}
 	if dropNth > 0 {
-		args = append(args, fmt.Sprintf("--drop-nth=%d", dropNth))
+		return r.syncWithArgs(fmt.Sprintf("--drop-nth=%d", dropNth))
 	}
+	return r.syncWithArgs()
+}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "node", args...)
-	out, err := cmd.Output()
+// syncWithArgs runs the driver under arbitrary fault flags and returns the
+// replica's tables. The driver is expected to exit 0: a partition is a state it
+// reports, not a failure it propagates (WP-2.3a).
+func (r *replicaRun) syncWithArgs(faults ...string) map[string][]map[string]any {
+	r.t.Helper()
+
+	out, stderr, err := r.exec(faults...)
 	if err != nil {
-		var stderr string
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			stderr = string(exitErr.Stderr)
-		}
 		// Not a skip. docs/19: "No green gauntlet, no merge — no exceptions."
 		// INV-S3 lives in TypeScript because ADR-017 put it there, so a
 		// gauntlet that cannot run Node cannot prove it, and saying so loudly
@@ -104,6 +99,109 @@ func (r *replicaRun) sync(dropNth int) map[string][]map[string]any {
 		r.t.Fatalf("replica driver emitted unparseable output: %v\n%s", err, out)
 	}
 	return dump
+}
+
+// syncExpectingCrash runs the driver with --kill-in-apply and reports whether
+// it actually died there. There is no dump: the process exits mid-transaction,
+// which is the whole point.
+//
+// It returns a bool rather than failing, because "did the crash happen where we
+// aimed it" is a property the caller asserts — a driver that completed normally
+// means the injection point moved and the crash tests are proving nothing.
+func (r *replicaRun) syncExpectingCrash(at int) bool {
+	r.t.Helper()
+	out := r.syncFaulted(fmt.Sprintf("--kill-in-apply=%d", at))
+	if out.err != nil {
+		r.t.Fatal(out.err)
+	}
+	return out.crashed
+}
+
+// faultOutcome says which injected faults actually fired. It exists because a
+// fault that quietly does not fire is the failure mode of a fault-injection
+// harness: the suite still runs, still passes, and no longer tests anything it
+// claims to. Every caller that schedules a fault asserts the matching field.
+type faultOutcome struct {
+	crashed     bool
+	partitioned bool
+	// stderr is kept so a fault that did not fire can say what the driver did
+	// instead. Without it the failure is "the crash did not happen" with no
+	// way to tell a missed injection point from a driver that never got there.
+	stderr string
+	// err is set when the driver failed for a reason that was not an injected
+	// fault. It is returned rather than fataled because syncFaulted runs on a
+	// spawned goroutine and t.Fatalf is only valid on the test's own — calling
+	// it here would Goexit the wrong goroutine and the test would carry on.
+	err error
+}
+
+// syncFaulted runs the driver under fault flags and reports what fired. The
+// dump is discarded: callers that need one sync cleanly afterwards, because a
+// mid-fault replica is legitimately partway and not something to compare.
+//
+// A driver that exits non-zero *without* having emitted a fault marker failed
+// for a real reason, and that is reported in the outcome's err. The distinction
+// matters more than it looks: an injected crash also exits non-zero with no
+// output, so a harness that simply tolerated non-zero exits would read a driver
+// that could not even reach the server as a successful fault injection, and
+// every scenario built on it would be measuring nothing.
+//
+// It is safe to call from a goroutine — nothing here touches t. Callers assert
+// the outcome on the test's own goroutine (see assertFaults).
+func (r *replicaRun) syncFaulted(faults ...string) faultOutcome {
+	_, stderr, err := r.exec(faults...)
+	out := faultOutcome{
+		crashed:     strings.Contains(stderr, driverCrashMarker),
+		partitioned: strings.Contains(stderr, driverPartitionMarker),
+		stderr:      stderr,
+	}
+	if err != nil && !out.crashed {
+		out.err = fmt.Errorf("replica driver failed for a reason that was not an injected "+
+			"fault: %w\nflags: %v\nstderr: %s", err, faults, stderr)
+	}
+	return out
+}
+
+// The markers converge-driver.ts writes to stderr when a fault fires.
+//
+// The exit *code* is not checked for the crash, because there isn't a portable
+// one: exiting from inside a synchronous SQLite call trips a libuv assertion on
+// Windows (status 0xc0000409) and exits cleanly with 9 on Linux. A bare
+// "non-zero exit" would be portable but far too loose — a driver that failed
+// for a real reason also exits non-zero with no dump, and the crash tests would
+// then pass on a broken driver. A marker is written only from the injection
+// point itself, so it says the fault happened where it was aimed.
+const (
+	driverCrashMarker     = "lasterp-sync-crash-injected"
+	driverPartitionMarker = "lasterp-sync-partition-injected"
+)
+
+// exec runs the driver once and returns stdout, stderr, and the run error.
+//
+// stderr is captured with an explicit buffer rather than read off
+// exec.ExitError.Stderr, because that field is only populated when the command
+// *fails*. A partition is reported on stderr by a driver that then exits 0, so
+// the ExitError path would have made every partition invisible — which is
+// exactly how the partition assertion first came to pass on a fault that had
+// never fired.
+func (r *replicaRun) exec(faults ...string) ([]byte, string, error) {
+	r.t.Helper()
+
+	_, thisFile, _, _ := runtime.Caller(0)
+	driver := filepath.Join(filepath.Dir(thisFile), "..", "..", "web", "src", "sync", "converge-driver.ts")
+
+	args := append([]string{driver, r.e.server.URL, r.e.token, r.dbPath}, faults...)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	var stdout, stderr bytes.Buffer
+	cmd := exec.CommandContext(ctx, "node", args...)
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+
+	return stdout.Bytes(), stderr.String(), err
 }
 
 // --- the property ---
