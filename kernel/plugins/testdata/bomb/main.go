@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 // The memory bomb: it allocates until something stops it.
 //
 // Containment is the linear-memory page cap. The module traps when its own

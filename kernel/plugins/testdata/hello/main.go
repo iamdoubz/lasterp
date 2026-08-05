@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 // The well-behaved plugin: it does exactly what its manifest declares.
 //
 // It exists so the containment tests are not the only evidence — a sandbox

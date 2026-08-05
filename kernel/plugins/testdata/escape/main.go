@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 // The escape attempt: a plugin reaching for the machine rather than the API.
 //
 // It tries the filesystem, the environment and the network — the three things

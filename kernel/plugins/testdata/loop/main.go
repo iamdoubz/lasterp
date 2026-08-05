@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 // The runaway plugin: it never returns.
 //
 // Nothing in the sandbox can ask it to stop, which is the point — containment
