@@ -154,8 +154,20 @@ var Catalog = []Invariant{
 	{ID: "INV-K1", Title: "Secret material is never persisted, logged, emitted or replicated in plaintext", Layer: LayerStorage, TestRequired: true},
 
 	// Extension & autonomy (INV-X) — Phase 3 / Phase 6.
-	{ID: "INV-X1", Title: "Plugins touch data only via capability-checked host functions — no ambient authority", Layer: LayerPipeline, Note: "lands with WP-3.1 plugin host"},
-	{ID: "INV-X2", Title: "Plugin/hook failure never corrupts or partially commits a transaction", Layer: LayerPipeline, Note: "lands with WP-3.1 plugin host"},
+	// INV-X1 flips in WP-3.1a. Its enforcement is stronger than "the host
+	// function checks a capability": the host-function *table* is built from
+	// the approved capabilities, so a module importing something it was not
+	// granted cannot be instantiated — it is refused before it runs an
+	// instruction (TestUngrantedHostFunctionsCannotEvenBeImported). The
+	// sandbox around it mounts no filesystem, exports no environment and
+	// allows no hosts, which the escape corpus member measures by *reporting*
+	// each attempt rather than merely failing, so a plugin that crashed early
+	// cannot be mistaken for containment.
+	{ID: "INV-X1", Title: "Plugins touch data only via capability-checked host functions — no ambient authority", Layer: LayerPipeline, TestRequired: true},
+	// INV-X2 stays with WP-3.1b: there is no hook running inside a transaction
+	// yet, so nothing this host does can partially commit one. Claiming it here
+	// would be claiming a property nothing can currently violate.
+	{ID: "INV-X2", Title: "Plugin/hook failure never corrupts or partially commits a transaction", Layer: LayerPipeline, Note: "lands with WP-3.1b hook dispatch"},
 	{ID: "INV-X3", Title: "Agent/AI writes go through the same command pipeline, permissions, and gates as humans", Layer: LayerPipeline, Note: "lands with WP-3.4 MCP server"},
 	{ID: "INV-X4", Title: "No autonomous process can modify invariant-enforcement code, this catalog, or its tests", Layer: LayerPipeline, Note: "lands with Phase 6 self-evolution (ADR-014)"},
 	{ID: "INV-X5", Title: "Migration/import writes obey every invariant; bulk paths get batching, not bypasses", Layer: LayerPipeline, Note: "lands with WP-7.x migration factory"},

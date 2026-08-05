@@ -35,4 +35,18 @@ if [ "$fail" -ne 0 ]; then
   echo "SPDX lint failed" >&2
   exit 1
 fi
+
+# `git ls-files` sees tracked files only, so a green run here says nothing about
+# source you have written but not staged — and CI checks it the moment you
+# commit. That gap turned a local "SPDX lint OK" into a red CI run on WP-3.1a
+# (five new corpus files, all unstaged when the check ran). Warn rather than
+# fail: an unstaged scratch file is not an error, but silence about it is how
+# the trap works.
+untracked=$(git ls-files -o --exclude-standard -- '*.go' '*.ts' '*.tsx' '*.js' \
+  ':!:*_test.go' ':!:*.test.ts' ':!:*.test.tsx' | grep -v -e '/node_modules/' -e '/dist/' || true)
+if [ -n "$untracked" ]; then
+  echo "note: not checked because they are untracked (CI will check them once committed):" >&2
+  echo "$untracked" | sed 's/^/  /' >&2
+fi
+
 echo "SPDX lint OK"

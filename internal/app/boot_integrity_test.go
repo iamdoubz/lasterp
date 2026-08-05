@@ -419,6 +419,9 @@ func fullGrants() map[string][]string {
 		// The vault, likewise (WP-3.0): one power, and no read permission
 		// because no route returns a value.
 		"secret": {"manage"},
+		// Plugins (WP-3.1a): installing untrusted code and running it are
+		// different powers.
+		"plugin": {"manage", "invoke"},
 	}
 }
 
