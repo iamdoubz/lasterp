@@ -135,6 +135,24 @@ var Catalog = []Invariant{
 	// protection of the replica itself is ADR-021 and WP-4.8.
 	{ID: "INV-D1", Title: "A device marked wiped is refused on every authenticated path", Layer: LayerPipeline, TestRequired: true},
 
+	// Secret material (INV-K) — Phase 3, WP-3.0.
+	//
+	// Nothing already in this catalog covered "this value must never be stored
+	// in the clear": INV-T1 is cross-tenant reads and INV-T4 is attribution.
+	// The vault is invariant-bearing code, so it registers its own
+	// (WP-3.0-decisions.md §7). K is for key material; P is left free for
+	// docs/20's privacy invariants.
+	//
+	// The load-bearing half is structural rather than behavioural, in the shape
+	// of WP-2.3b's TestNoSyncWriteEndpointExists: no route returns secret
+	// material, asserted against the live mux and the action table, so adding a
+	// reveal endpoint fails CI rather than review. The rest is measured where
+	// plaintext could plausibly surface — the row itself, the audit log, the
+	// event store, the change feed, a replica hydration snapshot — with the
+	// known plaintext searched for in both raw and base64 form, since the
+	// columns are base64 (§10).
+	{ID: "INV-K1", Title: "Secret material is never persisted, logged, emitted or replicated in plaintext", Layer: LayerStorage, TestRequired: true},
+
 	// Extension & autonomy (INV-X) — Phase 3 / Phase 6.
 	{ID: "INV-X1", Title: "Plugins touch data only via capability-checked host functions — no ambient authority", Layer: LayerPipeline, Note: "lands with WP-3.1 plugin host"},
 	{ID: "INV-X2", Title: "Plugin/hook failure never corrupts or partially commits a transaction", Layer: LayerPipeline, Note: "lands with WP-3.1 plugin host"},

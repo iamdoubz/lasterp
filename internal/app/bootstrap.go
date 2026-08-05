@@ -51,6 +51,10 @@ var adminGrants = map[string][]string{
 	// to follow your own scope, `device:manage` is the right to destroy what
 	// someone else's machine holds.
 	"device": {"read", "manage"},
+	// The vault has one power, not a CRUD set (WP-3.0): `secret:manage` is the
+	// right to store, list and delete credentials. There is no read permission
+	// because there is no route that returns a value.
+	"secret": {"manage"},
 }
 
 // ErrTenantExists is returned when the tenant is already provisioned, so

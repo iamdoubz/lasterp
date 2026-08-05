@@ -55,6 +55,30 @@ Both `migrate` and `harden` are idempotent, so they belong in every deploy rathe
 
 **SQLite/solo mode has no roles** and is a single trusted process (ADR-005); `harden` is a no-op there and `doctor` says so rather than implying a separation that does not exist.
 
+## Secrets key file (required before the vault can store anything — WP-3.0)
+
+The secrets vault (docs/08 §Data protection) seals every stored credential under a per-secret data key, and wraps that data key with a **key-encryption key the deployment owns**. `LASTERP_SECRETS_KEYFILE` names the file holding it:
+
+```sh
+lasterp secrets init -keyfile /etc/lasterp/lasterp.keys   # one fresh key, mode 0600, never overwrites
+export LASTERP_SECRETS_KEYFILE=/etc/lasterp/lasterp.keys
+lasterp serve
+```
+
+**Back that file up, and keep it out of the database backup.** It is the one piece of a LastERP deployment with no recovery path: the vault's ciphertext is worthless without it, which is the point, and it is equally worthless *to you*. Nothing generates a key file implicitly — a silently created KEK is discovered at restore time by someone holding a database backup and no key ([WP-3.0-decisions.md](notes/WP-3.0-decisions.md) §3).
+
+With no key file the server still starts and the vault's routes still answer: storing a secret returns `503` with `type: "secrets-no-key-source"` naming the variable to set, and listing still works so an operator can see what a lost key file cost them.
+
+Rotating the KEK — add the new key, point `current` at it, re-wrap, and only then remove the old one:
+
+```sh
+# edit the key file: add `2026-09-a = <base64 32 bytes>`, set `current = 2026-09-a`
+lasterp secrets rotate -tenant acme          # re-wraps that tenant's data keys
+# the old key stays readable until every row has moved; remove it last
+```
+
+Rotation re-wraps the data keys and never touches the payloads, so it is cheap and re-runnable; a crashed run is resumed by running it again. One tenant per invocation.
+
 ## Upgrades
 - Expand → migrate → contract schema migrations only; app N and N+1 must both run against the transitional schema (zero-downtime rolling deploys).
 - **Run `lasterp migrate` then `lasterp harden` as the owner before rolling the new version**, and keep serving as the application role (see above).
