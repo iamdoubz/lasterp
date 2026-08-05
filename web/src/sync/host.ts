@@ -8,6 +8,7 @@
 // transport without a screen changing (WP-1.5-decisions.md §1).
 
 import type { Command, Conflict } from "./outbox.ts";
+import type { MetaObject } from "./schema.ts";
 import type { SyncCommand, SyncResponse, SyncStatus } from "./protocol.ts";
 
 /** rehydrate turns the worker's serialised error back into the type the shell
@@ -57,6 +58,11 @@ export interface SyncClient {
   sync(): Promise<number>;
   status(): Promise<SyncStatus>;
   list<T = Record<string, unknown>>(object: string): Promise<T[]>;
+  /** Ids of rows with unsent changes, for the pending flag docs/04 §Upstream 1
+   * describes. */
+  pending(object: string): Promise<string[]>;
+  /** The cached schema, so the shell can render offline. */
+  meta(): Promise<MetaObject[]>;
   /** Queue a write and apply it optimistically. Rejects with OutboxFull when an
    * unpersisted replica is at its cap. */
   write(command: Command): Promise<void>;
@@ -119,6 +125,8 @@ export function startReplica(spawn: () => WorkerLike = spawnWorker): SyncClient 
     sync: () => send<number>({ kind: "sync" }),
     status: () => send<SyncStatus>({ kind: "status" }),
     list: <T>(object: string) => send<T[]>({ kind: "list", object }),
+    pending: (object: string) => send<string[]>({ kind: "pending", object }),
+    meta: () => send<MetaObject[]>({ kind: "meta" }),
     write: (command: Command) => send<void>({ kind: "write", command }),
     conflicts: () => send<Conflict[]>({ kind: "conflicts" }),
     discard: (commandId: string) => send<void>({ kind: "discard", commandId }),

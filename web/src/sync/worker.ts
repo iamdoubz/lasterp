@@ -14,12 +14,13 @@
 
 import { openOpfsStore, requestPersistence, ReplicaLockedError, wipePool } from "./adapters/opfs.ts";
 import { DeviceWipedError } from "./wipe.ts";
-import { currentCursor, type SchemaIndex } from "./core.ts";
+import { cachedMeta, currentCursor, type SchemaIndex } from "./core.ts";
 import {
   conflicts,
   discardConflict,
   enqueue,
   outboxDepth,
+  pendingRows,
   UNPERSISTED_OUTBOX_LIMIT,
 } from "./outbox.ts";
 import { hydrated, open, sync } from "./replica.ts";
@@ -35,6 +36,21 @@ interface Replica {
 
 let replicaState: Replica | undefined;
 let persisted = false;
+
+/** inFlightSync coalesces overlapping syncs into one.
+ *
+ * Several things legitimately ask to catch up at once — a screen mounting, a
+ * write completing, the network returning — and without this each becomes its
+ * own drain. Two drains replaying the same queued command send it twice with
+ * the same Idempotency-Key, and the loser gets a 409 `idempotency-conflict`.
+ * That is *handled* (the drain treats it as retryable, WP-2.3-decisions.md §11)
+ * so nothing is lost or duplicated — the gateway's reserve-first store is doing
+ * exactly its job — but it is wasted work and it makes "the write reached the
+ * server" hard to observe from outside. Found by the invoice e2e spec, which
+ * waits on the create response and saw the loser.
+ *
+ * Callers all await the same promise, so a sync is never skipped, only shared. */
+let inFlightSync: Promise<number> | undefined;
 const transport = httpTransport();
 
 /** replica opens the database and generates its schema, once per worker.
@@ -85,7 +101,10 @@ async function handle(request: SyncRequest): Promise<unknown> {
   switch (request.kind) {
     case "sync":
       try {
-        return await sync((await replica()).store, transport);
+        inFlightSync ??= sync((await replica()).store, transport).finally(() => {
+          inFlightSync = undefined;
+        });
+        return await inFlightSync;
       } catch (err) {
         // sync() has already emptied the tables by the time it rethrows; this
         // is the half that needs the adapter, which the core deliberately
@@ -113,6 +132,16 @@ async function handle(request: SyncRequest): Promise<unknown> {
       // built it, so a request for an object with no table is a missing-table
       // error rather than an injection surface.
       return store.query(`SELECT * FROM ${tableName(request.object)} ORDER BY id`);
+    }
+
+    case "meta": {
+      const { store } = await replica();
+      return cachedMeta(store) ?? [];
+    }
+
+    case "pending": {
+      const { store } = await replica();
+      return pendingRows(store, request.object);
     }
 
     case "write": {

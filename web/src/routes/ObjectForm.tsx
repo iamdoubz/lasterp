@@ -1,17 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useState, type FormEvent } from "react";
 
-import {
-  ApiError,
-  createRecord,
-  idempotencyKey,
-  updateRecord,
-  type MetaObject,
-  type Record_,
-} from "../api";
+import { type MetaObject, type Record_ } from "../api";
 import { useI18n } from "../i18n";
 import {
   FieldControl,
@@ -22,6 +14,8 @@ import {
   objectLabel,
   submittable,
 } from "../meta/render";
+import { newId } from "../sync/ids";
+import { useWriteRecord } from "../sync/ReplicaContext";
 import { Alert, Button, Field } from "../ui";
 
 interface Props {
@@ -36,7 +30,6 @@ export function ObjectForm({ object, id, initial }: Props) {
   const { t, label } = useI18n();
   const name = objectLabel(object.name, label);
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
   // editableFields already applies the schema's field order; groupFields then
   // splits it into sections without disturbing that order within each.
   const groups = groupFields(editableFields(object.fields));
@@ -46,30 +39,44 @@ export function ObjectForm({ object, id, initial }: Props) {
     ...(initial ?? {}),
   }));
 
-  // One key per mounted form, not per submit: a retry after a network blip is
-  // the same logical write and must not create a second record (ADR-009).
-  const [writeKey] = useState(idempotencyKey);
+  // One id per mounted form, not per submit: a retry after a network blip is
+  // the same logical write and must not create a second record. That reasoning
+  // is WP-1.5's and survives verbatim; only the identifier changed. The
+  // command_id **is** the Idempotency-Key when the drain replays this
+  // (WP-2.3-decisions.md §1), so the property is now enforced by the outbox
+  // rather than by this component remembering to hold a key.
+  const [commandId] = useState(newId);
+  // For a create the client owns the row id (WP-2.3-decisions.md §2), so the
+  // row the user sees offline is the row the server ends up with — and an edit
+  // made before it has ever been sent has something stable to target.
+  const [newRowId] = useState(newId);
+  const rowId = id ?? newRowId;
 
-  const save = useMutation({
-    mutationFn: (body: Record_) =>
-      id
-        ? updateRecord(object.resource, id, body, writeKey)
-        : createRecord(object.resource, body, writeKey),
-    onSuccess: async (saved) => {
-      await queryClient.invalidateQueries({ queryKey: ["records", object.resource] });
-      navigate({
-        to: "/o/$resource/$id",
-        params: { resource: object.resource, id: String(saved.id ?? id ?? "") },
-      });
-    },
-  });
+  // The outbox, not the API — there is no online variant. A command is a stored
+  // HTTP request replayed through the ordinary route, so saving online and
+  // saving offline are the same code reaching the same endpoint; only the delay
+  // before the drain differs (WP-2.7-decisions.md §3).
+  const save = useWriteRecord(object.name);
 
   function submit(e: FormEvent) {
     e.preventDefault();
-    save.mutate(submittable(object.fields, values));
+    const body = submittable(object.fields, values);
+    save.mutate(
+      {
+        commandId,
+        method: id ? "PATCH" : "POST",
+        object: object.name,
+        rowId,
+        // The id travels in the body on a create: it is the server accepting a
+        // client-supplied row id, not a path parameter.
+        body: id ? body : { ...body, id: rowId },
+      },
+      {
+        onSuccess: () =>
+          navigate({ to: "/o/$resource/$id", params: { resource: object.resource, id: rowId } }),
+      },
+    );
   }
-
-  const problem = save.error instanceof ApiError ? save.error.problem : undefined;
 
   return (
     <section>
@@ -79,8 +86,12 @@ export function ObjectForm({ object, id, initial }: Props) {
           : t("object.form.newTitle", { object: name })}
       </h1>
 
+      {/* A queued write fails only for local reasons — a full outbox, a locked
+          replica, a value the schema refuses. Server rejections are not errors
+          here: the command is durable, and the server's answer arrives in the
+          conflict tray (INV-S4) rather than under this form. */}
       {save.isError && (
-        <Alert>{problem?.detail || problem?.title || t("status.error")}</Alert>
+        <Alert>{save.error instanceof Error ? save.error.message : t("status.error")}</Alert>
       )}
 
       <form onSubmit={submit} noValidate>

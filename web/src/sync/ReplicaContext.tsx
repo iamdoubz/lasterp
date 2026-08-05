@@ -9,11 +9,12 @@
 // (WP-2.2b-decisions.md §5). Started on demand, the failure lands on the screen
 // that needs it, where there is something honest to render.
 
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { startReplica, type SyncClient } from "./host.ts";
 import type { SyncStatus } from "./protocol.ts";
+import type { Command } from "./outbox.ts";
 
 interface ReplicaValue {
   client: SyncClient;
@@ -77,6 +78,8 @@ function lazyClient(onStart: () => void): SyncClient {
     sync: () => client().sync(),
     status: () => client().status(),
     list: (object) => client().list(object),
+    pending: (object) => client().pending(object),
+    meta: () => client().meta(),
     write: (command) => client().write(command),
     conflicts: () => client().conflicts(),
     discard: (commandId) => client().discard(commandId),
@@ -149,4 +152,78 @@ export function useDrainOnReconnect(): void {
       document.removeEventListener("visibilitychange", drain);
     };
   }, [client, queryClient, started]);
+}
+
+// --- the screens' data path (WP-2.7) ---
+//
+// **The replica is the read path, whether or not there is a network, and there
+// is no API fallback.** Two read paths that can disagree is the divergence
+// INV-S3 exists to prevent — a fallback does not remove the disagreement, it
+// hides it, and the screen looks right while the replica is wrong. It would
+// also mean the offline path only runs during the demo, and a path exercised
+// once a release is a broken path nobody has noticed yet (commandment 4:
+// the network is an optimization). Reasoned in WP-2.7-decisions.md §2.
+
+/** recordsKey is per object, so a write to Contacts does not refetch Accounts. */
+export function recordsKey(object: string) {
+  return ["replica", "records", object] as const;
+}
+
+/** useRecords reads one object's rows out of the replica, plus the ids that
+ * carry unsent changes.
+ *
+ * `sync()` is kicked on mount and its failure ignored: catching up is how the
+ * list stops being stale, and being offline is the ordinary case here rather
+ * than an error to render. The rows render either way — that is the point. */
+export function useRecords(object: string) {
+  const { client } = useReplicaValue();
+  return useQuery({
+    queryKey: recordsKey(object),
+    queryFn: async () => {
+      // The first sync is *awaited*; later ones are not.
+      //
+      // Until hydration finishes the replica is legitimately empty, so a
+      // fire-and-forget sync paints "Nothing here yet" over a tenant that has
+      // plenty — which is indistinguishable, to the user, from data loss. Once
+      // there is something to show, catching up must never delay showing it:
+      // a slow or absent server is the ordinary case and the rows are already
+      // on the device. Found by M2's airplane-mode script on its first run.
+      const before = await client.status().catch(() => null);
+      if (before === null || !before.hydrated) {
+        await client.sync().catch(() => undefined);
+      } else {
+        void client.sync().catch(() => undefined);
+      }
+      const [rows, pending] = await Promise.all([
+        client.list<Record<string, unknown>>(object),
+        client.pending(object),
+      ]);
+      return { rows, pending: new Set(pending) };
+    },
+    retry: false,
+  });
+}
+
+/** useWriteRecord queues a create, update or delete through the outbox.
+ *
+ * There is no online variant. The command is a stored HTTP request replayed
+ * through the ordinary route (WP-2.3-decisions.md §1), so "save while online"
+ * and "save while offline" are the same code reaching the same endpoint — the
+ * only difference is how soon the drain runs. */
+export function useWriteRecord(object: string) {
+  const { client } = useReplicaValue();
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (command: Command) => {
+      await client.write(command);
+      // Send it now if the network is there. Failure is not the caller's
+      // problem: the command is durable in the outbox and the drain retries.
+      void client.sync().catch(() => undefined);
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: recordsKey(object) });
+      await queryClient.invalidateQueries({ queryKey: ["sync"] });
+    },
+  });
 }

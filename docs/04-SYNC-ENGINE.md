@@ -191,6 +191,33 @@ Replica at-rest encryption is **not** part of this: [ADR-021](adr/ADR-021-replic
 makes it a native-shell control (WP-4.8) and amends docs/08 to state what protects a browser
 replica instead. Decisions: [WP-2.5-decisions.md](notes/WP-2.5-decisions.md).
 
+## Implementation status (WP-2.7: the screens)
+
+The engine finally has a user. Every metadata-driven screen — list, detail and edit — reads from
+the replica, and `ObjectForm` writes through the outbox, so "save" is the same code online and
+off: a command is a stored HTTP request replayed through the ordinary route, and only the delay
+before the drain differs.
+
+**There is no API fallback for data, on purpose.** Two read paths that can disagree is the
+divergence INV-S3 exists to prevent; a fallback does not remove the disagreement, it hides it, and
+it would mean the offline path only ever runs during a demo. Schema and session do fall back to
+the replica's `_meta` cache, which is a different thing — that cache holds exactly what
+`/meta/objects` last returned, so there is one source and one cache of it, and it is what lets the
+navigation render with no network.
+
+Three things had to be true before any of that worked, none of which the sync engine could have
+told us (WP-2.7-decisions.md §7): the CSP had to permit WebAssembly (`'wasm-unsafe-eval'` — without
+it the replica never started in the shipped app at all), the app shell had to survive a reload
+offline (a service worker that never caches `/api/v1/`), and a failure to *reach* the server had
+to stop meaning "you are signed out".
+
+M2's acceptance criterion is [the airplane-mode script](notes/M2-airplane-mode-script.md), executed
+by `web/e2e/airplane-mode.spec.ts` in Chromium over OPFS: a day's work with the radio off — 20+
+mutations across both replicated objects, interleaved with reads and reloads — then reconnect,
+drain, and a conflict tray holding exactly what the server refused. A guard fails the test if any
+screen reads object rows from the API while offline, which is the one claim a human running the
+demo cannot check by looking.
+
 ## Guarantees & limits
 - Acknowledged writes: RPO 0 (command accepted ⇔ events durably committed).
 - Offline writes: at-least-once delivery, exactly-once effect (command_id dedupe).

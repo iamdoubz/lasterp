@@ -11,7 +11,6 @@ import {
   useParams,
 } from "@tanstack/react-router";
 
-import { getRecord } from "./api";
 import { useT } from "./i18n";
 import { Account } from "./routes/Account";
 import { Conflicts } from "./routes/Conflicts";
@@ -19,10 +18,10 @@ import { DashboardScreen } from "./routes/DashboardView";
 import { InvoiceDetail } from "./routes/InvoiceDetail";
 import { ObjectDetail } from "./routes/ObjectDetail";
 import { ObjectForm } from "./routes/ObjectForm";
+import { useRecords } from "./sync/ReplicaContext";
 import { ObjectList } from "./routes/ObjectList";
 import { Shell, useObjects } from "./routes/Shell";
 import { Alert, Busy } from "./ui";
-import { useQuery } from "@tanstack/react-query";
 
 export interface RouterContext {
   onSignedOut: () => void;
@@ -141,36 +140,40 @@ const editRoute = createRoute({
     const { resource, id } = useParams({ from: "/o/$resource/$id/edit" });
     return (
       <ObjectGate resource={resource}>
-        {(o) => <EditForm object={o} id={id} resource={resource} />}
+        {(o) => <EditForm object={o} id={id} />}
       </ObjectGate>
     );
   },
 });
 
 /** EditForm loads the current values before mounting the form, so the inputs
- * start populated rather than blanking a record on first save. */
+ * start populated rather than blanking a record on first save.
+ *
+ * From the replica, like every other read (WP-2.7-decisions.md §2). This one
+ * matters more than most: editing a row that has never reached the server —
+ * script step 7 — has no server copy to load, so an API read here would make
+ * the offline-created row the one row a user cannot correct. */
 function EditForm({
   object,
   id,
-  resource,
 }: {
   object: Parameters<typeof ObjectForm>[0]["object"];
   id: string;
-  resource: string;
 }) {
   const t = useT();
-  const { data, isPending, error } = useQuery({
-    queryKey: ["record", resource, id],
-    queryFn: () => getRecord(resource, id),
-  });
+  const { data, isPending, error } = useRecords(object.name);
 
   if (isPending) {
     return <Busy label={t("status.loading")} />;
   }
   if (error) {
+    return <Alert>{t("object.offline.unavailable")}</Alert>;
+  }
+  const record = data.rows.find((r) => String(r.id ?? "") === id);
+  if (record === undefined) {
     return <Alert>{t("status.error")}</Alert>;
   }
-  return <ObjectForm object={object} id={id} initial={data} />;
+  return <ObjectForm object={object} id={id} initial={record} />;
 }
 
 const invoiceRoute = createRoute({

@@ -143,6 +143,10 @@
     "nav.account": "Kontosicherheit",
     "account.enroll.password": "Passwort",
     "account.enroll.why": "Bestätigen Sie, dass Sie es sind, bevor Sie einen zweiten Faktor hinzufügen — damit eine fremde Sitzung keinen Faktor einrichten kann, den Sie nicht kontrollieren.",
-    "account.enroll.failed": "Dieses Passwort wurde nicht akzeptiert. Prüfen Sie es und versuchen Sie es erneut."
+    "account.enroll.failed": "Dieses Passwort wurde nicht akzeptiert. Prüfen Sie es und versuchen Sie es erneut.",
+    "object.row.pending": "Noch nicht gesendet",
+    "object.detail.delete": "Löschen",
+    "object.detail.deleting": "Wird gelöscht…",
+    "object.offline.unavailable": "Dieses Gerät hat noch keine lokale Kopie Ihrer Daten. Verbinden Sie sich einmal, um sie einzurichten."
   }
 }

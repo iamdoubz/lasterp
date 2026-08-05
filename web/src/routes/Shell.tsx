@@ -3,16 +3,40 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, Outlet } from "@tanstack/react-router";
 
-import { listObjects, logout, type MetaObject } from "../api";
+import { ApiError, listObjects, logout, type MetaObject } from "../api";
 import { LOCALE_NAMES, useI18n, type LocaleId } from "../i18n";
 import { objectLabel } from "../meta/render";
 import { useDrainOnReconnect, useSyncStatus } from "../sync/ReplicaContext";
+import { useReplica } from "../sync/ReplicaContext";
 import { Alert, Busy, Button, Select } from "../ui";
 
 /** useObjects fetches the tenant's renderable schemas. Navigation is built from
- * this, so a disabled module simply has no nav entry — no dead links. */
+ * this, so a disabled module simply has no nav entry — no dead links.
+ *
+ * Offline it falls back to the copy the replica cached. That is **not** the API
+ * fallback WP-2.7-decisions.md §2 refuses: `_meta` holds exactly what this
+ * endpoint last returned (core.ts `cacheMeta`), so there is still one source —
+ * the server — and one cache of it, which is the arrangement ADR-006 and
+ * `replica.open()` already rely on. A nav built from stale *schema* shows the
+ * wrong menu; a list built from stale *data* shows the wrong money, which is why
+ * only one of the two gets a fallback. */
 export function useObjects() {
-  return useQuery({ queryKey: ["meta", "objects"], queryFn: listObjects });
+  const replica = useReplica();
+  return useQuery({
+    queryKey: ["meta", "objects"],
+    queryFn: async () => {
+      try {
+        return await listObjects();
+      } catch (err) {
+        // A 401 must still sign the user out; only a transport failure falls
+        // back, for the same reason App.tsx's probe does.
+        if (err instanceof ApiError) throw err;
+        const cached = await replica.meta();
+        if (cached.length === 0) throw err;
+        return cached as MetaObject[];
+      }
+    },
+  });
 }
 
 /** The authenticated shell: skip link, nav built from metadata, and the routed

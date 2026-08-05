@@ -22,6 +22,18 @@ export type SyncCommand =
   | { kind: "sync" }
   | { kind: "status" }
   | { kind: "list"; object: string }
+  /** The ids of rows carrying unsent changes, so a screen can flag them.
+   *
+   * Read from the `_pending` sidecar the outbox already maintains rather than
+   * derived here: a second answer to "is this row pending" is exactly the drift
+   * this subsystem keeps refusing to introduce (WP-2.7-decisions.md §4). */
+  | { kind: "pending"; object: string }
+  /** The schema this replica was generated from, out of its `_meta` cache.
+   *
+   * Not a second source of truth: `_meta` holds exactly what /meta/objects last
+   * returned (core.ts `cacheMeta`), so this is the server's answer, remembered.
+   * It is what lets the shell render its navigation offline. */
+  | { kind: "meta" }
   | { kind: "write"; command: Command }
   | { kind: "conflicts" }
   | { kind: "discard"; commandId: string };
