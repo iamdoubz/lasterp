@@ -239,3 +239,42 @@ func RolesFor(ctx context.Context, db *storage.DB, actor Actor) ([]string, error
 	}
 	return names, nil
 }
+
+// DeleteRole removes a role, its grants and every assignment of it, in one
+// transaction. Core roles are refused (ErrCorePermissionFloor) for the same
+// reason RevokePermission refuses them: a permission floor that can be deleted
+// wholesale is not a floor.
+//
+// Added by WP-3.1a, whose uninstall needs it: a plugin's authority lives in a
+// role, and a role left behind by an uninstall is authority a reinstall of a
+// *different* plugin under the same id would silently inherit.
+func DeleteRole(ctx context.Context, db *storage.DB, tenant tenancy.ID, role RoleID) error {
+	if tenant == "" || role == "" {
+		return errors.New("authz: tenant and role are required")
+	}
+	err := tenancy.WithTenant(ctx, db, tenant, func(ctx context.Context, tx *sql.Tx) error {
+		var isCore bool
+		row := tx.QueryRowContext(ctx, db.Rebind(`SELECT is_core FROM roles WHERE tenant_id = ? AND id = ?`),
+			string(tenant), string(role))
+		if err := row.Scan(&isCore); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil // already gone; deleting twice is not an error
+			}
+			return fmt.Errorf("authz: lookup role: %w", err)
+		}
+		if isCore {
+			return ErrCorePermissionFloor
+		}
+		for _, stmt := range []string{
+			`DELETE FROM role_permissions WHERE tenant_id = ? AND role_id = ?`,
+			`DELETE FROM user_roles WHERE tenant_id = ? AND role_id = ?`,
+			`DELETE FROM roles WHERE tenant_id = ? AND id = ?`,
+		} {
+			if _, err := tx.ExecContext(ctx, db.Rebind(stmt), string(tenant), string(role)); err != nil {
+				return fmt.Errorf("authz: delete role: %w", err)
+			}
+		}
+		return nil
+	})
+	return err
+}

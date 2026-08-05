@@ -55,6 +55,11 @@ var adminGrants = map[string][]string{
 	// right to store, list and delete credentials. There is no read permission
 	// because there is no route that returns a value.
 	"secret": {"manage"},
+	// Plugins are two powers (WP-3.1a): `manage` installs untrusted code and
+	// approves what it may touch, `invoke` merely runs something already
+	// approved. An install can never grant more than the approver holds, so
+	// the first administrator's own grants above are the ceiling.
+	"plugin": {"manage", "invoke"},
 }
 
 // ErrTenantExists is returned when the tenant is already provisioned, so
