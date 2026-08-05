@@ -13,6 +13,7 @@ import (
 	"github.com/iamdoubz/lasterp/kernel/capability"
 	"github.com/iamdoubz/lasterp/kernel/i18n"
 	"github.com/iamdoubz/lasterp/kernel/idgen"
+	"github.com/iamdoubz/lasterp/kernel/plugins"
 	"github.com/iamdoubz/lasterp/kernel/storage"
 )
 
@@ -161,7 +162,8 @@ func allActions(t *testing.T, db *storage.DB) []api.Action {
 	// A key source is supplied so the vault's routes are enumerated by the
 	// fence too: a surface that only appears in deployments which configured a
 	// key file is one the route fence would silently stop watching.
-	return actions(db, reg, objects, translator, sso, testKeySource(t))
+	return actions(db, reg, objects, translator, sso, testKeySource(t),
+		plugins.NewDispatcher(pluginHost(db, objects, nil)))
 }
 
 // concretePath substitutes a placeholder for each {param} segment.

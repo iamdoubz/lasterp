@@ -49,6 +49,12 @@ type Entry struct {
 	Object     string    `json:"object"` // object/stream kind, for scope tagging and filtering
 	ScopeKey   string    `json:"scope_key"`
 	RecordedAt time.Time `json:"recorded_at"`
+	// ActorID is the principal behind the change (WP-3.1b). It is deliberately
+	// **not** serialized: the only consumer is the plugin hook runner, which
+	// uses it to skip changes a plugin made itself, and widening the client-
+	// facing sync payload with a field nothing on the client reads would be
+	// adding surface for free.
+	ActorID string `json:"-"`
 }
 
 // Change is an Entry as read back, carrying the cursor position the reader
@@ -81,9 +87,9 @@ func Append(ctx context.Context, tx *sql.Tx, db *storage.DB, e Entry) error {
 	}
 
 	_, err := tx.ExecContext(ctx, db.Rebind(`
-		INSERT INTO change_feed (tenant_id, source, ref_id, object, scope_key, recorded_at)
-		VALUES (?, ?, ?, ?, ?, ?)`),
-		string(e.TenantID), string(e.Source), e.RefID, e.Object, e.ScopeKey, e.RecordedAt.UTC())
+		INSERT INTO change_feed (tenant_id, source, ref_id, object, scope_key, recorded_at, actor_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`),
+		string(e.TenantID), string(e.Source), e.RefID, e.Object, e.ScopeKey, e.RecordedAt.UTC(), e.ActorID)
 	if err != nil {
 		return fmt.Errorf("changefeed: append: %w", err)
 	}
@@ -132,7 +138,7 @@ func Read(ctx context.Context, db *storage.DB, tenant tenancy.ID, after int64, l
 	var changes []Change
 	err := tenancy.WithTenant(ctx, db, tenant, func(ctx context.Context, tx *sql.Tx) error {
 		rows, err := tx.QueryContext(ctx, db.Rebind(`
-			SELECT id, tenant_id, source, ref_id, object, scope_key, recorded_at
+			SELECT id, tenant_id, source, ref_id, object, scope_key, recorded_at, actor_id
 			FROM change_feed
 			WHERE tenant_id = ? AND id > ?`+filter+`
 			ORDER BY id ASC LIMIT ?`),
@@ -191,7 +197,7 @@ func scanChange(row scanner) (Change, error) {
 	var c Change
 	var tenantStr, sourceStr string
 	var recordedAt storage.Time
-	err := row.Scan(&c.Cursor, &tenantStr, &sourceStr, &c.RefID, &c.Object, &c.ScopeKey, &recordedAt)
+	err := row.Scan(&c.Cursor, &tenantStr, &sourceStr, &c.RefID, &c.Object, &c.ScopeKey, &recordedAt, &c.ActorID)
 	if err != nil {
 		return Change{}, fmt.Errorf("changefeed: scan change: %w", err)
 	}

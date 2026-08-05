@@ -66,6 +66,12 @@ type Host struct {
 	Objects map[string]*metadata.CRUD
 	Keys    secrets.KeySource
 	Limits  Limits
+	// Hooks makes a plugin's own writes dispatch *other* plugins' hooks. Set
+	// by NewDispatcher, so a write from inside a host call is subject to the
+	// same hook surface as a write from the API — otherwise the plugin host
+	// would be the bypass the seam was designed to avoid. Recursion is not a
+	// risk: dispatch self-suppresses on the acting plugin (dispatch.go).
+	Hooks metadata.Hooks
 }
 
 // ErrFunctionNotDeclared is returned when a caller names an export the

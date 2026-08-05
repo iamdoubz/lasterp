@@ -20,6 +20,7 @@ import (
 	"github.com/iamdoubz/lasterp/kernel/capability"
 	"github.com/iamdoubz/lasterp/kernel/i18n"
 	"github.com/iamdoubz/lasterp/kernel/metadata"
+	"github.com/iamdoubz/lasterp/kernel/plugins"
 	"github.com/iamdoubz/lasterp/kernel/secrets"
 	"github.com/iamdoubz/lasterp/kernel/storage"
 	"github.com/iamdoubz/lasterp/kernel/storage/migrate"
@@ -132,13 +133,22 @@ func registerModules(ctx context.Context, db *storage.DB) error {
 // an IdP is configured, OIDC discovery runs here so a misconfigured provider
 // fails the boot rather than the first login (WP-1.9).
 func Handler(ctx context.Context, db *storage.DB) (http.Handler, error) {
+	h, _, err := HandlerWithHooks(ctx, db)
+	return h, err
+}
+
+// HandlerWithHooks is Handler plus the plugin dispatcher it wired, for a caller
+// that also wants to run async hook delivery (StartHookRunner). `lasterp serve`
+// is that caller; tests that only need the HTTP surface use Handler.
+func HandlerWithHooks(ctx context.Context, db *storage.DB) (http.Handler, *plugins.Dispatcher, error) {
 	cfg, err := gatewayConfig(ctx, db)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+	dispatcher, _ := cfg.Hooks.(*plugins.Dispatcher)
 	// Security headers wrap everything, so an API-only deployment with no
 	// bundle is covered too (headers.go).
-	return withSecurityHeaders(withStatic(api.NewGateway(cfg), webRoot())), nil
+	return withSecurityHeaders(withStatic(api.NewGateway(cfg), webRoot())), dispatcher, nil
 }
 
 // gatewayConfig assembles the product's gateway configuration. It is split out
@@ -174,10 +184,17 @@ func gatewayConfig(ctx context.Context, db *storage.DB) (api.Config, error) {
 	if err != nil && !errors.Is(err, secrets.ErrNoKeySource) {
 		return api.Config{}, fmt.Errorf("app: load secrets key source: %w", err)
 	}
+	// The plugin host and its sync dispatcher. The dispatcher is the
+	// metadata.Hooks implementation the gateway hands to every CRUD engine, so
+	// a hook fires on any write through the choke point — API, offline drain,
+	// or another plugin (WP-3.1b).
+	dispatcher := plugins.NewDispatcher(pluginHost(db, objects, keys))
+
 	return api.Config{
 		DB:            db,
 		Objects:       objects,
-		Actions:       actions(db, reg, objects, translator, sso, keys),
+		Hooks:         dispatcher,
+		Actions:       actions(db, reg, objects, translator, sso, keys, dispatcher),
 		Authenticator: sessionAuthenticator(db),
 		Capabilities:  capability.GatewayChecker{Reg: reg, DB: db},
 	}, nil

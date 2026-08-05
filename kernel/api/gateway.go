@@ -150,6 +150,10 @@ type Config struct {
 	// Capabilities, when set, gates object routes behind their module's
 	// enable-state (ADR-018 §5). Nil ⇒ every object is always reachable.
 	Capabilities CapabilityChecker
+	// Hooks, when set, dispatches synchronous plugin hooks inside every CRUD
+	// write (WP-3.1b). Nil ⇒ no dispatch, which is the behaviour of any
+	// deployment with no plugin host wired.
+	Hooks metadata.Hooks
 	// Now overrides the clock (rate limiter, timestamps) for tests.
 	Now func() time.Time
 }
@@ -164,6 +168,7 @@ type Gateway struct {
 	limiter *rateLimiter
 	objects []*metadata.EffectiveSchema
 	actions []Action
+	hooks   metadata.Hooks
 }
 
 // defaultRateLimit is applied when Config.RateLimit is the zero value: a
@@ -190,6 +195,7 @@ func NewGateway(cfg Config) *Gateway {
 		limiter: newRateLimiter(rl, now),
 		objects: cfg.Objects,
 		actions: cfg.Actions,
+		hooks:   cfg.Hooks,
 	}
 	if cfg.DB != nil {
 		g.idem = &idempotencyStore{db: cfg.DB, now: now}
@@ -234,6 +240,9 @@ func (g *Gateway) registerObject(schema *metadata.EffectiveSchema) {
 		// Non-CRUD (event-sourced) objects have no REST CRUD surface yet;
 		// skip rather than fail the whole gateway.
 		return
+	}
+	if g.hooks != nil {
+		crud = crud.WithHooks(g.hooks)
 	}
 	base := "/api/v1/" + resourcePath(schema.ObjectName)
 	object := schema.ObjectName

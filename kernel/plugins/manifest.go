@@ -24,6 +24,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -44,13 +45,128 @@ type Manifest struct {
 	// declared, not discovered.
 	Functions    []string     `yaml:"functions"`
 	Capabilities Capabilities `yaml:"capabilities"`
+	// Hooks are the write-path subscriptions (WP-3.1b).
+	Hooks []Hook `yaml:"hooks"`
 
 	// Declared-but-unimplemented surfaces. Parsed so install can refuse them by
 	// name (see Validate); each lands with a named WP.
-	Hooks     []map[string]any `yaml:"hooks"`
 	Overlays  []string         `yaml:"overlays"`
 	MCPTools  []map[string]any `yaml:"mcp_tools"`
 	Endpoints []map[string]any `yaml:"endpoints"`
+}
+
+// Hook is one write-path subscription.
+type Hook struct {
+	// Event is `<Object>.before_create|before_update|before_delete` for a sync
+	// hook, or `<Object>.changed` for an async one.
+	Event string `yaml:"event"`
+	// Fn is the exported function to call. It must also appear in Functions —
+	// the callable surface is declared once.
+	Fn string `yaml:"fn"`
+	// Mode is "sync" (in the write path, may veto) or "async" (delivered from
+	// the change feed after the commit).
+	Mode string `yaml:"mode"`
+	// OnFailure decides what a *broken* sync hook means: "reject" (the
+	// default) fails the write, "allow" records the failure and lets it
+	// through. Both are correct for different hooks — a compliance rule must
+	// fail closed, an enrichment must not take invoicing down — so the hook
+	// declares which it is rather than the host guessing (decisions §3).
+	OnFailure string `yaml:"on_failure"`
+	// TimeoutMS overrides the 50ms sync default, up to MaxHookTimeoutMS.
+	// Raising it is a cost the installing administrator is shown in plain
+	// language, because the person who feels the latency is usually not the
+	// person who installed the plugin.
+	TimeoutMS int `yaml:"timeout_ms"`
+}
+
+// Hook modes and failure policies.
+const (
+	ModeSync  = "sync"
+	ModeAsync = "async"
+
+	OnFailureReject = "reject"
+	OnFailureAllow  = "allow"
+
+	// DefaultHookTimeoutMS is the sync budget a hook gets unless it asks for
+	// more. docs/09 promises p95 < 300ms for writes; 50ms leaves that promise
+	// intact for a plugin that does not ask otherwise.
+	DefaultHookTimeoutMS = 50
+	// MaxHookTimeoutMS is the ceiling no manifest may exceed — docs/05's
+	// original sync-hook default, which is a ceiling rather than a default here.
+	MaxHookTimeoutMS = 500
+)
+
+// Sync hook verbs, mirroring metadata's.
+var syncEvents = map[string]string{
+	"before_create": "create",
+	"before_update": "update",
+	"before_delete": "delete",
+}
+
+// AsyncEvent is the only async subscription: the feed says *what* changed, not
+// what was done to it (there is no verb on a feed entry), so a hook binds to
+// the object and reads current state to decide (decisions §2).
+const AsyncEvent = "changed"
+
+// Object returns the object a hook subscribes to, and the verb it fires on.
+// For an async hook the verb is AsyncEvent.
+func (h Hook) Object() (object, verb string) {
+	i := strings.LastIndex(h.Event, ".")
+	if i < 0 {
+		return "", ""
+	}
+	return h.Event[:i], h.Event[i+1:]
+}
+
+// Timeout is the hook's sync budget.
+func (h Hook) Timeout() time.Duration {
+	ms := h.TimeoutMS
+	if ms <= 0 {
+		ms = DefaultHookTimeoutMS
+	}
+	return time.Duration(ms) * time.Millisecond
+}
+
+// FailsClosed reports whether a broken hook rejects the write.
+func (h Hook) FailsClosed() bool { return h.OnFailure != OnFailureAllow }
+
+// SyncHooks returns the manifest's sync hooks for one object and CRUD verb.
+func (m *Manifest) SyncHooks(object, verb string) []Hook {
+	var out []Hook
+	for _, h := range m.Hooks {
+		if h.Mode != ModeSync {
+			continue
+		}
+		o, event := h.Object()
+		if o == object && syncEvents[event] == verb {
+			out = append(out, h)
+		}
+	}
+	return out
+}
+
+// AsyncHooks returns the manifest's async hooks for one object.
+func (m *Manifest) AsyncHooks(object string) []Hook {
+	var out []Hook
+	for _, h := range m.Hooks {
+		if h.Mode != ModeAsync {
+			continue
+		}
+		if o, event := h.Object(); o == object && event == AsyncEvent {
+			out = append(out, h)
+		}
+	}
+	return out
+}
+
+// HasAsyncHooks reports whether this plugin needs the delivery runner at all.
+func (m *Manifest) HasAsyncHooks() bool {
+	for _, h := range m.Hooks {
+		if h.Mode == ModeAsync {
+			return true
+		}
+	}
+	return false
 }
 
 // Capabilities is the requested authority. Everything absent here is absent
@@ -121,6 +237,12 @@ func (m *Manifest) Validate() error {
 		}
 	}
 
+	for i, h := range m.Hooks {
+		if err := h.validate(m); err != nil {
+			return fmt.Errorf("plugins: hook %d (%s): %w", i, h.Event, err)
+		}
+	}
+
 	// Refused rather than ignored. Silently dropping a declared capability is
 	// the failure mode where an author ships a plugin that "installs fine" and
 	// never fires, and the same mechanism could one day drop a capability an
@@ -130,7 +252,6 @@ func (m *Manifest) Validate() error {
 		what    string
 		owner   string
 	}{
-		{len(m.Hooks) > 0, "hooks", "WP-3.1b (hook dispatch)"},
 		{len(m.Endpoints) > 0, "endpoints", "WP-3.2, alongside the example plugins that call them"},
 		{len(m.Capabilities.Schedule) > 0, "capabilities.schedule", "WP-3.3, which owns the job runner"},
 		{len(m.Capabilities.HTTP) > 0, "capabilities.http", "the WP that adds an audited outbound client (ADR-007 requires every call be audited; the sandbox has no network at all until then)"},
@@ -185,3 +306,63 @@ func (m *Manifest) Principal() string { return PrincipalFor(m.ID) }
 
 // PrincipalFor is Principal for a plugin id already parsed.
 func PrincipalFor(id string) string { return "plugin:" + id }
+
+// validate checks one hook declaration against the host's vocabulary.
+func (h Hook) validate(m *Manifest) error {
+	object, event := h.Object()
+	if object == "" || event == "" {
+		return errors.New("event must be `<Object>.<event>`")
+	}
+	if !declaredFn(m.Functions, h.Fn) {
+		return fmt.Errorf("fn %q is not in this manifest's functions list", h.Fn)
+	}
+	switch h.Mode {
+	case ModeSync:
+		if _, ok := syncEvents[event]; !ok {
+			return fmt.Errorf("%q is not a sync event (want before_create, before_update or before_delete)", event)
+		}
+	case ModeAsync:
+		if event != AsyncEvent {
+			// The feed carries no verb, so `Invoice.posted` is not something
+			// this host can honour — and pretending to would deliver on every
+			// change instead. Refused by name rather than approximated
+			// (WP-3.1b-decisions.md §2).
+			return fmt.Errorf("%q is not an async event: the change feed records that an object changed, not what was done to it, so async hooks bind to `%s.%s` and read current state", event, object, AsyncEvent)
+		}
+	default:
+		return fmt.Errorf("mode must be %q or %q, got %q", ModeSync, ModeAsync, h.Mode)
+	}
+	switch h.OnFailure {
+	case "", OnFailureReject, OnFailureAllow:
+	default:
+		return fmt.Errorf("on_failure must be %q or %q, got %q", OnFailureReject, OnFailureAllow, h.OnFailure)
+	}
+	if h.TimeoutMS < 0 || h.TimeoutMS > MaxHookTimeoutMS {
+		return fmt.Errorf("timeout_ms must be between 1 and %d (a sync hook runs inside every write of %s; %dms is the ceiling because past it the write budget in docs/09 is gone)",
+			MaxHookTimeoutMS, object, MaxHookTimeoutMS)
+	}
+	return nil
+}
+
+func declaredFn(list []string, fn string) bool {
+	for _, s := range list {
+		if s == fn {
+			return true
+		}
+	}
+	return false
+}
+
+// LatencyWarning is the plain-language cost of a hook, for the approval screen.
+// It is returned for every sync hook at install so the administrator sees what
+// they are agreeing to *before* it is running in production — the person who
+// feels the latency is usually not the person who installed the plugin.
+func (h Hook) LatencyWarning() string {
+	if h.Mode != ModeSync {
+		return ""
+	}
+	object, _ := h.Object()
+	return fmt.Sprintf(
+		"every write of %s will wait for %s (up to %v) before it is saved; if this plugin is slow or unreachable, saving a %s is slow for everyone in this tenant",
+		object, h.Fn, h.Timeout(), object)
+}

@@ -114,6 +114,11 @@ func isConflict(err error) bool {
 // (validation, balance, closed period, missing reference data).
 func isUnprocessable(err error) bool {
 	return errors.Is(err, metadata.ErrValidation) ||
+		// A plugin hook vetoed the write (WP-3.1b): a well-formed request
+		// refused by a business rule, which is exactly what 422 means. The
+		// detail names the plugin, because a user told only "rejected" cannot
+		// act and an administrator cannot find the cause.
+		errors.Is(err, metadata.ErrHookRejected) ||
 		// A dashboard asked for a period the tenant does not have, or has no
 		// fiscal calendar at all: a well-formed request the books cannot answer.
 		errors.Is(err, reporting.ErrNoPeriods) ||
