@@ -11,6 +11,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	"github.com/iamdoubz/lasterp/kernel/capability"
 	"github.com/iamdoubz/lasterp/kernel/i18n"
 	"github.com/iamdoubz/lasterp/kernel/metadata"
+	"github.com/iamdoubz/lasterp/kernel/secrets"
 	"github.com/iamdoubz/lasterp/kernel/storage"
 	"github.com/iamdoubz/lasterp/kernel/storage/migrate"
 	"github.com/iamdoubz/lasterp/kernel/storage/postgres"
@@ -164,10 +166,18 @@ func gatewayConfig(ctx context.Context, db *storage.DB) (api.Config, error) {
 	if err != nil {
 		return api.Config{}, err
 	}
+	// nil when the deployment configured no key file. The vault's routes still
+	// exist and say so (503, secrets.go) rather than vanishing: a missing
+	// deployment step should be a legible answer, not a 404 that looks like the
+	// feature was never built.
+	keys, err := secrets.LoadKeySource()
+	if err != nil && !errors.Is(err, secrets.ErrNoKeySource) {
+		return api.Config{}, fmt.Errorf("app: load secrets key source: %w", err)
+	}
 	return api.Config{
 		DB:            db,
 		Objects:       objects,
-		Actions:       actions(db, reg, objects, translator, sso),
+		Actions:       actions(db, reg, objects, translator, sso, keys),
 		Authenticator: sessionAuthenticator(db),
 		Capabilities:  capability.GatewayChecker{Reg: reg, DB: db},
 	}, nil

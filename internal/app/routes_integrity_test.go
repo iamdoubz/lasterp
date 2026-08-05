@@ -158,7 +158,10 @@ func allActions(t *testing.T, db *storage.DB) []api.Action {
 	if sso == nil {
 		t.Fatal("newOIDCLogin returned nothing with an IdP configured")
 	}
-	return actions(db, reg, objects, translator, sso)
+	// A key source is supplied so the vault's routes are enumerated by the
+	// fence too: a surface that only appears in deployments which configured a
+	// key file is one the route fence would silently stop watching.
+	return actions(db, reg, objects, translator, sso, testKeySource(t))
 }
 
 // concretePath substitutes a placeholder for each {param} segment.

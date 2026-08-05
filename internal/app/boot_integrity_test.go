@@ -416,6 +416,9 @@ func fullGrants() map[string][]string {
 		// Device management, likewise its own grant (WP-2.5): replicating is
 		// not the same power as destroying what another machine holds.
 		"device": {"read", "manage"},
+		// The vault, likewise (WP-3.0): one power, and no read permission
+		// because no route returns a value.
+		"secret": {"manage"},
 	}
 }
 

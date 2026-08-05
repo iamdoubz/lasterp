@@ -28,10 +28,12 @@ import (
 	"time"
 
 	"github.com/iamdoubz/lasterp/internal/app"
+	"github.com/iamdoubz/lasterp/kernel/secrets"
 	"github.com/iamdoubz/lasterp/kernel/storage"
+	"github.com/iamdoubz/lasterp/kernel/tenancy"
 )
 
-const usage = "usage: lasterp <serve|dev|migrate|harden|doctor|bootstrap|demo>"
+const usage = "usage: lasterp <serve|dev|migrate|harden|doctor|bootstrap|demo|secrets>"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -66,6 +68,10 @@ func main() {
 		}
 	case "doctor":
 		if err := doctor(context.Background()); err != nil {
+			log.Fatal(err)
+		}
+	case "secrets":
+		if err := secretsCmd(context.Background(), os.Args[2:]); err != nil {
 			log.Fatal(err)
 		}
 	default:
@@ -103,6 +109,75 @@ func demo(ctx context.Context, args []string) error {
 	}
 	log.Printf("seeded demo book for tenant %q", *tenant)
 	return nil
+}
+
+// secretsCmd administers the vault's key material (WP-3.0):
+//
+//	lasterp secrets init   -keyfile ./lasterp.keys [-key-id 2026-08-a]
+//	lasterp secrets rotate -tenant acme [-actor operator]
+//
+// `init` writes a key file with one fresh key and refuses to overwrite one that
+// exists — replacing a key file by accident is every secret in the deployment
+// lost at once. Back it up: there is no recovery path, by design.
+//
+// `rotate` re-wraps a tenant's secrets under the key file's current key. Add
+// the new key, point `current` at it, run this, and only then remove the old
+// key — the old key must still be readable while any row references it. One
+// tenant per invocation (loop in the shell for more); a `-all` flag needs a
+// tenant listing the kernel does not have yet and nobody is asking for.
+func secretsCmd(ctx context.Context, args []string) error {
+	if len(args) == 0 {
+		return errors.New("usage: lasterp secrets <init|rotate>")
+	}
+	switch args[0] {
+	case "init":
+		fs := flag.NewFlagSet("secrets init", flag.ExitOnError)
+		path := fs.String("keyfile", "", "path to write (also set "+secrets.EnvKeyFile+" to it)")
+		keyID := fs.String("key-id", time.Now().UTC().Format("2006-01-02")+"-a", "id for the generated key")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if *path == "" {
+			return errors.New("secrets init: -keyfile is required")
+		}
+		if err := secrets.NewKeyFile(*path, *keyID); err != nil {
+			return err
+		}
+		log.Printf("wrote key file %s with key %q — back it up; a lost key is unrecoverable data", *path, *keyID)
+		return nil
+
+	case "rotate":
+		fs := flag.NewFlagSet("secrets rotate", flag.ExitOnError)
+		tenant := fs.String("tenant", "", "tenant whose secrets to re-wrap")
+		actor := fs.String("actor", "operator", "principal the re-wrap is attributed to (INV-T4)")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if *tenant == "" {
+			return errors.New("secrets rotate: -tenant is required")
+		}
+		src, err := secrets.LoadKeySource()
+		if err != nil {
+			return err
+		}
+		db, err := app.Open(ctx, os.Getenv("LASTERP_DSN"))
+		if err != nil {
+			return err
+		}
+		defer func() { _ = db.Close() }()
+
+		n, err := secrets.Rotate(ctx, db, src, tenancy.ID(*tenant), *actor)
+		if err != nil {
+			return err
+		}
+		// #nosec G706 -- %q is the sanitizer (control characters escaped), and
+		// the tenant id is an operator's own CLI flag, not request data.
+		log.Printf("re-wrapped %d secret(s) for tenant %q under key %q", n, *tenant, src.KeyID())
+		return nil
+
+	default:
+		return fmt.Errorf("unknown secrets subcommand %q; usage: lasterp secrets <init|rotate>", args[0])
+	}
 }
 
 // bootstrap provisions the first tenant and administrator. A freshly migrated

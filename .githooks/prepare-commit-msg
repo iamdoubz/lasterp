@@ -1,0 +1,19 @@
+#!/usr/bin/env sh
+# Adds the DCO "Signed-off-by:" trailer to every commit, so `scripts/dco-check.sh`
+# (the CI lint job) cannot fail for the one reason that is pure mechanics.
+#
+# Enable it once per clone — hooks are not cloned:
+#
+#     git config core.hooksPath .githooks
+#
+# `--if-exists doNothing` makes it idempotent, so `git commit -s`, `git commit
+# --amend` and a rebase that replays an already-signed message all stay
+# untouched. git var supplies the same identity the commit will be authored
+# with; the trailing timestamp it appends is cut off.
+set -eu
+
+msg_file="$1"
+ident=$(git var GIT_COMMITTER_IDENT | sed 's/^\(.*>\).*$/\1/')
+
+git interpret-trailers --in-place --if-exists doNothing \
+	--trailer "Signed-off-by: $ident" "$msg_file"

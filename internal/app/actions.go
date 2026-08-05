@@ -12,6 +12,7 @@ import (
 	"github.com/iamdoubz/lasterp/kernel/i18n"
 	"github.com/iamdoubz/lasterp/kernel/metadata"
 	"github.com/iamdoubz/lasterp/kernel/money"
+	"github.com/iamdoubz/lasterp/kernel/secrets"
 	"github.com/iamdoubz/lasterp/kernel/storage"
 	"github.com/iamdoubz/lasterp/kernel/tenancy"
 	"github.com/iamdoubz/lasterp/modules/contacts"
@@ -36,7 +37,7 @@ const dateLayout = "2006-01-02"
 // reads, reference-data + capability admin). Handlers run after authn with the
 // actor bound into r.Context(); write actions are wrapped with idempotency by
 // the gateway. See WP-1.4b-decisions.md §3 for the full table.
-func actions(db *storage.DB, reg *capability.Registry, objects []*metadata.EffectiveSchema, tr *i18n.Translator, sso *oidcLogin) []api.Action {
+func actions(db *storage.DB, reg *capability.Registry, objects []*metadata.EffectiveSchema, tr *i18n.Translator, sso *oidcLogin, keys secrets.KeySource) []api.Action {
 	out := append(sessionActions(db), oidcActions(sso)...)
 	out = append(out, totpActions(db)...)
 	out = append(out, metaActions(db, objects, reg)...)
@@ -44,6 +45,7 @@ func actions(db *storage.DB, reg *capability.Registry, objects []*metadata.Effec
 	out = append(out, dashboardActions(db)...)
 	out = append(out, syncActions(db, objects, reg)...)
 	out = append(out, deviceActions(db)...)
+	out = append(out, secretActions(db, keys)...)
 	return append(out, []api.Action{
 		// --- Invoice (bespoke, NOT generic CRUD: posting pipeline is the only
 		// path to posted/GL — INV-F2/F5/F6, decisions §2) ---

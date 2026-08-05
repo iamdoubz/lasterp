@@ -20,7 +20,7 @@ import (
 // change, not something that appears by writing a comment.
 //
 // D — device (WP-2.5).
-var invRef = regexp.MustCompile(`INV-[FETSXD][0-9]+`)
+var invRef = regexp.MustCompile(`INV-[FETSXDK][0-9]+`)
 
 // TestEveryRequiredInvariantHasATaggedTest is the registry gate docs/19 §1
 // demands: "CI fails if an invariant has no tagged tests." It walks every
