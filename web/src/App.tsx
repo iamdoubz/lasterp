@@ -49,10 +49,22 @@ export default function App() {
 
   // Probe an authenticated route once on mount: a live cookie means the user is
   // already signed in and should not see the login form again.
+  //
+  // **A failure to reach the server is not a failure to authenticate.** Only a
+  // real 401 drops to login; a transport error keeps the user in the shell. That
+  // is the same distinction `kernel/api/gateway.go` draws server-side with
+  // ErrAuthUnavailable — "could not check" answers 503, never 401 — and it has
+  // to hold on both ends or the offline client signs itself out the moment it
+  // loses the network, which is precisely when it is most useful (WP-2.7).
+  //
+  // The cost, accepted: someone who has never signed in and opens the app
+  // offline sees the shell rather than a login form. That is the better of the
+  // two lies — the screens then say this device has no local copy yet, which is
+  // true and actionable, where a login form they cannot submit is neither.
   if (signedIn === null) {
     void listCapabilities().then(
       () => setSignedIn(true),
-      () => setSignedIn(false),
+      (error: unknown) => setSignedIn(!(error instanceof ApiError && error.isUnauthenticated)),
     );
     return null;
   }

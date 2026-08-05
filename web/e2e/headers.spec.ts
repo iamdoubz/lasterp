@@ -39,11 +39,29 @@ for (const path of PATHS) {
 // 'unsafe-inline' or 'unsafe-eval' is the failure mode this test exists to
 // catch, because that is what a policy decays into the first time someone hits a
 // wall with it.
+//
+// The assertions match **quoted tokens**, not substrings, and that is a
+// tightening rather than a concession. `'wasm-unsafe-eval'` is a distinct
+// keyword permitting WebAssembly compilation and nothing else — no `eval()`, no
+// `new Function()`, no string-to-JavaScript path of any kind — and the replica
+// cannot start without it (ADR-017; WP-2.7-decisions.md §7.1, where the app
+// shipped with the replica dead because this directive was missing). A
+// substring check cannot tell the two apart and would have to be deleted
+// outright to let the product work; a token check keeps the real escapes banned
+// and is asserted below to be the *only* exception.
 test("the content security policy has no unsafe escapes", async ({ request }) => {
   const csp = (await request.get("/")).headers()["content-security-policy"];
 
-  expect(csp).not.toContain("unsafe-inline");
-  expect(csp).not.toContain("unsafe-eval");
+  expect(csp).not.toContain("'unsafe-inline'");
+  expect(csp).not.toContain("'unsafe-eval'");
+  expect(csp).not.toContain("'unsafe-hashes'");
+  // The one permitted relaxation, named explicitly so adding a second requires
+  // editing this line and saying why.
+  expect(csp).toContain("'wasm-unsafe-eval'");
+  expect(
+    csp.match(/'[a-z-]*unsafe[a-z-]*'/g) ?? [],
+    "a new unsafe-* keyword appeared in the CSP",
+  ).toEqual(["'wasm-unsafe-eval'"]);
   expect(csp).toContain("object-src 'none'");
   expect(csp).toContain("frame-ancestors 'none'");
   expect(csp).toContain("base-uri 'none'");

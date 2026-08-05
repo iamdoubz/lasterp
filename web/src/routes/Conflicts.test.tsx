@@ -40,6 +40,8 @@ function fakeClient(conflicts: Conflict[]): SyncClient {
   const remaining = [...conflicts];
   return {
     sync: vi.fn(async () => 0),
+    pending: vi.fn(async () => []),
+    meta: vi.fn(async () => []),
     status: vi.fn(async () => ({
       hydrated: true,
       cursor: 0,

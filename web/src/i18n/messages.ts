@@ -98,6 +98,12 @@ export const messages = {
   "object.form.saving": "Saving…",
   "object.form.cancel": "Cancel",
   "object.column.actions": "Actions",
+  // WP-2.7: the offline-first screens. "Pending" is the docs/04 §Upstream 1
+  // flag — the row is on this device and the server has not seen it yet.
+  "object.row.pending": "Not yet sent",
+  "object.detail.delete": "Delete",
+  "object.detail.deleting": "Deleting…",
+  "object.offline.unavailable": "This device has no local copy of your data yet. Connect once to set it up.",
 
   // Invoicing
   "invoice.title": "Invoice",

@@ -31,8 +31,22 @@ const (
 	// small ones. frame-ancestors 'none' is the modern form of the
 	// X-Frame-Options below; both are sent, since the older header is what old
 	// browsers understand.
+	// 'wasm-unsafe-eval' is required and is **not** 'unsafe-eval'. The replica is
+	// SQLite compiled to WebAssembly (ADR-017), and instantiating a WASM module
+	// is gated by script-src: without this directive the browser refuses with
+	// "Compiling or instantiating WebAssembly module violates the following
+	// Content Security Policy directive", the worker never starts, and the whole
+	// offline client is dead in the shipped app while every headless and
+	// dev-server test passes. That is exactly what happened — Phase 2 shipped an
+	// engine that could not run in production, found by M2's airplane-mode
+	// script in WP-2.7 (decisions §7).
+	//
+	// It permits WebAssembly compilation only. It does not restore eval(), new
+	// Function(), or any string-to-JavaScript path, which is why it exists as a
+	// separate keyword rather than being folded into 'unsafe-eval' — and why
+	// reaching for the broader one here would be a real weakening.
 	contentSecurityPolicy = "default-src 'self'; " +
-		"script-src 'self'; " +
+		"script-src 'self' 'wasm-unsafe-eval'; " +
 		"style-src 'self'; " +
 		"img-src 'self' data:; " +
 		"font-src 'self'; " +

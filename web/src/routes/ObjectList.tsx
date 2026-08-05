@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 
-import { listRecords, type MetaObject } from "../api";
+import { type MetaObject } from "../api";
 import { useI18n } from "../i18n";
 import { formatValue, labelFor, listFields, objectLabel } from "../meta/render";
+import { useRecords } from "../sync/ReplicaContext";
 import { Alert, Busy, buttonClass, Table } from "../ui";
 
 /** The list view for any object, rendered entirely from its schema. */
@@ -14,17 +14,20 @@ export function ObjectList({ object }: { object: MetaObject }) {
   const fields = listFields(object.fields);
   const name = objectLabel(object.name, label);
 
-  const { data, isPending, error } = useQuery({
-    queryKey: ["records", object.resource],
-    queryFn: () => listRecords(object.resource),
-  });
+  // The replica, not the API — WP-2.7-decisions.md §2. Same call online and
+  // off; the only difference is how recently `sync()` last caught up.
+  const { data, isPending, error } = useRecords(object.name);
 
   if (isPending) {
     return <Busy label={t("status.loading")} />;
   }
   if (error) {
-    return <Alert>{t("status.error")}</Alert>;
+    // A replica that has never reached the server has no schema and no rows,
+    // and there is no API to fall back to by design. Say what would fix it.
+    return <Alert>{t("object.offline.unavailable")}</Alert>;
   }
+
+  const { rows, pending } = data;
 
   const columns = [
     ...fields.map((f) => labelFor(f, object.name, label)),
@@ -46,21 +49,32 @@ export function ObjectList({ object }: { object: MetaObject }) {
         </Link>
       </div>
 
-      {data.length === 0 ? (
+      {rows.length === 0 ? (
         <p className="text-sm text-slate-500 dark:text-slate-400">{t("object.list.empty")}</p>
       ) : (
         <Table caption={t("object.list.title", { object: name })} columns={columns}>
-          {data.map((record) => {
+          {rows.map((record) => {
             const id = String(record.id ?? "");
             return (
               <tr key={id} className="border-b border-slate-200 dark:border-slate-700">
-                {fields.map((f) => (
+                {fields.map((f, i) => (
                   <td key={f.name} className="px-3 py-2 text-slate-900 dark:text-slate-100">
                     {formatValue(f, record[f.name], record, {
                       money: formatMoney,
                       number: formatNumber,
                       locale: locale.tag,
                     })}
+                    {/* The pending flag rides the first column so it reads as
+                        part of the row rather than as a column of its own that
+                        is empty for almost every row. */}
+                    {i === 0 && pending.has(id) && (
+                      <span
+                        data-testid="pending-flag"
+                        className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-900 dark:bg-amber-900 dark:text-amber-100"
+                      >
+                        {t("object.row.pending")}
+                      </span>
+                    )}
                   </td>
                 ))}
                 <td className="px-3 py-2">
