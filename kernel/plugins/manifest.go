@@ -130,9 +130,9 @@ func (m *Manifest) Validate() error {
 		what    string
 		owner   string
 	}{
-		{len(m.Hooks) > 0, "hooks", "WP-3.1b (hook dispatch at the write choke point)"},
-		{len(m.Endpoints) > 0, "endpoints", "WP-3.1b"},
-		{len(m.Capabilities.Schedule) > 0, "capabilities.schedule", "WP-3.1b (job runner)"},
+		{len(m.Hooks) > 0, "hooks", "WP-3.1b (hook dispatch)"},
+		{len(m.Endpoints) > 0, "endpoints", "WP-3.2, alongside the example plugins that call them"},
+		{len(m.Capabilities.Schedule) > 0, "capabilities.schedule", "WP-3.3, which owns the job runner"},
 		{len(m.Capabilities.HTTP) > 0, "capabilities.http", "the WP that adds an audited outbound client (ADR-007 requires every call be audited; the sandbox has no network at all until then)"},
 		{len(m.Overlays) > 0, "overlays", "WP-3.2 (bundle install)"},
 		{len(m.MCPTools) > 0, "mcp_tools", "WP-3.4 (MCP server)"},
