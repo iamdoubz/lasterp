@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/iamdoubz/lasterp/kernel/authz"
+	"github.com/iamdoubz/lasterp/kernel/changefeed"
 	"github.com/iamdoubz/lasterp/kernel/identity"
 	"github.com/iamdoubz/lasterp/kernel/idgen"
 	"github.com/iamdoubz/lasterp/kernel/storage"
@@ -45,6 +46,11 @@ type Installed struct {
 	SHA256      string
 	InstalledAt time.Time
 	InstalledBy string
+
+	// Circuit-breaker state (WP-3.1b, breaker.go). Persisted on the row so it
+	// survives the restart a misbehaving plugin may itself be causing.
+	HookFailures    int
+	BreakerOpenedAt *time.Time
 
 	module []byte // decoded lazily by Load; never rendered
 }
@@ -148,6 +154,18 @@ func Install(ctx context.Context, db *storage.DB, tenant tenancy.ID, manifestYAM
 	}
 	now := time.Now().UTC()
 
+	// Where async delivery starts. Read *before* the install commits, so a
+	// change racing this install is delivered rather than missed — at-least-once
+	// is the promise, and the safe direction of that race is "delivered twice".
+	//
+	// Recorded here rather than lazily at the first delivery pass: a cursor
+	// created on first pass silently skips everything between the install and
+	// that pass, which is a window nobody would think to look for.
+	startCursor, err := changefeed.HighWater(ctx, db, tenant)
+	if err != nil {
+		return nil, fmt.Errorf("plugins: read feed position for %s: %w", m.ID, err)
+	}
+
 	err = tenancy.WithTenant(ctx, db, tenant, func(ctx context.Context, tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, db.Rebind(`
 			INSERT INTO plugins (tenant_id, id, version, manifest, granted, role_id, sha256, module,
@@ -156,6 +174,14 @@ func Install(ctx context.Context, db *storage.DB, tenant tenancy.ID, manifestYAM
 			string(tenant), m.ID, m.Version, string(manifestYAML), string(grantedJSON), string(role), digest,
 			base64.StdEncoding.EncodeToString(module), now, string(approver.UserID)); err != nil {
 			return err
+		}
+		if m.HasAsyncHooks() {
+			if _, err := tx.ExecContext(ctx, db.Rebind(`
+				INSERT INTO plugin_deliveries (tenant_id, plugin_id, cursor, updated_at)
+				VALUES (?, ?, ?, ?)`),
+				string(tenant), m.ID, startCursor, now); err != nil {
+				return err
+			}
 		}
 		return recordAudit(ctx, tx, db, tenant, m.ID, "install", string(approver.UserID),
 			map[string]any{"version": m.Version, "sha256": digest, "granted": perms})
@@ -185,9 +211,18 @@ func Uninstall(ctx context.Context, db *storage.DB, tenant tenancy.ID, id, actor
 		return fmt.Errorf("plugins: remove plugin role: %w", err)
 	}
 	err = tenancy.WithTenant(ctx, db, tenant, func(ctx context.Context, tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, db.Rebind(
-			`DELETE FROM plugins WHERE tenant_id = ? AND id = ?`), string(tenant), id); err != nil {
-			return err
+		for _, stmt := range []string{
+			`DELETE FROM plugins WHERE tenant_id = ? AND id = ?`,
+			// Delivery state goes with the plugin. A cursor left behind would
+			// make a reinstall resume from a position it never chose, and kv
+			// left behind would hand a *different* plugin under the same id
+			// someone else's stored state.
+			`DELETE FROM plugin_deliveries WHERE tenant_id = ? AND plugin_id = ?`,
+			`DELETE FROM plugin_kv WHERE tenant_id = ? AND plugin_id = ?`,
+		} {
+			if _, err := tx.ExecContext(ctx, db.Rebind(stmt), string(tenant), id); err != nil {
+				return err
+			}
 		}
 		return recordAudit(ctx, tx, db, tenant, id, "uninstall", actor, nil)
 	})
@@ -207,13 +242,15 @@ func Get(ctx context.Context, db *storage.DB, tenant tenancy.ID, id string) (*In
 		p                                         Installed
 		manifestYAML, grantedJSON, roleID, modB64 string
 		installedAt                               storage.Time
+		openedAt                                  storage.NullTime
 	)
 	err := tenancy.WithTenant(ctx, db, tenant, func(ctx context.Context, tx *sql.Tx) error {
 		return tx.QueryRowContext(ctx, db.Rebind(`
-			SELECT id, version, manifest, granted, role_id, sha256, module, installed_at, installed_by
+			SELECT id, version, manifest, granted, role_id, sha256, module, installed_at, installed_by,
+			       hook_failures, breaker_opened_at
 			FROM plugins WHERE tenant_id = ? AND id = ?`), string(tenant), id).
 			Scan(&p.ID, &p.Version, &manifestYAML, &grantedJSON, &roleID, &p.SHA256, &modB64,
-				&installedAt, &p.InstalledBy)
+				&installedAt, &p.InstalledBy, &p.HookFailures, &openedAt)
 	})
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
@@ -242,6 +279,9 @@ func Get(ctx context.Context, db *storage.DB, tenant tenancy.ID, id string) (*In
 		return nil, fmt.Errorf("plugins: module for %s has hash %s, recorded %s — refusing to run bytes nobody approved", id, got, p.SHA256)
 	}
 	p.Manifest, p.RoleID, p.module, p.InstalledAt = m, authz.RoleID(roleID), module, installedAt.Time
+	if openedAt.Valid {
+		p.BreakerOpenedAt = &openedAt.Time
+	}
 	return &p, nil
 }
 
@@ -254,7 +294,8 @@ func List(ctx context.Context, db *storage.DB, tenant tenancy.ID) ([]Installed, 
 	var out []Installed
 	err := tenancy.WithTenant(ctx, db, tenant, func(ctx context.Context, tx *sql.Tx) error {
 		rows, err := tx.QueryContext(ctx, db.Rebind(`
-			SELECT id, version, granted, role_id, sha256, installed_at, installed_by
+			SELECT id, version, granted, role_id, sha256, installed_at, installed_by,
+			       hook_failures, breaker_opened_at
 			FROM plugins WHERE tenant_id = ? ORDER BY id`), string(tenant))
 		if err != nil {
 			return err
@@ -264,9 +305,13 @@ func List(ctx context.Context, db *storage.DB, tenant tenancy.ID) ([]Installed, 
 			var p Installed
 			var grantedJSON, roleID string
 			var installedAt storage.Time
+			var openedAt storage.NullTime
 			if err := rows.Scan(&p.ID, &p.Version, &grantedJSON, &roleID, &p.SHA256,
-				&installedAt, &p.InstalledBy); err != nil {
+				&installedAt, &p.InstalledBy, &p.HookFailures, &openedAt); err != nil {
 				return err
+			}
+			if openedAt.Valid {
+				p.BreakerOpenedAt = &openedAt.Time
 			}
 			if err := json.Unmarshal([]byte(grantedJSON), &p.Granted); err != nil {
 				return err
@@ -305,4 +350,30 @@ func recordAudit(ctx context.Context, tx *sql.Tx, db *storage.DB, tenant tenancy
 		return fmt.Errorf("plugins: audit %s: %w", action, err)
 	}
 	return nil
+}
+
+// LoadAll returns every installed plugin for a tenant, module bytes included,
+// which is what dispatch and delivery need (List deliberately omits them).
+//
+// A plugin whose stored bytes no longer match their recorded hash is skipped
+// rather than failing the whole load: one tampered row must not stop every
+// other plugin in the tenant from running, and Get still refuses it by name
+// when an administrator asks about it directly.
+func LoadAll(ctx context.Context, db *storage.DB, tenant tenancy.ID) ([]Installed, error) {
+	metas, err := List(ctx, db, tenant)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Installed, 0, len(metas))
+	for _, meta := range metas {
+		p, err := Get(ctx, db, tenant, meta.ID)
+		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				continue // uninstalled between the two reads
+			}
+			return nil, err
+		}
+		out = append(out, *p)
+	}
+	return out, nil
 }

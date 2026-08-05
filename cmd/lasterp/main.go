@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/iamdoubz/lasterp/internal/app"
+	"github.com/iamdoubz/lasterp/kernel/plugins"
 	"github.com/iamdoubz/lasterp/kernel/secrets"
 	"github.com/iamdoubz/lasterp/kernel/storage"
 	"github.com/iamdoubz/lasterp/kernel/tenancy"
@@ -375,18 +376,41 @@ func addr() string {
 // default lasterp.db), migrates it, registers the modules, and returns the
 // fully-wired product API handler.
 func buildHandler(ctx context.Context) (http.Handler, error) {
+	handler, _, _, err := buildHandlerWithHooks(ctx)
+	return handler, err
+}
+
+// buildHandlerWithHooks additionally returns the plugin dispatcher, so `serve`
+// can run async hook delivery alongside the HTTP surface (WP-3.1b). `dev` uses
+// the plain form: a hot-reloading local instance restarts constantly, and
+// delivery resumes from its stored cursor either way.
+func buildHandlerWithHooks(ctx context.Context) (http.Handler, *plugins.Dispatcher, *storage.DB, error) {
 	db, err := app.Open(ctx, os.Getenv("LASTERP_DSN"))
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
-	return app.Handler(ctx, db)
+	handler, dispatcher, err := app.HandlerWithHooks(ctx, db)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return handler, dispatcher, db, nil
 }
 
 func serve(ctx context.Context) error {
-	handler, err := buildHandler(ctx)
+	handler, dispatcher, db, err := buildHandlerWithHooks(ctx)
 	if err != nil {
 		return err
 	}
+	// Async plugin hooks are delivered by a background sweep of the change
+	// feed (WP-3.1b). It stops with the server: a delivery in flight at
+	// shutdown is redelivered from the stored cursor on the next start, which
+	// is the at-least-once promise doing its job.
+	runnerCtx, stopRunner := context.WithCancel(ctx)
+	waitRunner := app.StartHookRunner(runnerCtx, db, dispatcher, 0)
+	defer func() {
+		stopRunner()
+		waitRunner()
+	}()
 	listen := addr()
 	srv := newServer(listen, handler)
 

@@ -1,0 +1,20 @@
+-- WP-3.1b: the feed records who made each change.
+--
+-- Needed so an async hook runner can skip changes the plugin itself made — a
+-- plugin that reacts to its own writes loops forever, and self-suppression is
+-- the version that cuts the loop at the source rather than bounding it after
+-- the fact (WP-3.1b-decisions.md §6). Both existing call sites
+-- (kernel/metadata's audit publish and kernel/eventstore's event publish)
+-- already hold the actor, so this carries information that was being dropped.
+--
+-- INV-S5 is unaffected: ordering, cursor allocation and resume semantics are
+-- untouched — this adds a column, it does not change what an entry *is* or the
+-- order entries are observed in. The append-only trigger (0044) still forbids
+-- UPDATE and DELETE on the rows themselves; adding a column is schema
+-- evolution, not mutation.
+--
+-- DEFAULT '' rather than NULL so existing rows read as "actor not recorded"
+-- without a nullable column every consumer has to branch on. Entries written
+-- before this migration are pre-plugin-host by definition, so no hook can have
+-- been their author.
+ALTER TABLE change_feed ADD COLUMN actor_id TEXT NOT NULL DEFAULT '';

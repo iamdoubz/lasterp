@@ -86,6 +86,13 @@ func hostFunctions(p *Installed) []extism.HostFunction {
 	// nobody can trust.
 	fns := []extism.HostFunction{
 		jsonHostFn("lasterp_log", hostLog),
+		// kv is unconditional for the same reason log is: a plugin can only
+		// ever read back what it itself wrote, so it is not authority over
+		// anything the tenant owns — and at-least-once async delivery makes
+		// idempotency the hook author's job, which needs a dedupe key
+		// somewhere (WP-3.1b).
+		jsonHostFn("lasterp_kv_get", hostKVGet),
+		jsonHostFn("lasterp_kv_set", hostKVSet),
 	}
 	if manifestAllows(p.Manifest, "read") {
 		fns = append(fns,
@@ -322,6 +329,9 @@ func (inv *invocation) crudFor(object, access string) (*metadata.CRUD, error) {
 			authz.ErrPermissionDenied, inv.plugin.ID, access, object)
 	}
 	crud, ok := inv.host.Objects[object]
+	if ok && inv.host.Hooks != nil {
+		crud = crud.WithHooks(inv.host.Hooks)
+	}
 	if !ok {
 		// Same word as a refusal: whether an object exists in this deployment
 		// is not something an untrusted module needs to learn.

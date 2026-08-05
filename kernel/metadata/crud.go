@@ -34,6 +34,9 @@ type Record map[string]any
 // (INV-T1).
 type CRUD struct {
 	schema *EffectiveSchema
+	// hooks is the optional synchronous plugin dispatch seam (WP-3.1b,
+	// hooks.go). Nil — the default — is exactly today's behaviour.
+	hooks Hooks
 }
 
 // ErrWrongPersistence is returned by NewCRUD for a non-CRUD object
@@ -141,6 +144,13 @@ func (c *CRUD) Create(ctx context.Context, db *storage.DB, tenant tenancy.ID, re
 		return nil, err
 	}
 	rec, err = c.validated(rec, false)
+	if err != nil {
+		return nil, err
+	}
+	// Sync hooks run here: after the record is known valid, before any
+	// transaction exists (hooks.go). A rejection is the plugin's, and reaches
+	// the caller unchanged.
+	rec, err = c.runBefore(ctx, tenant, VerbCreate, rec, false)
 	if err != nil {
 		return nil, err
 	}
@@ -405,6 +415,10 @@ func (c *CRUD) Update(ctx context.Context, db *storage.DB, tenant tenancy.ID, id
 	if err != nil {
 		return nil, err
 	}
+	changes, err = c.runBefore(ctx, tenant, VerbUpdate, changes, true)
+	if err != nil {
+		return nil, err
+	}
 	newTranslations, translationsTouched, err := c.translationsFrom(changes)
 	if err != nil {
 		return nil, err
@@ -512,6 +526,11 @@ func (c *CRUD) Update(ctx context.Context, db *storage.DB, tenant tenancy.ID, id
 func (c *CRUD) SoftDelete(ctx context.Context, db *storage.DB, tenant tenancy.ID, id string) error {
 	actor, err := authz.Authorize(ctx, db, c.schema.ObjectName, "delete")
 	if err != nil {
+		return err
+	}
+	// A delete hook may veto and nothing else — there is no record to enrich,
+	// so the returned one is deliberately discarded.
+	if _, err := c.runBefore(ctx, tenant, VerbDelete, Record{"id": id}, true); err != nil {
 		return err
 	}
 

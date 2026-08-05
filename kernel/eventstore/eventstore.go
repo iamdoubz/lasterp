@@ -171,6 +171,7 @@ func Append(ctx context.Context, db *storage.DB, tenant tenancy.ID, stream Strea
 			RefID:      strconv.FormatInt(id, 10),
 			Object:     object,
 			ScopeKey:   changefeed.ScopeKeyFor(object),
+			ActorID:    ev.ActorID,
 			RecordedAt: recordedAt,
 		})
 	})

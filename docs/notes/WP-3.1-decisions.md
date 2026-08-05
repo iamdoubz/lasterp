@@ -143,3 +143,51 @@ ADR-014's constitutional list is untouchable, and a plugin host is exactly the s
 autonomy rules warn about. Installation requires a human administrator's approval of a capability
 set; no host function grants, installs, or approves anything, and there is no API by which a
 plugin installs a plugin. Recorded here because the absence is deliberate and easy to erode.
+
+## 8. PR-B plan review (2026-08-05, before any B code)
+
+B was reviewed against the code rather than against its roadmap line, which changed its shape and
+its size. Recorded here because the *reasons* are what a later reader needs; the outcomes live in
+[docs/05](../05-PLUGIN-SYSTEM.md) and the roadmap.
+
+**Sync hooks run before the transaction opens, not inside it.** `CRUD.Create` authorizes and
+validates before calling `tenancy.WithTenant`, which hands us a dispatch point outside any
+transaction. Running a wazero call inside one would hold a Postgres transaction — or SQLite's
+single write lock — for the length of a plugin's wall-clock budget, which is the starvation
+WP-2.3b already fought. The payoff is that **INV-X2 becomes structural**, in the shape of INV-S2:
+no plugin code runs inside a transaction, asserted against the dispatch sites, rather than a
+runtime check hoping to catch a partial commit. The residual is real and stated rather than
+hidden: a hook that vetoes on state it read can be raced by a concurrent write before the commit,
+which is the window ordinary validation already has.
+
+**Async delivery rides the change feed, not a broker.** `changefeed.Read` is ordered, resumable
+and exactly-once-observed (INV-S5, since WP-2.1). An `after_commit` runner is a feed consumer with
+a per-plugin cursor; dead-letter is a table of failed deliveries and the circuit breaker parks the
+cursor. docs/05's "at-least-once from JetStream" is satisfied without deploying JetStream, and
+solo mode stays one binary.
+
+**Sync-hook latency is a tenant dial, priced rather than refused.** Default 50ms; a manifest may
+raise it to a hard ceiling it cannot exceed; raising it warns the installing administrator in
+plain language what it costs per write. The docs/09 p95 describes the system LastERP ships, and a
+tenant adding work to every write has made a business trade-off — commandment 9's "infinite dials"
+applied to latency.
+
+The load-bearing half is not the warning. **Per-plugin hook latency is measured and attributed at
+runtime**, because the person who feels the latency is usually not the person who installed the
+plugin, and without attribution a slow plugin makes "the ERP is slow" — the incumbent failure
+docs/14 exists to avoid. With it, the same slowness reads as "com.acme.x adds 180ms to every
+Invoice write", which is actionable and true.
+
+**A plugin does not react to its own writes.** Self-suppression on the audit actor (`plugin:<id>`,
+which already exists) rather than a depth counter: cut the loop at the source instead of bounding
+it after the fact. The consequence is deliberate — a plugin genuinely cannot chain off its own
+output.
+
+**Three things left B, each to an owner rather than to silence** — `/ext/<plugin>/` endpoints to
+WP-3.2 (a plugin-declared route needs its own authorization answer, and designing it before an
+example plugin exists to call it means guessing), `enqueue_job` + `schedule:` to WP-3.3 (which owns
+the job runner, since a scheduler built inside the plugin host would be a second one the moment
+automations needed theirs), and `emit_event` to nothing yet (untrusted code writing the event store
+is INV-E territory and deserves its own design). All three are already refused by A's manifest
+validation, which names the owning WP — so an author is told what they are waiting on rather than
+installing something that silently never fires.

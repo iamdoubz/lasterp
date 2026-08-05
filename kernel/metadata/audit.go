@@ -40,11 +40,16 @@ func recordAudit(ctx context.Context, tx *sql.Tx, db *storage.DB, tenant tenancy
 	// reachable by (tenant_id, object, record_id), which is exactly the index
 	// audit_log already carries.
 	return changefeed.Append(ctx, tx, db, changefeed.Entry{
-		TenantID:   tenant,
-		Source:     changefeed.SourceAudit,
-		RefID:      recordID,
-		Object:     object,
-		ScopeKey:   changefeed.ScopeKeyFor(object),
+		TenantID: tenant,
+		Source:   changefeed.SourceAudit,
+		RefID:    recordID,
+		Object:   object,
+		ScopeKey: changefeed.ScopeKeyFor(object),
+		// The actor was already being written to audit_log and dropped on the
+		// way to the feed. WP-3.1b needs it: an async hook runner skips changes
+		// the plugin itself made, and without an author on the entry a plugin
+		// reacts to its own writes forever.
+		ActorID:    actorID,
 		RecordedAt: at,
 	})
 }

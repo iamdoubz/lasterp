@@ -40,6 +40,7 @@ func testSQLiteDB(t *testing.T) *storage.DB {
 	if err := migrate.Apply(context.Background(), db); err != nil {
 		t.Fatalf("migrate sqlite: %v", err)
 	}
+	applyWidgetDDL(t, db)
 	return db
 }
 
@@ -82,6 +83,12 @@ func testPostgresDB(t *testing.T) *storage.DB {
 	if err := migrate.Apply(ctx, superDB); err != nil {
 		t.Fatalf("migrate postgres: %v", err)
 	}
+	// The hook tests' object table is created here, as the *owner*, before the
+	// app role exists — exactly the deployment split WP-1.10 enforces: DDL runs
+	// privileged (`lasterp migrate`), the server then connects restricted. The
+	// app role has no CREATE on schema public and must not: a test harness that
+	// granted it would stop modelling the posture it exists to model.
+	applyWidgetDDL(t, superDB)
 
 	const appUser, appPassword = "lasterp_app", "lasterp_app"
 	if _, err := superDB.ExecContext(ctx, `CREATE ROLE `+appUser+` LOGIN PASSWORD '`+appPassword+`' NOSUPERUSER NOBYPASSRLS`); err != nil {

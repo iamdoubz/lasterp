@@ -61,6 +61,11 @@ func problemForError(err error, instance string) Problem {
 	switch {
 	case errors.Is(err, metadata.ErrValidation):
 		return Problem{Status: http.StatusUnprocessableEntity, Title: "validation failed", Detail: err.Error(), Instance: instance}
+	case errors.Is(err, metadata.ErrHookRejected):
+		// A plugin hook refused the write (WP-3.1b). The detail carries the
+		// plugin's own message and names it: a user told only "rejected" cannot
+		// act, and an administrator cannot find the cause.
+		return Problem{Status: http.StatusUnprocessableEntity, Title: "rejected by a plugin", Detail: err.Error(), Instance: instance}
 	case errors.Is(err, metadata.ErrNotLocalized):
 		// Supplying translations for a field the schema does not localize is a
 		// bad request body: nothing would ever read them back.
