@@ -294,7 +294,7 @@ func List(ctx context.Context, db *storage.DB, tenant tenancy.ID) ([]Installed, 
 	var out []Installed
 	err := tenancy.WithTenant(ctx, db, tenant, func(ctx context.Context, tx *sql.Tx) error {
 		rows, err := tx.QueryContext(ctx, db.Rebind(`
-			SELECT id, version, granted, role_id, sha256, installed_at, installed_by,
+			SELECT id, version, manifest, granted, role_id, sha256, installed_at, installed_by,
 			       hook_failures, breaker_opened_at
 			FROM plugins WHERE tenant_id = ? ORDER BY id`), string(tenant))
 		if err != nil {
@@ -303,13 +303,19 @@ func List(ctx context.Context, db *storage.DB, tenant tenancy.ID) ([]Installed, 
 		defer func() { _ = rows.Close() }()
 		for rows.Next() {
 			var p Installed
-			var grantedJSON, roleID string
+			var manifestYAML, grantedJSON, roleID string
 			var installedAt storage.Time
 			var openedAt storage.NullTime
-			if err := rows.Scan(&p.ID, &p.Version, &grantedJSON, &roleID, &p.SHA256,
+			if err := rows.Scan(&p.ID, &p.Version, &manifestYAML, &grantedJSON, &roleID, &p.SHA256,
 				&installedAt, &p.InstalledBy, &p.HookFailures, &openedAt); err != nil {
 				return err
 			}
+			// Parsed for the management view (what it exposes, where it calls
+			// out). A stored manifest this host can no longer parse leaves the
+			// field nil rather than failing the whole listing: an administrator
+			// looking at a plugin that has stopped being installable needs the
+			// list to render, and Get still refuses it by name.
+			p.Manifest, _ = ParseManifest([]byte(manifestYAML))
 			if openedAt.Valid {
 				p.BreakerOpenedAt = &openedAt.Time
 			}

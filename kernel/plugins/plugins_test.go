@@ -116,7 +116,10 @@ func TestManifestRefusesWhatThisHostCannotHonour(t *testing.T) {
 		// mode, and the same silence could one day drop a capability an
 		// administrator believed they were reviewing.
 		"hooks":    "id: com.acme.x\nversion: 1.0.0\nfunctions: [run]\nhooks: [{event: invoice.posted, fn: run}]\n",
-		"http":     "id: com.acme.x\nversion: 1.0.0\nfunctions: [run]\ncapabilities:\n  http: [{host: api.acme.com}]\n",
+		"overlays": "id: com.acme.x\nversion: 1.0.0\nfunctions: [run]\noverlays: [./x.object.yaml]\n",
+		// `capabilities.http` was on this list until WP-3.2a, which shipped
+		// the audited client ADR-007 required. A malformed http block is
+		// still refused — see endpoints_test.go.
 		"schedule": "id: com.acme.x\nversion: 1.0.0\nfunctions: [run]\ncapabilities:\n  schedule: [\"0 2 * * *\"]\n",
 		"mcp":      "id: com.acme.x\nversion: 1.0.0\nfunctions: [run]\nmcp_tools: [{name: x, fn: run}]\n",
 	}

@@ -48,11 +48,32 @@ type Manifest struct {
 	// Hooks are the write-path subscriptions (WP-3.1b).
 	Hooks []Hook `yaml:"hooks"`
 
+	// Endpoints are the HTTP routes this plugin serves under
+	// `/ext/<id>/` (WP-3.2a).
+	Endpoints []Endpoint `yaml:"endpoints"`
+
 	// Declared-but-unimplemented surfaces. Parsed so install can refuse them by
 	// name (see Validate); each lands with a named WP.
-	Overlays  []string         `yaml:"overlays"`
-	MCPTools  []map[string]any `yaml:"mcp_tools"`
-	Endpoints []map[string]any `yaml:"endpoints"`
+	Overlays []string         `yaml:"overlays"`
+	MCPTools []map[string]any `yaml:"mcp_tools"`
+}
+
+// Endpoint is one route the plugin serves under `/ext/<id>/`.
+//
+// The surface is declared, never discovered — the same rule as Functions. An
+// administrator approving an install can read every path this plugin will
+// answer on, and `GET /api/v1/plugins` lists them afterwards, because "what
+// does this thing expose" has to be answerable without reading the module.
+type Endpoint struct {
+	// Path is the route under the plugin's prefix, e.g. "/report" serves
+	// `/ext/com.acme.x/report`. Matched exactly.
+	Path string `yaml:"path"`
+	// Fn is the exported function to call. It must also appear in Functions.
+	Fn string `yaml:"fn"`
+	// Methods defaults to GET. Only GET and POST are routable: those are the
+	// two patterns the gateway registers, and a declared PUT that silently
+	// never fires is the failure mode Validate exists to prevent.
+	Methods []string `yaml:"methods"`
 }
 
 // Hook is one write-path subscription.
@@ -174,10 +195,23 @@ func (m *Manifest) HasAsyncHooks() bool {
 type Capabilities struct {
 	Objects []ObjectAccess `yaml:"objects"`
 	Secrets []string       `yaml:"secrets"`
-	// HTTP is refused at install in WP-3.1a — see Validate.
-	HTTP []map[string]any `yaml:"http"`
-	// Schedule is refused likewise (no job runner until WP-3.1b).
+	// HTTP is the outbound allowlist (WP-3.2a). Empty means the sandbox has
+	// no network at all, which is every plugin's default.
+	HTTP []HTTPHost `yaml:"http"`
+	// Schedule is refused: no job runner until WP-3.3.
 	Schedule []string `yaml:"schedule"`
+}
+
+// HTTPHost is one outbound destination the plugin asks for.
+//
+// A host, not a URL prefix: the allowlist an administrator reviews should read
+// as "this plugin talks to api.acme.com", and a path-scoped allowlist implies
+// a containment it cannot deliver (the same host serves whatever paths it
+// likes). The port defaults to 443 and may be given as `host:port`; the scheme
+// is always https (http.go).
+type HTTPHost struct {
+	Host    string   `yaml:"host"`
+	Methods []string `yaml:"methods"`
 }
 
 // ObjectAccess is one object-type grant request.
@@ -243,6 +277,24 @@ func (m *Manifest) Validate() error {
 		}
 	}
 
+	for i := range m.Capabilities.HTTP {
+		if err := m.Capabilities.HTTP[i].validate(); err != nil {
+			return fmt.Errorf("plugins: capabilities.http[%d]: %w", i, err)
+		}
+	}
+
+	seenPath := map[string]bool{}
+	for i := range m.Endpoints {
+		e := &m.Endpoints[i]
+		if err := e.validate(m); err != nil {
+			return fmt.Errorf("plugins: endpoint %d (%s): %w", i, e.Path, err)
+		}
+		if seenPath[e.Path] {
+			return fmt.Errorf("plugins: endpoint %s is declared twice; one path has one handler", e.Path)
+		}
+		seenPath[e.Path] = true
+	}
+
 	// Refused rather than ignored. Silently dropping a declared capability is
 	// the failure mode where an author ships a plugin that "installs fine" and
 	// never fires, and the same mechanism could one day drop a capability an
@@ -252,10 +304,8 @@ func (m *Manifest) Validate() error {
 		what    string
 		owner   string
 	}{
-		{len(m.Endpoints) > 0, "endpoints", "WP-3.2, alongside the example plugins that call them"},
 		{len(m.Capabilities.Schedule) > 0, "capabilities.schedule", "WP-3.3, which owns the job runner"},
-		{len(m.Capabilities.HTTP) > 0, "capabilities.http", "the WP that adds an audited outbound client (ADR-007 requires every call be audited; the sandbox has no network at all until then)"},
-		{len(m.Overlays) > 0, "overlays", "WP-3.2 (bundle install)"},
+		{len(m.Overlays) > 0, "overlays", "WP-3.2b (signed bundles, which is what carries an overlay file)"},
 		{len(m.MCPTools) > 0, "mcp_tools", "WP-3.4 (MCP server)"},
 	} {
 		if unsupported.present {
@@ -365,4 +415,109 @@ func (h Hook) LatencyWarning() string {
 	return fmt.Sprintf(
 		"every write of %s will wait for %s (up to %v) before it is saved; if this plugin is slow or unreachable, saving a %s is slow for everyone in this tenant",
 		object, h.Fn, h.Timeout(), object)
+}
+
+// Methods with a default: an endpoint that names none serves GET.
+func (e Endpoint) methods() []string {
+	if len(e.Methods) == 0 {
+		return []string{"GET"}
+	}
+	return e.Methods
+}
+
+// Serves reports whether this endpoint answers that method.
+func (e Endpoint) Serves(method string) bool {
+	for _, m := range e.methods() {
+		if strings.EqualFold(m, method) {
+			return true
+		}
+	}
+	return false
+}
+
+// endpointPathRE bounds a declared route. No query, no fragment, no dot
+// segments, no encoded bytes: the path an administrator reads in the manifest
+// is the path the server routes, with nothing in between to decode
+// differently.
+var endpointPathRE = regexp.MustCompile(`^/[A-Za-z0-9][A-Za-z0-9/_.\-]{0,127}$`)
+
+func (e *Endpoint) validate(m *Manifest) error {
+	if !endpointPathRE.MatchString(e.Path) || strings.Contains(e.Path, "..") || strings.Contains(e.Path, "//") {
+		return fmt.Errorf("path %q must be an absolute route under the plugin prefix, e.g. /report", e.Path)
+	}
+	if !declaredFn(m.Functions, e.Fn) {
+		return fmt.Errorf("fn %q is not in this manifest's functions list", e.Fn)
+	}
+	for _, method := range e.methods() {
+		switch strings.ToUpper(method) {
+		case "GET", "POST":
+		default:
+			// Refused rather than dropped: the gateway registers GET and POST
+			// under /ext, so a declared PUT would install cleanly and never be
+			// reachable — the silent-no-op failure ParseManifest exists to
+			// prevent.
+			return fmt.Errorf("method %q is not routable under /ext (GET and POST are)", method)
+		}
+	}
+	return nil
+}
+
+// Endpoint returns the declared endpoint for a path, if any.
+func (m *Manifest) Endpoint(path string) (Endpoint, bool) {
+	for _, e := range m.Endpoints {
+		if e.Path == path {
+			return e, true
+		}
+	}
+	return Endpoint{}, false
+}
+
+// hostPortRE bounds an outbound allowlist entry: a DNS name, optionally with a
+// port. No wildcards — `*.acme.com` reads like containment and is not (whoever
+// controls the zone controls the destination), so an author lists the hosts
+// they actually call.
+var hostPortRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9.\-]{0,253}[a-z0-9])?(:[0-9]{1,5})?$`)
+
+func (h *HTTPHost) validate() error {
+	h.Host = strings.ToLower(strings.TrimSpace(h.Host))
+	if !hostPortRE.MatchString(h.Host) {
+		return fmt.Errorf("host %q must be a DNS name, optionally with a port (no scheme, no path, no wildcard)", h.Host)
+	}
+	for _, method := range h.methods() {
+		switch strings.ToUpper(method) {
+		case "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD":
+		default:
+			return fmt.Errorf("method %q is not an HTTP method this host will make", method)
+		}
+	}
+	return nil
+}
+
+func (h HTTPHost) methods() []string {
+	if len(h.Methods) == 0 {
+		return []string{"GET"}
+	}
+	return h.Methods
+}
+
+// AllowsHTTP reports whether the manifest declared this exact destination and
+// method. hostPort is the request's host with its port made explicit, so
+// `api.acme.com` in a manifest means port 443 and nothing else.
+func (m *Manifest) AllowsHTTP(method, hostPort string) bool {
+	hostPort = strings.ToLower(hostPort)
+	for _, h := range m.Capabilities.HTTP {
+		want := h.Host
+		if !strings.Contains(want, ":") {
+			want += ":443"
+		}
+		if want != hostPort {
+			continue
+		}
+		for _, allowed := range h.methods() {
+			if strings.EqualFold(allowed, method) {
+				return true
+			}
+		}
+	}
+	return false
 }

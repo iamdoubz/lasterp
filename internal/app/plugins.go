@@ -6,8 +6,12 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"io"
 	"log"
 	"net/http"
+	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/iamdoubz/lasterp/kernel/api"
@@ -54,6 +58,84 @@ func pluginActions(db *storage.DB, dispatcher *plugins.Dispatcher) []api.Action 
 		{Method: "POST", Path: "/api/v1/plugins/{id}/reset-breaker", Object: objectPlugin, Write: true,
 			Summary: "Close a tripped circuit breaker without waiting out the cooldown",
 			Handler: resetPluginBreaker(db, dispatcher)},
+
+		// The plugin-declared routes (WP-3.2a). **One pattern per method, not
+		// one per plugin**: the set of live endpoints varies by tenant and by
+		// install, and a mux mutated at runtime is a route table that cannot be
+		// enumerated — which is how this codebase proves what it exposes
+		// (routes_integrity_test.go). Resolution happens inside the handler,
+		// where the tenant is known.
+		{Method: "GET", Path: "/ext/{plugin}/{path...}", Object: objectPlugin,
+			Summary: "Call a route a plugin declares in its manifest",
+			Handler: extEndpoint(db, dispatcher.Host())},
+		{Method: "POST", Path: "/ext/{plugin}/{path...}", Object: objectPlugin, Write: true,
+			Summary: "Call a route a plugin declares in its manifest",
+			Handler: extEndpoint(db, dispatcher.Host())},
+	}
+}
+
+// extEndpoint serves `/ext/<plugin>/<path>` (ADR-007, docs/05).
+//
+// The gate is the caller's session plus `plugin:invoke` — the same permission
+// as calling a function directly, because it is the same power: running plugin
+// code. What that code may *do* is its own principal's business, decided at
+// install; the caller's grants add nothing to it, which is what keeps an ext
+// endpoint from being a way to launder authority in either direction.
+func extEndpoint(db *storage.DB, host plugins.Host) api.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request, tenant tenancy.ID) {
+		actor, err := authz.Authorize(r.Context(), db, objectPlugin, actionInvoke)
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		p, err := plugins.Get(r.Context(), db, tenant, r.PathValue("plugin"))
+		if err != nil {
+			if errors.Is(err, plugins.ErrNotFound) {
+				// Same answer as an undeclared path below: whether a tenant has
+				// a plugin by that id is not something a caller who may not use
+				// it needs to learn.
+				writeProblem(w, http.StatusNotFound, "not found",
+					"no plugin serves that route", r.URL.Path)
+				return
+			}
+			fail(w, r, err)
+			return
+		}
+		body, err := io.ReadAll(io.LimitReader(r.Body, plugins.MaxEndpointRequestBytes+1))
+		if err != nil || len(body) > plugins.MaxEndpointRequestBytes {
+			writeProblem(w, http.StatusRequestEntityTooLarge, "request too large",
+				"a plugin endpoint accepts at most 1MB", r.URL.Path)
+			return
+		}
+		res, err := plugins.ServeEndpoint(r.Context(), host, tenant, p, plugins.EndpointRequest{
+			Method: r.Method,
+			Path:   "/" + strings.TrimPrefix(r.PathValue("path"), "/"),
+			Query:  r.URL.RawQuery,
+			Body:   string(body),
+			Caller: string(actor.UserID),
+		})
+		if err != nil {
+			if errors.Is(err, plugins.ErrNoSuchEndpoint) {
+				writeProblem(w, http.StatusNotFound, "not found",
+					"no plugin serves that route", r.URL.Path)
+				return
+			}
+			// A plugin that traps or times out is the plugin failing, not the
+			// server: 422 with the reason, as callPlugin already does.
+			writeProblem(w, http.StatusUnprocessableEntity, "plugin call failed", err.Error(), r.URL.Path)
+			return
+		}
+		// The content type is the clamped one — the allowlist in kernel/plugins
+		// decides what a plugin's bytes may claim to be, and nosniff (set for
+		// every response by withSecurityHeaders) stops the browser guessing
+		// otherwise. ponytail: a *replayed* write returns the gateway's stored
+		// response, which is always application/json; a plugin serving text/csv
+		// from a POST endpoint sees that only on an idempotency replay.
+		w.Header().Set("Content-Type", res.ContentType)
+		w.WriteHeader(res.Status)
+		if len(res.Body) > 0 {
+			_, _ = w.Write(res.Body)
+		}
 	}
 }
 
@@ -88,6 +170,11 @@ func listPlugins(db *storage.DB, dispatcher *plugins.Dispatcher) api.HandlerFunc
 				// plugin healthy, and what is it costing me" without reading a
 				// log (WP-3.1b-decisions.md §7). The latency figures are this
 				// process's, since the restart said so.
+				// What it exposes and where it calls out — the two questions
+				// WP-3.2a's surfaces create, answered from the same place as
+				// "what was it granted".
+				"endpoints":         p.DeclaredEndpoints(),
+				"outbound_hosts":    p.OutboundHosts(),
 				"hook_failures":     p.HookFailures,
 				"breaker_open":      p.BreakerOpen(),
 				"breaker_opened_at": nullableTime(p.BreakerOpenedAt),
@@ -141,8 +228,13 @@ func installPlugin(db *storage.DB, dispatcher *plugins.Dispatcher) api.HandlerFu
 		writeJSON(w, http.StatusCreated, map[string]any{
 			"id": p.ID, "version": p.Version, "sha256": p.SHA256, "status": "installed",
 			// What the administrator is agreeing to, in plain language, at the
-			// moment they agree to it.
-			"warnings": hookWarnings(p),
+			// moment they agree to it. Outbound hosts and served routes are
+			// part of that: neither is an authz permission the install could
+			// check against the approver's grants (WP-3.2-decisions.md §1), so
+			// showing them is the whole of the review.
+			"warnings":       hookWarnings(p),
+			"endpoints":      p.DeclaredEndpoints(),
+			"outbound_hosts": p.OutboundHosts(),
 		})
 	}
 }
@@ -225,7 +317,19 @@ func pluginHost(db *storage.DB, objects []*metadata.EffectiveSchema, keys secret
 		}
 		cruds[s.ObjectName] = crud
 	}
-	return plugins.Host{DB: db, Objects: cruds, Keys: keys, Limits: plugins.DefaultLimits}
+	return plugins.Host{
+		DB: db, Objects: cruds, Keys: keys, Limits: plugins.DefaultLimits,
+		HTTP: plugins.HTTPPolicy{AllowPrivateNetworks: allowPrivateOutbound()},
+	}
+}
+
+// allowPrivateOutbound reads the one outbound dial an operator has
+// (docs/09 §Plugin outbound HTTP). It is deliberately a deployment setting and
+// not a manifest capability: "may plugins reach this network" is a fact about
+// where LastERP runs, and a plugin asking for it would be the plugin deciding.
+func allowPrivateOutbound() bool {
+	ok, err := strconv.ParseBool(os.Getenv("LASTERP_PLUGIN_HTTP_ALLOW_PRIVATE"))
+	return err == nil && ok
 }
 
 // hookWarnings is the plain-language cost of what an administrator just

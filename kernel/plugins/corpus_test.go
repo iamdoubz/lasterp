@@ -36,7 +36,7 @@ func corpus(t *testing.T) string {
 			return
 		}
 		corpusDir = dir
-		for _, name := range []string{"hello", "loop", "bomb", "thief", "escape", "hooks"} {
+		for _, name := range []string{"hello", "loop", "bomb", "thief", "escape", "hooks", "web"} {
 			// -buildmode=c-shared produces a WASI *reactor* module — one with
 			// exported entry points and no main() that runs to completion,
 			// which is what a plugin is.

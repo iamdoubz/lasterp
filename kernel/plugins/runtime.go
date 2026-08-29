@@ -66,6 +66,9 @@ type Host struct {
 	Objects map[string]*metadata.CRUD
 	Keys    secrets.KeySource
 	Limits  Limits
+	// HTTP is the deployment's outbound posture (http.go). The zero value is
+	// the safe one: public destinations only.
+	HTTP HTTPPolicy
 	// Hooks makes a plugin's own writes dispatch *other* plugins' hooks. Set
 	// by NewDispatcher, so a write from inside a host call is subject to the
 	// same hook surface as a write from the API — otherwise the plugin host
@@ -162,10 +165,12 @@ func compile(ctx context.Context, p *Installed, limits Limits) (*extism.Compiled
 		// actually kills an infinite loop. withDefaults has already made the
 		// duration positive, so the conversion cannot wrap.
 		Timeout: uint64(max(limits.Timeout/time.Millisecond, 1)),
-		// No outbound HTTP at all. ADR-007 requires every call be audited and
-		// this host has no audited client yet, so the answer is "no network",
-		// not "unaudited network" (decisions §4). A manifest that asks for
-		// http is refused at install, so this is the second of two gates.
+		// Extism's own client stays off, permanently. ADR-007 requires every
+		// outbound call to be allowlisted *and audited*, and the built-in
+		// client does the first only. WP-3.2a's answer is not to enable it but
+		// to replace it: `lasterp_http_request` (http.go) is the one way out,
+		// so a module that reaches for `extism:host/env::http_request` still
+		// finds nothing there.
 		AllowedHosts: []string{},
 		AllowedPaths: map[string]string{},
 	}
@@ -205,6 +210,9 @@ func capabilitySignature(p *Installed) string {
 	}
 	for _, s := range p.Manifest.Capabilities.Secrets {
 		parts = append(parts, "secret/"+s)
+	}
+	for _, h := range p.Manifest.Capabilities.HTTP {
+		parts = append(parts, "http/"+h.Host)
 	}
 	sort.Strings(parts)
 	return strings.Join(parts, ",")
