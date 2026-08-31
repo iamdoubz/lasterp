@@ -43,9 +43,9 @@ func TestScheduleNext(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			s, err := ParseSchedule(tc.src)
+			s, err := ParseCron(tc.src)
 			if err != nil {
-				t.Fatalf("ParseSchedule(%q): %v", tc.src, err)
+				t.Fatalf("ParseCron(%q): %v", tc.src, err)
 			}
 			got := s.Next(at(tc.from))
 			if !got.Equal(at(tc.want)) {
@@ -59,9 +59,9 @@ func TestScheduleNext(t *testing.T) {
 // minute must not be handed the same minute again, or the runner re-enqueues
 // the job it just ran, forever.
 func TestNextIsStrictlyAfter(t *testing.T) {
-	s, err := ParseSchedule("* * * * *")
+	s, err := ParseCron("* * * * *")
 	if err != nil {
-		t.Fatalf("ParseSchedule: %v", err)
+		t.Fatalf("ParseCron: %v", err)
 	}
 	now := at("2026-08-31T02:00:00Z")
 	next := s.Next(now)
@@ -76,9 +76,9 @@ func TestNextIsStrictlyAfter(t *testing.T) {
 // An expression that can never fire answers "never" rather than looping. The
 // 30th of February is the classic one.
 func TestScheduleThatNeverFires(t *testing.T) {
-	s, err := ParseSchedule("0 0 30 2 *")
+	s, err := ParseCron("0 0 30 2 *")
 	if err != nil {
-		t.Fatalf("ParseSchedule: %v", err)
+		t.Fatalf("ParseCron: %v", err)
 	}
 	if got := s.Next(at("2026-08-31T00:00:00Z")); !got.IsZero() {
 		t.Fatalf("Next = %s, want the zero time", got)
@@ -103,8 +103,8 @@ func TestParseScheduleRejects(t *testing.T) {
 		"* * * * MON",  // names again
 		"1,,2 * * * *", // empty list element
 	} {
-		if _, err := ParseSchedule(src); err == nil {
-			t.Fatalf("ParseSchedule(%q) succeeded; want an error", src)
+		if _, err := ParseCron(src); err == nil {
+			t.Fatalf("ParseCron(%q) succeeded; want an error", src)
 		}
 	}
 }

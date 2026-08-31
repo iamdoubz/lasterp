@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// Schedule is a parsed 5-field cron expression: minute, hour, day-of-month,
+// Cron is a parsed 5-field cron expression: minute, hour, day-of-month,
 // month, day-of-week. It is the form docs/05 already documents for a plugin
 // manifest's `schedule:` capability (`"0 2 * * *"`).
 //
@@ -25,7 +25,7 @@ import (
 // is the one every cron agrees on.
 //
 // [ADR-022]: ../../docs/adr/ADR-022-expression-language.md
-type Schedule struct {
+type Cron struct {
 	src     string
 	minute  [60]bool
 	hour    [24]bool
@@ -37,7 +37,7 @@ type Schedule struct {
 }
 
 // Source returns the expression this schedule was parsed from.
-func (s *Schedule) Source() string { return s.src }
+func (s *Cron) Source() string { return s.src }
 
 type cronField struct {
 	name     string
@@ -52,13 +52,13 @@ var cronFields = []cronField{
 	{"day of week", 0, 6},
 }
 
-// ParseSchedule parses a 5-field cron expression.
-func ParseSchedule(src string) (*Schedule, error) {
+// ParseCron parses a 5-field cron expression.
+func ParseCron(src string) (*Cron, error) {
 	parts := strings.Fields(src)
 	if len(parts) != 5 {
 		return nil, fmt.Errorf("jobs: %q is not a 5-field cron expression (got %d fields)", src, len(parts))
 	}
-	s := &Schedule{src: src}
+	s := &Cron{src: src}
 	// Day-of-month and day-of-week are ORed when both are restricted and
 	// ANDed when either is `*` — the POSIX rule every cron implements and
 	// nobody remembers. Recorded here because next() depends on it.
@@ -139,7 +139,7 @@ const maxLookahead = 5 * 366 * 24 * time.Hour
 // It steps minute by minute within a matching day and jumps a whole day
 // forward when the date does not match, so the search is bounded by
 // (days scanned + 1440) rather than by minutes in five years.
-func (s *Schedule) Next(after time.Time) time.Time {
+func (s *Cron) Next(after time.Time) time.Time {
 	t := after.UTC().Truncate(time.Minute).Add(time.Minute)
 	limit := after.UTC().Add(maxLookahead)
 	for t.Before(limit) {
@@ -160,7 +160,7 @@ func (s *Schedule) Next(after time.Time) time.Time {
 // matchesDay applies the POSIX day rule: when both day-of-month and
 // day-of-week are restricted, a day matches if *either* does; when either is
 // `*`, both must match (which the `*` satisfies trivially).
-func (s *Schedule) matchesDay(t time.Time) bool {
+func (s *Cron) matchesDay(t time.Time) bool {
 	if !s.month[int(t.Month())] {
 		return false
 	}
