@@ -7,6 +7,6 @@
 // the toolchain the repo already pins — no TinyGo, no second toolchain.
 module lasterp.test/plugin-corpus
 
-go 1.26.5
+go 1.26.7
 
 require github.com/extism/go-pdk v1.1.3
