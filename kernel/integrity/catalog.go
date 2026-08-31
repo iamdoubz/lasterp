@@ -71,6 +71,16 @@ var Catalog = []Invariant{
 	// Tenancy & access (INV-T) — enforced as of WP-0.3/0.5/0.6/0.8.
 	{ID: "INV-T1", Title: "No query path returns another tenant's rows (RLS backstop; zero rows without context)", Layer: LayerStorage, TestRequired: true},
 	{ID: "INV-T2", Title: "No write path executes without an authenticated principal and authz decision", Layer: LayerPipeline, TestRequired: true},
+	// WP-3.3a extends INV-T3 to the *conditional* half of RBAC, which had been
+	// stored-but-unevaluated since WP-0.3. The narrowing guarantee is
+	// structural, not a claim about CEL: a condition is consulted only after a
+	// matching grant is found, and every failure mode — false, evaluation
+	// error, cost overrun, non-boolean, an expression that no longer compiles —
+	// denies that grant. Two tests carry it together, because each catches what
+	// the other cannot: kernel/authz's containment property (a condition never
+	// allows a cell its unconditional twin denies, probed across a grid that is
+	// mostly ungranted) and its fail-closed table (every unevaluable condition
+	// denies). See docs/notes/WP-3.3-decisions.md §2 and ADR-022.
 	{ID: "INV-T3", Title: "Permission floors, approval gates and declared value domains cannot be widened by overlays/plugins/agents", Layer: LayerPipeline, TestRequired: true},
 	{ID: "INV-T4", Title: "Every mutation is attributable: actor, command, timestamp — no anonymous writes", Layer: LayerStorage, TestRequired: true, AppendOnlyTables: []string{"audit_log"}},
 	{ID: "INV-T5", Title: "Every stored field value conforms to its object's effective schema (declared type and option set)", Layer: LayerPipeline, TestRequired: true},
