@@ -189,12 +189,23 @@ func gatewayConfig(ctx context.Context, db *storage.DB) (api.Config, error) {
 	// a hook fires on any write through the choke point — API, offline drain,
 	// or another plugin (WP-3.1b).
 	dispatcher := plugins.NewDispatcher(pluginHost(db, objects, keys))
+	// The publisher keys this deployment trusts (WP-3.2b). An unset variable
+	// yields an empty store, which refuses every bundle — a deployment that
+	// installs modules directly is unaffected, and one that meant to configure
+	// trust is told so by the refusal rather than by a bundle installing
+	// unverified. A *malformed* trust file fails the boot: a security control
+	// that silently degrades to "trust nothing" is one nobody notices until
+	// they need it.
+	trust, err := plugins.LoadTrustStore()
+	if err != nil {
+		return api.Config{}, fmt.Errorf("app: load plugin trust file: %w", err)
+	}
 
 	return api.Config{
 		DB:            db,
 		Objects:       objects,
 		Hooks:         dispatcher,
-		Actions:       actions(db, reg, objects, translator, sso, keys, dispatcher),
+		Actions:       actions(db, reg, objects, translator, sso, keys, dispatcher, trust),
 		Authenticator: sessionAuthenticator(db),
 		Capabilities:  capability.GatewayChecker{Reg: reg, DB: db},
 	}, nil

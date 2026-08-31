@@ -319,14 +319,19 @@ func TestEveryOutboundCallIsAudited(t *testing.T) {
 				if row.actor != p.Principal() {
 					t.Fatalf("audit actor = %q, want %q", row.actor, p.Principal())
 				}
-				for _, want := range []string{`"method":"GET"`, `"host":"` + hostPort(srv) + `"`, `"path":"/v1/send"`} {
+				for _, want := range []string{`"method":"GET"`, `"host":"` + hostPort(srv) + `"`, `"path":"/v1/`} {
 					if !strings.Contains(row.changes, want) {
 						t.Fatalf("audit row %s does not record %s", row.changes, want)
 					}
 				}
-				// The query string carries API keys. It is not recorded.
+				// The query string carries API keys. It is not recorded — and
+				// neither is the rest of the path, because for a whole class of
+				// webhook APIs the path *is* the credential.
 				if strings.Contains(row.changes, "SUPERSECRET") {
 					t.Fatalf("the audit row copied the query string: %s", row.changes)
+				}
+				if strings.Contains(row.changes, "/v1/send") {
+					t.Fatalf("the audit row recorded the full path: %s", row.changes)
 				}
 			}
 		})
@@ -342,7 +347,11 @@ func TestOutboundCallCarryingASecretDoesNotLogIt(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			var seen atomic.Bool
 			srv, policy := tlsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if strings.Contains(r.Header.Get("Authorization"), "hunter2-the-token") {
+				// Sent two ways on purpose: as a bearer token, and as a path
+				// segment, which is how every "unguessable webhook URL" API
+				// works. Both must be absent from the audit trail.
+				if strings.Contains(r.Header.Get("Authorization"), "hunter2-the-token") ||
+					strings.Contains(r.URL.Path, "hunter2-the-token") {
 					seen.Store(true)
 				}
 				_, _ = w.Write([]byte(`{}`))
@@ -358,7 +367,7 @@ func TestOutboundCallCarryingASecretDoesNotLogIt(t *testing.T) {
 
 			h := outboundHost(db, policy)
 			h.Keys = keys
-			in, _ := json.Marshal(map[string]any{"secret": "acme_api_key", "url": srv.URL + "/notify"})
+			in, _ := json.Marshal(map[string]any{"secret": "acme_api_key", "url": srv.URL + "/services/hunter2-the-token"})
 			if _, err := Call(context.Background(), h, tenant, p, "exfiltrate", in); err != nil {
 				t.Fatalf("Call exfiltrate: %v", err)
 			}

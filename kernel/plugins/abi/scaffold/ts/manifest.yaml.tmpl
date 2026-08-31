@@ -1,0 +1,10 @@
+# {{.ID}} — a LastERP server plugin (TypeScript).
+id: {{.ID}}
+version: 0.1.0
+lasterp: ">={{.HostVersion}}"
+functions: [hello]
+endpoints:
+  - {path: /hello, fn: hello, methods: [GET]}
+# capabilities:
+#   objects:
+#     - {type: Contact, access: read}

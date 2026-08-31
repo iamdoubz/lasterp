@@ -66,6 +66,15 @@ type Host struct {
 	Objects map[string]*metadata.CRUD
 	Keys    secrets.KeySource
 	Limits  Limits
+	// ReadOnly names objects a plugin may read but never write, by object name.
+	//
+	// It exists for the module-owned documents — an invoice, a receipt, a
+	// journal entry — whose writes must go through their module's posting
+	// pipeline (INV-F5). A reporting plugin has every reason to read them and
+	// no business creating one behind the pipeline's back, and generic CRUD
+	// would be exactly that back door. Reads are ordinary reads: same authz,
+	// same RLS, same audit.
+	ReadOnly map[string]bool
 	// HTTP is the deployment's outbound posture (http.go). The zero value is
 	// the safe one: public destinations only.
 	HTTP HTTPPolicy

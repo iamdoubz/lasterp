@@ -1,0 +1,46 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// {{.ID}} — targets {{.ABIVersion}}.
+//
+// Build with the Extism JS PDK compiler (`extism-js`), which produces a wasm
+// module from this source: `npm run build`.
+//
+// Every host function takes one JSON object and returns
+// {"ok":true,"result":…} or {"ok":false,"error":…}. A function your manifest
+// did not ask for is not importable at all.
+
+declare const Host: { getFunctions(): Record<string, (offset: bigint) => bigint> }
+
+function call(name: string, req: unknown): { ok: boolean; error?: string; result?: unknown } {
+  const fn = Host.getFunctions()[name]
+  const mem = Memory.fromString(JSON.stringify(req))
+  const out = fn(mem.offset)
+  return JSON.parse(Memory.find(out).readString())
+}
+
+/** Writes a line to the server's log, attributed to this plugin. */
+function log(message: string): void {
+  call('lasterp_log', { message })
+}
+
+/** What an /ext route hands your function — never the caller's headers. */
+interface EndpointRequest {
+  method: string
+  path: string
+  query: string
+  body: string
+  caller: string
+}
+
+export function hello(): number {
+  const req: EndpointRequest = JSON.parse(Host.inputString())
+  log(`{{.ID}}: hello, called by ${req.caller}`)
+  Host.outputString(
+    JSON.stringify({
+      status: 200,
+      content_type: 'application/json',
+      body: JSON.stringify({ hello: req.caller }),
+    }),
+  )
+  return 0
+}

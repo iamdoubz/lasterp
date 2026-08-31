@@ -34,7 +34,7 @@ import (
 	"github.com/iamdoubz/lasterp/kernel/tenancy"
 )
 
-const usage = "usage: lasterp <serve|dev|migrate|harden|doctor|bootstrap|demo|secrets>"
+const usage = "usage: lasterp <serve|dev|migrate|harden|doctor|bootstrap|demo|secrets|plugin>"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -73,6 +73,10 @@ func main() {
 		}
 	case "secrets":
 		if err := secretsCmd(context.Background(), os.Args[2:]); err != nil {
+			log.Fatal(err)
+		}
+	case "plugin":
+		if err := pluginCmd(context.Background(), os.Args[2:]); err != nil {
 			log.Fatal(err)
 		}
 	default:

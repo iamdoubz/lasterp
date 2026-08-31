@@ -109,7 +109,9 @@ func hostHTTPRequest(ctx context.Context, inv *invocation, req map[string]any) (
 	// ponytail: one row per call, request-side only. A second completion row
 	// with the status is the upgrade if operators need outcomes, and it doubles
 	// the volume of the noisiest audit action.
-	if err := auditOutbound(ctx, inv, method, hostPort, u.Path); err != nil {
+	//
+	// The path is recorded to its first segment only — see auditablePath.
+	if err := auditOutbound(ctx, inv, method, hostPort, auditablePath(u.Path)); err != nil {
 		return nil, err
 	}
 
@@ -343,6 +345,33 @@ func classifyDialError(err error) string {
 		return "the request did not finish inside this call's budget"
 	}
 	return "the request failed"
+}
+
+// auditablePath is the part of a URL path safe to write down: the first
+// segment, and nothing after it.
+//
+// The full path cannot be recorded, because for a whole class of APIs **the
+// path is the credential** — a Slack incoming webhook is
+// `/services/T000/B000/<secret>`, and so is every "unguessable URL" integration
+// built the same way. Writing that into `audit_log` would put a live credential
+// in the trail of the call that used it, which is precisely INV-K1, and the
+// plugin holding it did nothing wrong: it was granted `secrets:` and `http:`
+// and used both as intended.
+//
+// The first segment is kept because it is what makes a row *useful* to an
+// operator — `/services` and `/admin` on the same host are different answers to
+// "what is this plugin doing" — and because a first segment is a route family,
+// not an identifier. The query string is dropped entirely for the same reason,
+// one step earlier.
+func auditablePath(path string) string {
+	if path == "" || path == "/" {
+		return "/"
+	}
+	trimmed := strings.TrimPrefix(path, "/")
+	if i := strings.IndexByte(trimmed, '/'); i >= 0 {
+		return "/" + trimmed[:i] + "/…"
+	}
+	return "/" + trimmed
 }
 
 func strOr(v any, fallback string) string {

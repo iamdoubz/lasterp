@@ -93,6 +93,31 @@ export LASTERP_PLUGIN_HTTP_ALLOW_PRIVATE=1   # plugins may dial RFC1918/loopback
 
 It is a deployment setting rather than a manifest capability on purpose: "may plugins reach this network" is a fact about where LastERP runs, and a plugin asking for it would be the plugin deciding. Leave it unset unless a plugin needs it, and prefer narrowing the manifest allowlist to the one internal host.
 
+A plugin calling an internal service usually meets a certificate from a company CA rather than a public one. Name that CA's PEM file and it is added to the system roots for plugin outbound calls only:
+
+```sh
+export LASTERP_PLUGIN_HTTP_CA_FILE=/etc/lasterp/internal-ca.pem
+```
+
+There is no "skip verification" knob, and there will not be one.
+
+## Plugin publisher trust (WP-3.2b)
+
+A plugin can be installed two ways. `POST /api/v1/plugins` takes a module an administrator already has and vouches for. **`POST /api/v1/plugins/bundle` takes a signed bundle**, and installs it only if a publisher this deployment trusts signed it — which is what `lasterp plugin install` uses.
+
+Trust is a file of publisher keys, in the same shape as the vault's key file:
+
+```sh
+cat /etc/lasterp/plugin-publishers
+# acme-2026 = kR3f…base64 ed25519 public key…
+# ops-internal = 9vQ2…
+export LASTERP_PLUGIN_TRUST_FILE=/etc/lasterp/plugin-publishers
+```
+
+A publisher generates their half with `lasterp plugin keygen`, which prints exactly the line to paste here. With the variable unset the file is simply empty, and **every bundle is refused** — a deployment that installs modules directly is unaffected, and one that meant to configure trust finds out from the refusal rather than from a bundle installing unverified. A *malformed* trust file fails the boot on purpose: a security control that quietly degrades to "trust nothing" is one nobody notices until they need it.
+
+Trust is deployment-wide rather than per-tenant, deliberately ([WP-3.2-decisions.md](notes/WP-3.2-decisions.md) §3): every install today is an operator handing a bundle to their own deployment, so "who may publish plugins here" is an operator fact like the key-encryption key. Per-tenant publisher lists arrive with the tenant-facing registry that needs them.
+
 ## Upgrades
 - Expand → migrate → contract schema migrations only; app N and N+1 must both run against the transitional schema (zero-downtime rolling deploys).
 - **Run `lasterp migrate` then `lasterp harden` as the owner before rolling the new version**, and keep serving as the application role (see above).

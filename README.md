@@ -33,6 +33,7 @@ A free, open-source, AI-first, offline-capable ERP. Fast by default, infinitely 
 | [docs/20-COMPLIANCE-PRIVACY.md](docs/20-COMPLIANCE-PRIVACY.md) | GDPR/CCPA privacy engine, ISO 27001/27701/SOC 2 controls, DoD/CMMC/FIPS tier |
 | [docs/21-REPORTING-DASHBOARDS.md](docs/21-REPORTING-DASHBOARDS.md) | Metrics layer, one-click reports, no-code role-based live dashboards |
 | [docs/22-DEPLOYMENT-TOPOLOGIES.md](docs/22-DEPLOYMENT-TOPOLOGIES.md) | Failover, load balancing & sizing tiers from <100 to 50k users |
+| [docs/23-PLUGIN-TUTORIAL.md](docs/23-PLUGIN-TUTORIAL.md) | Write a plugin in an afternoon — scaffold, sign, install, extend (executed by CI) |
 | [docs/adr/](docs/adr/) | Architecture Decision Records |
 | [CLAUDE.md](CLAUDE.md) | Instructions for Claude Code agents building this |
 

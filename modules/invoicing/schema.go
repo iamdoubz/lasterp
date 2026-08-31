@@ -89,6 +89,16 @@ func effective(yaml string) (*metadata.EffectiveSchema, error) {
 	return metadata.Merge(obj)
 }
 
+// InvoiceSchema is the Invoice object's effective schema, exported so the
+// plugin host can offer invoices to plugins **read-only** (WP-3.2b).
+//
+// It is deliberately not in the gateway's generic-CRUD set: an invoice is
+// created and posted through this module's own pipeline, and a generic
+// `POST /api/v1/invoice` would be the side door around INV-F5. A plugin that
+// reacts to invoices needs to read one, which is a different power from
+// writing one, so the plugin host takes the schema and marks it read-only.
+func InvoiceSchema() (*metadata.EffectiveSchema, error) { return effective(invoiceYAML) }
+
 func invoiceCRUD() (*metadata.CRUD, error) {
 	eff, err := effective(invoiceYAML)
 	if err != nil {

@@ -4,8 +4,10 @@ package app
 
 import (
 	"context"
+	"crypto/x509"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -21,6 +23,7 @@ import (
 	"github.com/iamdoubz/lasterp/kernel/secrets"
 	"github.com/iamdoubz/lasterp/kernel/storage"
 	"github.com/iamdoubz/lasterp/kernel/tenancy"
+	"github.com/iamdoubz/lasterp/modules/invoicing"
 )
 
 // objectPlugin guards the plugin surface. Two actions, because they are two
@@ -38,7 +41,7 @@ const (
 // "everything is an API" applies, and an install is an approval decision that
 // has to be attributable to a person (INV-T4). Bundle signing and registries
 // are WP-3.2 — this installs a module a human already has.
-func pluginActions(db *storage.DB, dispatcher *plugins.Dispatcher) []api.Action {
+func pluginActions(db *storage.DB, dispatcher *plugins.Dispatcher, trust plugins.TrustStore) []api.Action {
 	return []api.Action{
 		{Method: "GET", Path: "/api/v1/plugins", Object: objectPlugin,
 			Summary: "List installed plugins and the authority each was granted",
@@ -46,6 +49,9 @@ func pluginActions(db *storage.DB, dispatcher *plugins.Dispatcher) []api.Action 
 		{Method: "POST", Path: "/api/v1/plugins", Object: objectPlugin, Write: true,
 			Summary: "Install a plugin, approving the capabilities its manifest requests",
 			Handler: installPlugin(db, dispatcher)},
+		{Method: "POST", Path: "/api/v1/plugins/bundle", Object: objectPlugin, Write: true,
+			Summary: "Install a plugin from a signed bundle, approving the capabilities its manifest requests",
+			Handler: installBundle(db, dispatcher, trust)},
 		{Method: "DELETE", Path: "/api/v1/plugins/{id}", Object: objectPlugin, Write: true,
 			Summary: "Uninstall a plugin and revoke the authority it was granted",
 			Handler: uninstallPlugin(db, dispatcher)},
@@ -209,6 +215,10 @@ func installPlugin(db *storage.DB, dispatcher *plugins.Dispatcher) api.HandlerFu
 				"module must be base64-encoded WebAssembly", r.URL.Path)
 			return
 		}
+		if err := refuseWriteToReadOnly([]byte(body.Manifest), dispatcher.Host()); err != nil {
+			writeProblem(w, http.StatusUnprocessableEntity, "plugin refused", err.Error(), r.URL.Path)
+			return
+		}
 		p, err := plugins.Install(r.Context(), db, tenant, []byte(body.Manifest), module, actor)
 		if err != nil {
 			if errors.Is(err, plugins.ErrCapabilityNotHeld) {
@@ -305,6 +315,66 @@ func callPlugin(db *storage.DB, host plugins.Host) api.HandlerFunc {
 	}
 }
 
+// installBundle is the supply-chain install path (WP-3.2b): the same approval
+// decision as installPlugin, with one gate in front — bytes nobody this
+// deployment trusts has signed do not get to be a plugin.
+//
+// It is a second route rather than a mode of the first because the two carry
+// different evidence. `POST /api/v1/plugins` is "an administrator has this
+// module and vouches for it"; this one is "a publisher signed it and the
+// deployment trusts that publisher". Collapsing them into one endpoint with an
+// optional signature would make the unsigned path look like a degraded version
+// of the signed one, when it is a different decision.
+func installBundle(db *storage.DB, dispatcher *plugins.Dispatcher, trust plugins.TrustStore) api.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request, tenant tenancy.ID) {
+		actor, err := authz.Authorize(r.Context(), db, objectPlugin, actionManage)
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		var body struct {
+			Bundle string `json:"bundle"` // base64 .tar.gz
+		}
+		if !decodeJSON(w, r, &body) {
+			return
+		}
+		data, err := base64.StdEncoding.DecodeString(body.Bundle)
+		if err != nil {
+			writeProblem(w, http.StatusBadRequest, "invalid bundle",
+				"bundle must be a base64-encoded .tar.gz", r.URL.Path)
+			return
+		}
+		if opened, oerr := plugins.OpenBundle(data); oerr == nil {
+			if err := refuseWriteToReadOnly(opened.ManifestYAML, dispatcher.Host()); err != nil {
+				writeProblem(w, http.StatusUnprocessableEntity, "plugin refused", err.Error(), r.URL.Path)
+				return
+			}
+		}
+		p, err := plugins.InstallBundle(r.Context(), db, tenant, data, trust, actor)
+		if err != nil {
+			switch {
+			case errors.Is(err, plugins.ErrUntrusted):
+				// 403: this is a trust decision, not a malformed request. The
+				// administrator is told which key signed it and that the
+				// deployment does not trust that key.
+				writeProblem(w, http.StatusForbidden, "untrusted bundle", err.Error(), r.URL.Path)
+			case errors.Is(err, plugins.ErrCapabilityNotHeld):
+				writeProblem(w, http.StatusForbidden, "capability not held", err.Error(), r.URL.Path)
+			default:
+				writeProblem(w, http.StatusUnprocessableEntity, "plugin refused", err.Error(), r.URL.Path)
+			}
+			return
+		}
+		dispatcher.Forget(tenant)
+		writeJSON(w, http.StatusCreated, map[string]any{
+			"id": p.ID, "version": p.Version, "sha256": p.SHA256, "status": "installed",
+			"warnings":       hookWarnings(p),
+			"endpoints":      p.DeclaredEndpoints(),
+			"outbound_hosts": p.OutboundHosts(),
+		})
+	}
+}
+
 // pluginHost assembles what a plugin invocation is allowed to reach. The
 // object map is built from the same schemas the CRUD routes use, so a plugin
 // sees exactly the objects the API does — and authz still decides each call.
@@ -317,10 +387,104 @@ func pluginHost(db *storage.DB, objects []*metadata.EffectiveSchema, keys secret
 		}
 		cruds[s.ObjectName] = crud
 	}
-	return plugins.Host{
-		DB: db, Objects: cruds, Keys: keys, Limits: plugins.DefaultLimits,
-		HTTP: plugins.HTTPPolicy{AllowPrivateNetworks: allowPrivateOutbound()},
+	// The module-owned documents, readable and never writable (WP-3.2b).
+	//
+	// They are deliberately absent from crudObjects(): the gateway must not
+	// serve `/api/v1/invoice` as generic CRUD, because an invoice is created
+	// and posted through invoicing's own pipeline (INV-F5) and a generic POST
+	// would be the side door around it. But a plugin that reacts to an invoice
+	// and cannot *read* one is a plugin that knows something changed and
+	// nothing else — which is what the commission-calc example ran into.
+	//
+	// So the plugin host's object map is a superset of the gateway's, and the
+	// extra entries are marked read-only. The distinction is the whole point:
+	// a report needs the row, a pipeline owns the write.
+	readOnly := map[string]bool{}
+	for name, schema := range readableDocuments() {
+		crud, err := metadata.NewCRUD(schema)
+		if err != nil {
+			continue
+		}
+		cruds[name] = crud
+		readOnly[name] = true
 	}
+	return plugins.Host{
+		DB: db, Objects: cruds, Keys: keys, Limits: plugins.DefaultLimits, ReadOnly: readOnly,
+		HTTP: plugins.HTTPPolicy{
+			AllowPrivateNetworks: allowPrivateOutbound(),
+			RootCAs:              outboundRootCAs(),
+		},
+	}
+}
+
+// readableDocuments are the module-owned objects a plugin may read. Their
+// writes belong to their modules' pipelines, which is why they are not in
+// crudObjects() and why pluginHost marks them read-only.
+func readableDocuments() map[string]*metadata.EffectiveSchema {
+	out := map[string]*metadata.EffectiveSchema{}
+	if invoice, err := invoicing.InvoiceSchema(); err == nil {
+		out["Invoice"] = invoice
+	}
+	return out
+}
+
+// refuseWriteToReadOnly rejects a manifest asking to write a document its
+// module owns. It runs at install rather than at call time because the repo's
+// rule is refuse-never-ignore: a plugin that installs cleanly and then fails
+// every write has been lied to about what it was approved for.
+func refuseWriteToReadOnly(manifestYAML []byte, host plugins.Host) error {
+	manifest, err := plugins.ParseManifest(manifestYAML)
+	if err != nil {
+		// Not this check's error to report: Install parses the same bytes a
+		// moment later and returns the parse failure with its own message. A
+		// second, differently-worded copy of it here would be worse, not safer.
+		//
+		//nolint:nilerr // deliberate: the caller reports this failure
+		return nil
+	}
+	for _, o := range manifest.Capabilities.Objects {
+		if o.Access == "write" && host.ReadOnly[o.Type] {
+			return fmt.Errorf("plugins: %s may be read by a plugin but written only through its own module's pipeline (INV-F5); remove the write capability for %s", o.Type, o.Type)
+		}
+	}
+	return nil
+}
+
+// outboundRootCAs loads the deployment's extra trust roots for plugin outbound
+// calls, from a PEM file named by LASTERP_PLUGIN_HTTP_CA_FILE. nil means the
+// system store, which is what a public destination needs.
+//
+// It exists for the deployment that turned on AllowPrivateNetworks: an internal
+// service usually presents a certificate from a company CA, and the alternative
+// to naming that CA is a plugin author asking for verification to be skipped —
+// which is not a knob this host will ever have. A file that cannot be read or
+// parsed is logged and ignored rather than failing the boot: outbound calls
+// then fail closed against the system roots, which is the safe direction, and
+// the server still starts.
+func outboundRootCAs() *x509.CertPool {
+	path := os.Getenv("LASTERP_PLUGIN_HTTP_CA_FILE")
+	if path == "" {
+		return nil
+	}
+	// #nosec G304,G703 -- the path is this deployment's own configuration.
+	pem, err := os.ReadFile(path)
+	if err != nil {
+		// %q on the operator-supplied path: an unescaped newline in a log line
+		// is a forged log line, in a product that sells tamper-evident trails.
+		// #nosec G706 -- %q escapes control characters.
+		log.Printf("plugins: cannot read %q: %v (falling back to the system trust store)", path, err)
+		return nil
+	}
+	pool, err := x509.SystemCertPool()
+	if err != nil || pool == nil {
+		pool = x509.NewCertPool()
+	}
+	if !pool.AppendCertsFromPEM(pem) {
+		// #nosec G706 -- %q escapes control characters.
+		log.Printf("plugins: %q holds no usable certificates (falling back to the system trust store)", path)
+		return nil
+	}
+	return pool
 }
 
 // allowPrivateOutbound reads the one outbound dial an operator has
