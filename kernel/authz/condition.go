@@ -238,7 +238,7 @@ func validateCondition(action, condition string) error {
 			ErrConditionUnsupportedAction, action, owner)
 	}
 	if _, err := expr.Compile(condition); err != nil {
-		return fmt.Errorf("%w: %v", ErrConditionInvalid, err)
+		return fmt.Errorf("%w: %w", ErrConditionInvalid, err)
 	}
 	return nil
 }
