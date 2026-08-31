@@ -79,6 +79,20 @@ lasterp secrets rotate -tenant acme          # re-wraps that tenant's data keys
 
 Rotation re-wraps the data keys and never touches the payloads, so it is cheap and re-runnable; a crashed run is resumed by running it again. One tenant per invocation.
 
+## Plugin outbound HTTP (WP-3.2a)
+
+A plugin reaches the network only through `lasterp_http_request`, only to the hosts its manifest declared and an administrator approved, and every call writes an `audit_log` row naming the plugin, the method and the destination (no headers, no bodies — a plugin's bearer token must not become the longest-lived copy of that credential). Redirects are not followed and the scheme is always `https`.
+
+**By default a plugin cannot reach a private address**, even one its manifest names: the check runs on the address actually being dialled, so an allowlisted DNS name that resolves to `169.254.169.254`, `10.0.0.0/8` or `127.0.0.1` is refused at the socket. That is the SSRF case — the cloud metadata service and every internal service that trusts its own LAN sit behind exactly that name resolution.
+
+A self-hoster whose plugin legitimately calls an internal service turns it on for the whole deployment:
+
+```sh
+export LASTERP_PLUGIN_HTTP_ALLOW_PRIVATE=1   # plugins may dial RFC1918/loopback destinations
+```
+
+It is a deployment setting rather than a manifest capability on purpose: "may plugins reach this network" is a fact about where LastERP runs, and a plugin asking for it would be the plugin deciding. Leave it unset unless a plugin needs it, and prefer narrowing the manifest allowlist to the one internal host.
+
 ## Upgrades
 - Expand → migrate → contract schema migrations only; app N and N+1 must both run against the transitional schema (zero-downtime rolling deploys).
 - **Run `lasterp migrate` then `lasterp harden` as the owner before rolling the new version**, and keep serving as the application role (see above).

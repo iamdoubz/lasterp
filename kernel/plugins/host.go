@@ -109,6 +109,9 @@ func hostFunctions(p *Installed) []extism.HostFunction {
 	if len(p.Manifest.Capabilities.Secrets) > 0 {
 		fns = append(fns, jsonHostFn("lasterp_secret_get", hostSecretGet))
 	}
+	if len(p.Manifest.Capabilities.HTTP) > 0 {
+		fns = append(fns, jsonHostFn("lasterp_http_request", hostHTTPRequest))
+	}
 	return fns
 }
 
@@ -200,6 +203,10 @@ func classify(err error) string {
 	switch {
 	case errors.Is(err, ErrHostCallBudget):
 		return "budget"
+	case errors.Is(err, ErrHTTPBlocked):
+		// A refused destination is a refusal like any other: the plugin learns
+		// its call was denied, not which of the four rules said so.
+		return "denied"
 	case errors.Is(err, authz.ErrPermissionDenied), errors.Is(err, authz.ErrNoActor),
 		errors.Is(err, secrets.ErrForbidden), errors.Is(err, secrets.ErrNotFound),
 		errors.Is(err, metadata.ErrRecordNotFound):

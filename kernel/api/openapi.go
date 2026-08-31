@@ -54,12 +54,13 @@ func OpenAPI(schemas []*metadata.EffectiveSchema, actions []Action) obj {
 	}
 
 	for _, a := range actions {
-		p, _ := paths[a.Path].(obj)
+		key := specPath(a.Path)
+		p, _ := paths[key].(obj)
 		if p == nil {
 			p = obj{}
 		}
 		p[strings.ToLower(a.Method)] = actionOperation(a)
-		paths[a.Path] = p
+		paths[key] = p
 	}
 
 	return obj{
@@ -298,11 +299,17 @@ func actionOperation(a Action) obj {
 	return op
 }
 
+// specPath renders a route pattern as an OpenAPI path template. Go's mux
+// spells a trailing wildcard `{path...}`, which OpenAPI has no syntax for; it
+// becomes a plain `{path}` parameter — the same variable, named the way the
+// spec can express it.
+func specPath(pattern string) string { return strings.ReplaceAll(pattern, "...}", "}") }
+
 // pathParams returns OpenAPI parameter objects for each {var} in an action
 // path.
 func pathParams(path string) []any {
 	var out []any
-	for _, seg := range strings.Split(path, "/") {
+	for _, seg := range strings.Split(specPath(path), "/") {
 		if strings.HasPrefix(seg, "{") && strings.HasSuffix(seg, "}") {
 			out = append(out, obj{
 				"name": strings.Trim(seg, "{}"), "in": "path", "required": true,
@@ -316,7 +323,7 @@ func pathParams(path string) []any {
 // operationID derives a stable operationId from an action's method and path.
 func operationID(a Action) string {
 	id := strings.ToLower(a.Method)
-	for _, seg := range strings.Split(a.Path, "/") {
+	for _, seg := range strings.Split(specPath(a.Path), "/") {
 		if seg == "" || seg == "api" || seg == "v1" {
 			continue
 		}
