@@ -129,6 +129,13 @@ func (r *Runner) deliver(ctx context.Context, tenant tenancy.ID, d *Definition) 
 func (r *Runner) fire(ctx context.Context, tenant tenancy.ID, d *Definition, c changefeed.Change) (bool, error) {
 	ref := fmt.Sprintf("%s:%d", c.RefID, c.Cursor)
 
+	// The automation's own principal is bound before the read, not just before
+	// the write. An Objects backed by real CRUD authorizes both, so a read on
+	// an unauthenticated context is refused (INV-T2) — and an automation
+	// reading on the triggering user's authority would see rows its condition
+	// should never have been shown.
+	ctx = authz.WithActor(ctx, d.actor(tenant))
+
 	record, err := r.objects.Get(ctx, tenant, d.Trigger.Object, c.RefID)
 	if err != nil {
 		return false, recordRun(ctx, r.db, tenant, d.ID, ref, OutcomeFailed, "read record: "+err.Error())
@@ -172,7 +179,7 @@ func (r *Runner) matches(d *Definition, record map[string]any) bool {
 
 // act runs every action in order, stopping at the first failure.
 func (r *Runner) act(ctx context.Context, tenant tenancy.ID, d *Definition, recordID string, record map[string]any) error {
-	actor := authz.Actor{TenantID: tenant, UserID: identity.UserID(d.Principal())}
+	actor := d.actor(tenant)
 	for i := range d.Actions {
 		a := &d.Actions[i]
 		switch a.Type {
@@ -311,4 +318,12 @@ func (r *Runner) JobHandler() jobs.Handler {
 		}
 		return recordRun(ctx, r.db, tenant, d.ID, ref, OutcomeMatched, "")
 	}
+}
+
+// actor is the automation's principal for one tenant. Deliberately not a users
+// row: nothing can log in as an automation, because no login path can find a
+// principal that does not exist in `users` — the same call WP-3.1a made for
+// plugins.
+func (d *Definition) actor(tenant tenancy.ID) authz.Actor {
+	return authz.Actor{TenantID: tenant, UserID: identity.UserID(d.Principal())}
 }

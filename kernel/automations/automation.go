@@ -219,6 +219,43 @@ func (d *Definition) TriggerKind() string {
 	return TriggerObject
 }
 
+// Permissions is the authority this definition needs, as authz (object, action)
+// tuples — the vocabulary the rest of the kernel already speaks.
+//
+// An automation acts as its own principal, so it needs its own grants; without
+// them every read it makes is denied and the automation is inert. They are
+// derived from the definition rather than declared separately, because a
+// second list to keep in sync with the actions is a list that drifts.
+//
+// `read` is always required for an object trigger: the condition is evaluated
+// against the record, so an automation that cannot read cannot decide.
+func (d *Definition) Permissions() [][2]string {
+	seen := map[[2]string]bool{}
+	var out [][2]string
+	add := func(object, action string) {
+		key := [2]string{object, action}
+		if object == "" || seen[key] {
+			return
+		}
+		seen[key] = true
+		out = append(out, key)
+	}
+	if d.Trigger.Object != "" {
+		add(d.Trigger.Object, "read")
+	}
+	for i := range d.Actions {
+		switch d.Actions[i].Type {
+		case ActionFieldUpdate:
+			add(d.Trigger.Object, "update")
+		case ActionCallPlugin:
+			// Running someone else's sandboxed code is its own power, and it is
+			// the same tuple a human needs to call `/ext/` (WP-3.2a).
+			add("plugin", "invoke")
+		}
+	}
+	return out
+}
+
 // PrincipalFor is the actor id an automation writes as.
 //
 // Deliberately parallel to plugins.PrincipalFor and deliberately not a users

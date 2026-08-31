@@ -7,9 +7,12 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/iamdoubz/lasterp/kernel/authz"
 	"github.com/iamdoubz/lasterp/kernel/changefeed"
+	"github.com/iamdoubz/lasterp/kernel/identity"
 	"github.com/iamdoubz/lasterp/kernel/idgen"
 	"github.com/iamdoubz/lasterp/kernel/storage"
 	"github.com/iamdoubz/lasterp/kernel/tenancy"
@@ -35,14 +38,30 @@ type Stored struct {
 // automation starts at the feed's high-water mark rather than replaying the
 // tenant's history, because an automation created today reacting to last year's
 // invoices is nobody's intent.
-func Save(ctx context.Context, db *storage.DB, tenant tenancy.ID, yamlDef []byte, actor string) (*Definition, error) {
-	if tenant == "" || actor == "" {
-		return nil, errors.New("automations: tenant and actor are required")
+func Save(ctx context.Context, db *storage.DB, tenant tenancy.ID, yamlDef []byte, approver authz.Actor) (*Definition, error) {
+	if tenant == "" || approver.TenantID == "" || approver.UserID == "" {
+		return nil, errors.New("automations: tenant and an approving actor are required")
 	}
 	d, err := Parse(yamlDef)
 	if err != nil {
 		return nil, err
 	}
+	actor := string(approver.UserID)
+
+	// INV-T3, at the only moment this automation's authority is created: it
+	// acts as its own principal, so it needs its own grants — and it may not
+	// hold one the person creating it does not. An automation is far easier to
+	// create than a plugin is to install, which makes this bound *more*
+	// important here, not less: without it, "create an automation" is a
+	// privilege-escalation primitive for anyone who can reach the route.
+	//
+	// Refused rather than narrowed, for the reason plugins.Install refuses:
+	// silently granting less produces an automation that "saved fine" and then
+	// fails every pass for reasons nobody can see.
+	if err := grantAuthority(ctx, db, tenant, d, approver); err != nil {
+		return nil, err
+	}
+
 	high, err := changefeed.HighWater(ctx, db, tenant)
 	if err != nil {
 		return nil, fmt.Errorf("automations: read feed position: %w", err)
@@ -174,8 +193,16 @@ func List(ctx context.Context, db *storage.DB, tenant tenancy.ID, enabledOnly bo
 	return out, nil
 }
 
-// Delete removes an automation, its cursor and its schedules.
+// Delete removes an automation, the authority that came with it, and its
+// cursor.
+//
+// The role goes first and goes always: a role left behind is authority a later
+// automation created under the same id would silently inherit, which is the
+// same reason plugins.Uninstall deletes its own.
 func Delete(ctx context.Context, db *storage.DB, tenant tenancy.ID, id string) error {
+	if err := revokeAuthority(ctx, db, tenant, id); err != nil {
+		return err
+	}
 	err := tenancy.WithTenant(ctx, db, tenant, func(ctx context.Context, tx *sql.Tx) error {
 		for _, stmt := range []string{
 			`DELETE FROM automations WHERE tenant_id = ? AND id = ?`,
@@ -320,3 +347,66 @@ func Runs(ctx context.Context, db *storage.DB, tenant tenancy.ID, automationID s
 	}
 	return out, nil
 }
+
+// ErrCapabilityNotHeld is returned when a definition needs authority the person
+// creating it does not themselves hold.
+var ErrCapabilityNotHeld = errors.New("automations: the creator does not hold a permission this automation needs")
+
+// grantAuthority creates (or replaces) the automation's role and grants it
+// exactly the permissions its definition needs, bounded by the approver's own.
+//
+// The role is replaced rather than amended on every save, so an edit that drops
+// an action drops the grant that went with it. Authority follows the
+// definition; nothing accumulates.
+func grantAuthority(ctx context.Context, db *storage.DB, tenant tenancy.ID, d *Definition, approver authz.Actor) error {
+	perms := d.Permissions()
+	var missing []string
+	for _, p := range perms {
+		ok, err := authz.Can(ctx, db, approver, p[0], p[1])
+		if err != nil {
+			return fmt.Errorf("automations: check creator grant %s:%s: %w", p[0], p[1], err)
+		}
+		if !ok {
+			missing = append(missing, p[0]+":"+p[1])
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("%w: %s", ErrCapabilityNotHeld, strings.Join(missing, ", "))
+	}
+
+	if err := revokeAuthority(ctx, db, tenant, d.ID); err != nil {
+		return err
+	}
+	role, err := authz.CreateRole(ctx, db, tenant, roleName(d.ID), false)
+	if err != nil {
+		return fmt.Errorf("automations: create role: %w", err)
+	}
+	for _, p := range perms {
+		if err := authz.GrantPermission(ctx, db, tenant, role, p[0], p[1], ""); err != nil {
+			return fmt.Errorf("automations: grant %s:%s: %w", p[0], p[1], err)
+		}
+	}
+	if err := authz.AssignRole(ctx, db, tenant, identity.UserID(PrincipalFor(d.ID)), role); err != nil {
+		return fmt.Errorf("automations: assign role: %w", err)
+	}
+	return nil
+}
+
+// revokeAuthority removes the automation's role, its grants and its assignment.
+// A role left behind is authority a later automation under the same id would
+// silently inherit — the same reason plugins.Uninstall deletes its own.
+func revokeAuthority(ctx context.Context, db *storage.DB, tenant tenancy.ID, id string) error {
+	role, err := authz.RoleByName(ctx, db, tenant, roleName(id))
+	if err != nil {
+		if errors.Is(err, authz.ErrRoleNotFound) {
+			return nil
+		}
+		return fmt.Errorf("automations: look up role: %w", err)
+	}
+	if err := authz.DeleteRole(ctx, db, tenant, role); err != nil {
+		return fmt.Errorf("automations: delete role: %w", err)
+	}
+	return nil
+}
+
+func roleName(id string) string { return PrincipalFor(id) }

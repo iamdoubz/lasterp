@@ -48,6 +48,7 @@ func actions(db *storage.DB, reg *capability.Registry, objects []*metadata.Effec
 	out = append(out, deviceActions(db)...)
 	out = append(out, secretActions(db, keys)...)
 	out = append(out, pluginActions(db, dispatcher, trust)...)
+	out = append(out, automationActions(db)...)
 	return append(out, []api.Action{
 		// --- Invoice (bespoke, NOT generic CRUD: posting pipeline is the only
 		// path to posted/GL — INV-F2/F5/F6, decisions §2) ---

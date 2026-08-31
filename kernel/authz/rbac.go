@@ -291,3 +291,37 @@ func DeleteRole(ctx context.Context, db *storage.DB, tenant tenancy.ID, role Rol
 	})
 	return err
 }
+
+// ErrRoleNotFound is returned by RoleByName when the tenant has no such role.
+var ErrRoleNotFound = errors.New("authz: no such role")
+
+// RoleByName resolves a role id from its tenant-unique name.
+//
+// It exists for the principals whose authority is derived from a definition
+// rather than stored beside it: kernel/automations names its role after the
+// automation, so replacing or deleting one needs the id without carrying a
+// column for it. Roles are unique per (tenant_id, name) — idx_roles_tenant_name
+// — so the answer is exact.
+//
+// It is not an authorization primitive and nothing may treat it as one: role
+// names are tenant-chosen strings. Can and Authorize remain the only gates
+// (INV-T2).
+func RoleByName(ctx context.Context, db *storage.DB, tenant tenancy.ID, name string) (RoleID, error) {
+	if tenant == "" || name == "" {
+		return "", errors.New("authz: tenant and name are required")
+	}
+	var id string
+	err := tenancy.WithTenant(ctx, db, tenant, func(ctx context.Context, tx *sql.Tx) error {
+		id = "" // reset per attempt: WithTenant retries this callback
+		return tx.QueryRowContext(ctx, db.Rebind(
+			`SELECT id FROM roles WHERE tenant_id = ? AND name = ?`),
+			string(tenant), name).Scan(&id)
+	})
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrRoleNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("authz: look up role %q: %w", name, err)
+	}
+	return RoleID(id), nil
+}

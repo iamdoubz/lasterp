@@ -7,6 +7,7 @@ package automations
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -15,6 +16,8 @@ import (
 
 	"github.com/iamdoubz/lasterp/kernel/authz"
 	"github.com/iamdoubz/lasterp/kernel/changefeed"
+	"github.com/iamdoubz/lasterp/kernel/identity"
+	"github.com/iamdoubz/lasterp/kernel/idgen"
 	"github.com/iamdoubz/lasterp/kernel/storage"
 	"github.com/iamdoubz/lasterp/kernel/tenancy"
 )
@@ -131,7 +134,7 @@ func (f *fakePlugins) seen() []string {
 
 func saveAutomation(t *testing.T, db *storage.DB, tenant tenancy.ID, src string) *Definition {
 	t.Helper()
-	d, err := Save(context.Background(), db, tenant, []byte(src), "admin")
+	d, err := Save(context.Background(), db, tenant, []byte(src), automationApprover(t, db, tenant))
 	if err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -488,5 +491,114 @@ func publish(t *testing.T, db *storage.DB, tenant tenancy.ID, object, refID, act
 	t.Helper()
 	if err := appendFeed(context.Background(), db, tenant, object, refID, actor); err != nil {
 		t.Fatalf("publish %s/%s: %v", object, refID, err)
+	}
+}
+
+// automationApprover is a user holding every grant the test definitions need.
+// Save refuses an automation whose authority the creator does not hold
+// (INV-T3), so the fixture has to be a real principal with real grants — which
+// is itself worth having in the suite: it is the bound under test in
+// TestSaveRefusesAuthorityTheCreatorLacks.
+func automationApprover(t *testing.T, db *storage.DB, tenant tenancy.ID) authz.Actor {
+	t.Helper()
+	ctx := context.Background()
+	user := identity.UserID(idgen.New())
+	role, err := authz.CreateRole(ctx, db, tenant, "automation-approver-"+string(user), false)
+	if err != nil {
+		t.Fatalf("CreateRole: %v", err)
+	}
+	for _, g := range [][2]string{
+		{"Invoice", "read"}, {"Invoice", "update"},
+		{"Contact", "read"}, {"Contact", "update"},
+		{"plugin", "invoke"},
+	} {
+		if err := authz.GrantPermission(ctx, db, tenant, role, g[0], g[1], ""); err != nil {
+			t.Fatalf("GrantPermission: %v", err)
+		}
+	}
+	if err := authz.AssignRole(ctx, db, tenant, user, role); err != nil {
+		t.Fatalf("AssignRole: %v", err)
+	}
+	return authz.Actor{TenantID: tenant, UserID: user}
+}
+
+// INV-T3 at the moment an automation's authority is created: it cannot hold a
+// permission the person creating it does not. An automation is far easier to
+// create than a plugin is to install, so without this bound "create an
+// automation" is a privilege-escalation primitive for anyone who can reach the
+// route.
+func TestSaveRefusesAuthorityTheCreatorLacks(t *testing.T) {
+	for dialect, db := range testDialects(t) {
+		t.Run(dialect, func(t *testing.T) {
+			ctx := context.Background()
+			tenant := mustCreateTenant(t, db)
+
+			// A reader, who may not update anything.
+			user := identity.UserID(idgen.New())
+			role, err := authz.CreateRole(ctx, db, tenant, "reader", false)
+			if err != nil {
+				t.Fatalf("CreateRole: %v", err)
+			}
+			if err := authz.GrantPermission(ctx, db, tenant, role, "Invoice", "read", ""); err != nil {
+				t.Fatalf("GrantPermission: %v", err)
+			}
+			if err := authz.AssignRole(ctx, db, tenant, user, role); err != nil {
+				t.Fatalf("AssignRole: %v", err)
+			}
+			reader := authz.Actor{TenantID: tenant, UserID: user}
+
+			src := "id: escalate\nname: Escalate\ntrigger:\n  object: Invoice\nactions:\n  - {type: field_update, set: {status: paid}}\n"
+			_, err = Save(ctx, db, tenant, []byte(src), reader)
+			if !errors.Is(err, ErrCapabilityNotHeld) {
+				t.Fatalf("Save by a reader = %v, want ErrCapabilityNotHeld", err)
+			}
+			if !strings.Contains(err.Error(), "Invoice:update") {
+				t.Fatalf("the refusal does not name the missing permission: %v", err)
+			}
+			// Nothing was left behind: no automation, and no role to inherit.
+			if _, err := Get(ctx, db, tenant, "escalate"); !errors.Is(err, ErrNotFound) {
+				t.Fatalf("a refused save stored the automation anyway: %v", err)
+			}
+			if _, err := authz.RoleByName(ctx, db, tenant, PrincipalFor("escalate")); !errors.Is(err, authz.ErrRoleNotFound) {
+				t.Fatalf("a refused save left a role behind: %v", err)
+			}
+
+			// Non-vacuity: the same definition saved by someone who *does* hold
+			// the grant succeeds, so the refusal is about authority and not
+			// about the definition.
+			if _, err := Save(ctx, db, tenant, []byte(src), automationApprover(t, db, tenant)); err != nil {
+				t.Fatalf("Save by a fully-granted creator: %v", err)
+			}
+		})
+	}
+}
+
+// Deleting an automation takes its authority with it. A role left behind is
+// authority a later automation under the same id would silently inherit.
+func TestDeleteRevokesAuthority(t *testing.T) {
+	for dialect, db := range testDialects(t) {
+		t.Run(dialect, func(t *testing.T) {
+			ctx := context.Background()
+			tenant := mustCreateTenant(t, db)
+			saveAutomation(t, db, tenant, `
+id: temp
+name: Temporary
+trigger:
+  object: Invoice
+actions:
+  - type: field_update
+    set:
+      status: paid
+`)
+			if _, err := authz.RoleByName(ctx, db, tenant, PrincipalFor("temp")); err != nil {
+				t.Fatalf("precondition: the save did not create a role: %v", err)
+			}
+			if err := Delete(ctx, db, tenant, "temp"); err != nil {
+				t.Fatalf("Delete: %v", err)
+			}
+			if _, err := authz.RoleByName(ctx, db, tenant, PrincipalFor("temp")); !errors.Is(err, authz.ErrRoleNotFound) {
+				t.Fatalf("delete left the automation's role behind: %v", err)
+			}
+		})
 	}
 }

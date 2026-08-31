@@ -411,9 +411,15 @@ func serve(ctx context.Context) error {
 	// is the at-least-once promise doing its job.
 	runnerCtx, stopRunner := context.WithCancel(ctx)
 	waitRunner := app.StartHookRunner(runnerCtx, db, dispatcher, 0)
+	// The job queue and the automation sweep, on one ticker (WP-3.3b). Both
+	// stop with the server: a job in flight at shutdown loses its lease and is
+	// reclaimed on the next start, and a feed position not yet advanced is
+	// re-read — the same at-least-once shape the hook runner has.
+	waitAutomations := app.StartAutomationRunner(runnerCtx, db, dispatcher.Host(), 0)
 	defer func() {
 		stopRunner()
 		waitRunner()
+		waitAutomations()
 	}()
 	listen := addr()
 	srv := newServer(listen, handler)
