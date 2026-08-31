@@ -1,0 +1,151 @@
+// SPDX-License-Identifier: Apache-2.0
+
+// Host bindings for {{.ABIVersion}}.
+//
+// Every host function has the same shape: one JSON object in, one JSON object
+// out, and the reply is either {"ok":true,"result":…} or {"ok":false,"error":…}
+// where error is one of "denied", "invalid", "budget" or "error".
+//
+// The functions your module imports must be covered by your manifest's
+// capabilities. That is not a runtime check you can catch — an ungranted import
+// has nothing to bind to, so the module fails to instantiate at all.
+package main
+
+import (
+	"encoding/json"
+
+	"github.com/extism/go-pdk"
+)
+
+//go:wasmimport extism:host/user lasterp_log
+func hostLog(uint64) uint64
+
+//go:wasmimport extism:host/user lasterp_kv_get
+func hostKVGet(uint64) uint64
+
+//go:wasmimport extism:host/user lasterp_kv_set
+func hostKVSet(uint64) uint64
+
+// Uncomment alongside the matching capability in manifest.yaml.
+//
+// //go:wasmimport extism:host/user lasterp_object_query
+// func hostObjectQuery(uint64) uint64
+//
+// //go:wasmimport extism:host/user lasterp_object_create
+// func hostObjectCreate(uint64) uint64
+//
+// //go:wasmimport extism:host/user lasterp_secret_get
+// func hostSecretGet(uint64) uint64
+//
+// //go:wasmimport extism:host/user lasterp_http_request
+// func hostHTTPRequest(uint64) uint64
+
+// reply is the envelope every host function answers with.
+type reply struct {
+	OK     bool            `json:"ok"`
+	Error  string          `json:"error"`
+	Result json.RawMessage `json:"result"`
+}
+
+// call sends one host request and decodes the envelope.
+func call(fn func(uint64) uint64, req any) reply {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return reply{Error: "invalid"}
+	}
+	arg := pdk.AllocateBytes(body)
+	out := pdk.FindMemory(fn(arg.Offset()))
+	var r reply
+	if err := json.Unmarshal(out.ReadBytes(), &r); err != nil {
+		return reply{Error: "error"}
+	}
+	return r
+}
+
+// Log writes a line to the server's log, attributed to this plugin.
+func Log(message string) { call(hostLog, map[string]any{"message": message}) }
+
+// KVGet reads this plugin's own key/value store. Nothing else can see it, and
+// it cannot see anything else — it is the right place for a cursor or a dedupe
+// key, which async delivery (at-least-once) makes your job.
+func KVGet(key string) (string, bool) {
+	r := call(hostKVGet, map[string]any{"key": key})
+	if !r.OK {
+		return "", false
+	}
+	var res struct {
+		Found bool   `json:"found"`
+		Value string `json:"value"`
+	}
+	_ = json.Unmarshal(r.Result, &res)
+	return res.Value, res.Found
+}
+
+// KVSet writes to this plugin's own key/value store.
+func KVSet(key, value string) bool {
+	return call(hostKVSet, map[string]any{"key": key, "value": value}).OK
+}
+
+// Input decodes the JSON the host passed to this call — an EndpointRequest for
+// an endpoint, a HookRequest for a hook.
+func Input(v any) bool {
+	if err := pdk.InputJSON(v); err != nil {
+		pdk.SetError(err)
+		return false
+	}
+	return true
+}
+
+// EndpointRequest is what an /ext route hands your function. Note what is not
+// here: the caller's request headers. Your plugin learns who called it, never
+// how they authenticated.
+type EndpointRequest struct {
+	Method string `json:"method"`
+	Path   string `json:"path"`
+	Query  string `json:"query"`
+	Body   string `json:"body"`
+	Caller string `json:"caller"`
+}
+
+// Respond returns an HTTP response from an endpoint function. The host clamps
+// what it will actually send: a status from a fixed set, a content type from a
+// short allowlist (no text/html), and a size cap.
+func Respond(status int, contentType, body string) int32 {
+	out, err := json.Marshal(map[string]any{
+		"status": status, "content_type": contentType, "body": body,
+	})
+	if err != nil {
+		pdk.SetError(err)
+		return 1
+	}
+	pdk.Output(out)
+	return 0
+}
+
+// HookRequest is what a sync hook (`before_create`/`before_update`/
+// `before_delete`) receives.
+type HookRequest struct {
+	Object string         `json:"object"`
+	Verb   string         `json:"verb"`
+	Record map[string]any `json:"record"`
+}
+
+// Allow lets a write proceed unchanged.
+func Allow() int32 { return hookReply(map[string]any{}) }
+
+// Reject refuses the write with a message the user will see.
+func Reject(because string) int32 { return hookReply(map[string]any{"reject": because}) }
+
+// Enrich lets the write proceed with a modified record. The host re-validates
+// whatever you return, so you cannot store a value the schema forbids.
+func Enrich(record map[string]any) int32 { return hookReply(map[string]any{"record": record}) }
+
+func hookReply(v map[string]any) int32 {
+	out, err := json.Marshal(v)
+	if err != nil {
+		pdk.SetError(err)
+		return 1
+	}
+	pdk.Output(out)
+	return 0
+}

@@ -37,8 +37,9 @@ import (
 type Manifest struct {
 	ID      string `yaml:"id"`
 	Version string `yaml:"version"`
-	// LastERP is the host version range the author claims (docs/05). Recorded
-	// but not enforced: version solving is WP-3.2's registry work.
+	// LastERP is the host version range the author claims (docs/05), enforced
+	// at install from WP-3.2b — see version.go. An empty range makes no claim
+	// and is satisfied by any host.
 	LastERP string `yaml:"lasterp"`
 	// Functions are the exported WASM functions this plugin may be called on.
 	// An export not listed here is unreachable — the callable surface is
@@ -257,6 +258,9 @@ func (m *Manifest) Validate() error {
 			return fmt.Errorf("plugins: %q is not a valid function name", fn)
 		}
 	}
+	if err := checkHostVersion(m.LastERP); err != nil {
+		return err
+	}
 	for _, o := range m.Capabilities.Objects {
 		if o.Type == "" {
 			return errors.New("plugins: an object capability needs a type")
@@ -305,7 +309,7 @@ func (m *Manifest) Validate() error {
 		owner   string
 	}{
 		{len(m.Capabilities.Schedule) > 0, "capabilities.schedule", "WP-3.3, which owns the job runner"},
-		{len(m.Overlays) > 0, "overlays", "WP-3.2b (signed bundles, which is what carries an overlay file)"},
+		{len(m.Overlays) > 0, "overlays", "WP-3.2c (tenant metadata overlays). Carrying an overlay file in a bundle is the easy half; applying one needs per-tenant schemas, which this host does not have yet — see docs/notes/WP-3.2-decisions.md §2b"},
 		{len(m.MCPTools) > 0, "mcp_tools", "WP-3.4 (MCP server)"},
 	} {
 		if unsupported.present {

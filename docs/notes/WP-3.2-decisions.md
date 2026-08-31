@@ -117,6 +117,32 @@ Administrator visibility, which the roadmap asks for by name: `GET /api/v1/plugi
 plugin's declared endpoints, so "what does this thing expose" is answerable from the API that
 already answers "what was it granted".
 
+## 2b. `overlays:` is not PR-B's to implement, and the refusal now says so
+
+Written while starting PR-B, against the code rather than against the plan — the same exercise that
+found the missing HTTP client in §0.
+
+The manifest's `overlays:` is refused today naming "WP-3.2 (bundle install)", on the reading that
+an overlay is a *file* and a bundle is what carries files. Carrying it is indeed easy. Applying it
+is not: **`metadata.Merge` is only ever called with zero overlays**, from module code at boot
+(`modules/contacts`, `modules/invoicing`, `modules/ledger`, and the conformance harness). There is
+no overlay table, no per-tenant effective schema, and the gateway registers its CRUD routes once at
+boot from one global schema list.
+
+So a plugin that ships an object needs persisted per-tenant overlays, per-tenant schema assembly on
+the request path, per-tenant DDL evolution at install time, and cache invalidation across nodes.
+That is the customization-package work [WP-1.11-decisions.md](WP-1.11-decisions.md) already points
+at Phase 3 — ADR-006's entire "customization is data, not forks" promise rests on it — and it is
+not a sub-item of "PDKs + registry". **It becomes WP-3.2c**, and the manifest refusal names that
+instead, so an author is told which WP they are waiting on rather than one that will ship without
+it.
+
+The consequence lands on the examples, and is the better shape anyway: **commission-calc creates no
+`CommissionEntry` object.** It computes from posted invoices, keeps its state in plugin-scoped
+`kv`, and serves the result through `/ext/com.lasterp.commission-calc/report`. Between it and
+slack-notifier (async hook + `secrets.get` + `http.request`) every host function this ABI has is
+exercised by an example an author can read — which was the point of the examples, not the object.
+
 ## 3. Bundles are a signed tar, not an OCI artifact (PR-B)
 
 ADR-007 says "signed OCI-style bundles". Taken literally that means an OCI registry client, a
@@ -130,8 +156,15 @@ Content addressing is the digest WP-3.1a already records and re-checks on every 
 verification attaches to that digest rather than inventing a second identity. If a real OCI
 registry is wanted later, the bundle is already a tarball with a digest.
 
-Trust root: a tenant configures the publisher keys it trusts. An unsigned or
-untrusted-key bundle is refused at install, not warned about.
+**Trust root: a deployment key file**, `LASTERP_PLUGIN_TRUST_FILE`, in the same `key_id = base64`
+shape as the vault's KEK file (docs/09). An unsigned bundle, or one signed by a key the file does
+not name, is refused at install — not warned about.
+
+Per-tenant publisher trust (a `plugin_publishers` table with RLS and three routes) is the shape a
+marketplace needs, and there is no marketplace: every install today is an operator handing a
+bundle to their own deployment. "Who may publish plugins here" is an operator fact like the KEK,
+so it lives where the KEK lives, and the table arrives with the tenant-facing registry that needs
+it. Deferred deliberately, named here rather than left as an assumption.
 
 ## 4. Version solving is the host range, and nothing else yet
 
@@ -148,7 +181,7 @@ orchestrator for it is a feature of a fleet manager LastERP does not have.
 ## 5. Four scaffolds, one of them proven in CI
 
 `lasterp plugin new --lang rust|go|ts|python` emits all four, because a scaffold is a template and
-withholding three of them helps nobody. But CI pins **one** toolchain (Go 1.26.5, and
+withholding three of them helps nobody. But CI pins **one** toolchain (Go 1.26.7, and
 `wasip1/wasm` is in `go tool dist list` — the same route the hostile corpus takes), so only the Go
 scaffold is compiled and run end to end in the test suite. Rust, TS and Python scaffolds are
 asserted to render, to carry a manifest this host parses, and to pin their PDK version; whether
@@ -165,10 +198,40 @@ otherwise-empty Apache LICENSE has been holding a place for since WP-0.1.
 
 ## 6. Typed bindings come from the effective schema, per tenant
 
-`lasterp plugin bindings --lang go|ts` generates types from a tenant's **effective** schemas —
-base plus overlays — because the custom fields are the entire reason a plugin author needs
-generated types at all. Go and TS only: those are the two the repo already compiles, and a
-generator whose output nothing type-checks is a generator that silently rots.
+`lasterp plugin bindings` generates types from a tenant's **effective** schemas, read from
+`GET /api/v1/meta/objects` — the surface that is already per-tenant and already capability-filtered,
+so the generator stays correct on the day WP-3.2c lands overlays without being rewritten.
+
+**Go only**, which amends this section's own first draft (Go *and* TS). §5 argues that a scaffold
+CI cannot compile is a template, not a proof; a generator whose output nothing type-checks is the
+same claim with fewer excuses, since generated code is exactly where a silent drift shows up last.
+Go's output is compiled in the test suite. TS bindings arrive with the toolchain that can build a
+TS plugin in CI.
+
+## 6b. Two things building PR-B found
+
+**A plugin could not read an `Invoice` at all.** `crudObjects()` — the set the gateway serves as
+generic CRUD, and the same set the plugin host was handed — holds `Account` and `Contact` and
+nothing else, deliberately: an invoice is created and posted through invoicing's own pipeline, and
+a generic `POST /api/v1/invoice` would be the side door around INV-F5 (there is a test asserting
+that route 404s). But the change feed *does* carry invoice changes, so a plugin could be told an
+invoice changed and then be refused the read — which is what the roadmap's own commission-calc
+example ran into on its first run.
+
+The fix keeps both halves: **the plugin host's object map is a superset of the gateway's**, and the
+extra entries are marked read-only. A report needs the row; a pipeline owns the write. A manifest
+requesting `write` on one is refused **at install**, by name and naming the invariant, rather than
+installing and failing at some later call — the refuse-never-ignore rule this host has applied
+since WP-3.1a. There is a second, structural check in the host function itself, because a document
+could join the read-only set after a plugin was already approved.
+
+**The path of a webhook URL is a credential.** WP-3.2a's audit row recorded method, host and full
+path, having already dropped headers, bodies and the query string for INV-K1. Writing the Slack
+example showed the hole: an incoming webhook is `/services/T000/B000/<secret>`, and so is every
+"unguessable URL" integration — so the full path in `audit_log` is a live credential in the trail
+of the call that used it, put there by a plugin that did nothing wrong. The row now records the
+**first path segment only**: enough to tell `/services` from `/admin` on the same host, which is
+what makes the row useful, and never enough to be the credential.
 
 ## 7. Nothing here is reachable by an autonomous process
 

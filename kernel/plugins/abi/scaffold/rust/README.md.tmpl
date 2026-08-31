@@ -1,0 +1,28 @@
+# {{.ID}}
+
+A LastERP server plugin (`{{.Lang}}`), targeting `{{.ABIVersion}}`.
+
+Read `manifest.yaml` first — it is the whole of what this plugin may do, and
+what an administrator approves at install. A capability it does not list is a
+host function this module cannot import, so the sandbox refuses to instantiate
+it rather than refusing the call.
+
+## Build, pack, install
+
+See the header of the source file for the build command for this language, then:
+
+```sh
+lasterp plugin pack -manifest manifest.yaml -module plugin.wasm -key publisher.key -out {{.Name}}.tar.gz
+lasterp plugin install ./{{.Name}}.tar.gz -server $LASTERP_URL -token $LASTERP_TOKEN
+```
+
+`lasterp plugin keygen` makes `publisher.key` and prints the line an operator
+adds to their trust file. A deployment installs no bundle it cannot verify.
+
+## Typed bindings for your tenant's objects
+
+```sh
+lasterp plugin bindings -server $LASTERP_URL -token $LASTERP_TOKEN -out objects.go
+```
+
+The full walkthrough is in the LastERP docs: `docs/23-PLUGIN-TUTORIAL.md`.

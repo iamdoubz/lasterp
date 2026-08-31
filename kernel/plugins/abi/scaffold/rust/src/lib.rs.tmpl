@@ -1,0 +1,56 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// {{.ID}} — targets {{.ABIVersion}}.
+//
+// Build:  cargo build --release --target wasm32-unknown-unknown
+// Module: target/wasm32-unknown-unknown/release/{{.NameUnderscore}}.wasm
+//
+// Every host function takes one JSON object and returns
+// {"ok":true,"result":…} or {"ok":false,"error":…}. A function your manifest
+// did not ask for is not importable at all — the module will not instantiate.
+use extism_pdk::*;
+use serde::{Deserialize, Serialize};
+
+#[host_fn("extism:host/user")]
+extern "ExtismHost" {
+    fn lasterp_log(req: String) -> String;
+    // Uncomment alongside the matching capability in manifest.yaml:
+    // fn lasterp_object_query(req: String) -> String;
+    // fn lasterp_secret_get(req: String) -> String;
+    // fn lasterp_http_request(req: String) -> String;
+}
+
+/// What an /ext route hands your function. The caller's request headers are
+/// deliberately absent: you learn who called, never how they authenticated.
+#[derive(Deserialize)]
+struct EndpointRequest {
+    #[allow(dead_code)]
+    method: String,
+    #[allow(dead_code)]
+    path: String,
+    #[allow(dead_code)]
+    query: String,
+    #[allow(dead_code)]
+    body: String,
+    caller: String,
+}
+
+#[derive(Serialize)]
+struct Response {
+    status: u16,
+    content_type: String,
+    body: String,
+}
+
+#[plugin_fn]
+pub fn hello(input: String) -> FnResult<String> {
+    let req: EndpointRequest = serde_json::from_str(&input)?;
+    unsafe {
+        let _ = lasterp_log(serde_json::json!({"message": format!("{{.ID}}: hello, called by {}", req.caller)}).to_string());
+    }
+    Ok(serde_json::to_string(&Response {
+        status: 200,
+        content_type: "application/json".into(),
+        body: serde_json::json!({"hello": req.caller}).to_string(),
+    })?)
+}

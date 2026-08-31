@@ -163,7 +163,7 @@ func allActions(t *testing.T, db *storage.DB) []api.Action {
 	// fence too: a surface that only appears in deployments which configured a
 	// key file is one the route fence would silently stop watching.
 	return actions(db, reg, objects, translator, sso, testKeySource(t),
-		plugins.NewDispatcher(pluginHost(db, objects, nil)))
+		plugins.NewDispatcher(pluginHost(db, objects, nil)), plugins.TrustStore{})
 }
 
 // concretePath substitutes a placeholder for each {param} segment.

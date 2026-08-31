@@ -1,0 +1,26 @@
+# The commission calculator: WP-3.2b's worked example of a plugin that reacts to
+# business events and answers a question about them.
+#
+# It subscribes to Invoice changes, keeps a running commission total per
+# salesperson in its own key/value store, and serves that total back on a route
+# of its own. Everything it can do is on this page — which is the whole point of
+# a manifest.
+id: com.lasterp.commission-calc
+version: 1.0.0
+lasterp: ">=0.1"
+
+functions: [on_invoice_changed, report]
+
+capabilities:
+  objects:
+    - {type: Invoice, access: read}
+
+hooks:
+  # Async, not sync: a commission total is not a reason to make saving an
+  # invoice slower, and an after-the-fact number that arrives a second late is
+  # still correct. Delivery is at-least-once, so the function below dedupes on
+  # the invoice id — which is what the kv store is for.
+  - {event: Invoice.changed, fn: on_invoice_changed, mode: async}
+
+endpoints:
+  - {path: /report, fn: report, methods: [GET]}

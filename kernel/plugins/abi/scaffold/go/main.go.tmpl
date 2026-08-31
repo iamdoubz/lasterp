@@ -1,0 +1,27 @@
+// SPDX-License-Identifier: Apache-2.0
+
+// {{.ID}} — a LastERP plugin.
+//
+// Build it:
+//
+//	GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared -o plugin.wasm .
+//
+// Then pack, and install it into a running server:
+//
+//	lasterp plugin pack -manifest manifest.yaml -module plugin.wasm -key publisher.key -out {{.Name}}.tar.gz
+//	lasterp plugin install ./{{.Name}}.tar.gz -server $LASTERP_URL -token $LASTERP_TOKEN
+package main
+
+// hello answers GET /ext/{{.ID}}/hello.
+//
+//go:wasmexport hello
+func hello() int32 {
+	var req EndpointRequest
+	if !Input(&req) {
+		return 1
+	}
+	Log("{{.ID}}: hello, called by " + req.Caller)
+	return Respond(200, "application/json", `{"hello":"`+req.Caller+`"}`)
+}
+
+func main() {}

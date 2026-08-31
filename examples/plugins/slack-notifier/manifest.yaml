@@ -1,0 +1,23 @@
+# The Slack notifier: WP-3.2b's worked example of a plugin that talks to the
+# outside world.
+#
+# It posts a line to a Slack incoming webhook when a Contact changes. Two
+# capabilities carry the whole story: the webhook URL is a credential and lives
+# in the vault (never in this file, never in the module), and the one host it
+# may call is named here so an administrator approving the install can see where
+# their data goes — a tampered secret cannot point this plugin anywhere else.
+id: com.lasterp.slack-notifier
+version: 1.0.0
+lasterp: ">=0.1"
+
+functions: [on_contact_changed]
+
+capabilities:
+  objects:
+    - {type: Contact, access: read}
+  secrets: [slack_webhook_url]
+  http:
+    - {host: hooks.slack.com, methods: [POST]}
+
+hooks:
+  - {event: Contact.changed, fn: on_contact_changed, mode: async}

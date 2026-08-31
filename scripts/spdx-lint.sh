@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Checks every tracked .go/.ts/.tsx/.js source file for an SPDX-License-Identifier
-# header in its first 5 lines. Zone is determined by path: sdk/, proto/, and
-# kernel/plugins/abi/ are Apache-2.0; everything else is AGPL-3.0-only.
+# header in its first 5 lines. Zone is determined by path: sdk/, proto/,
+# kernel/plugins/abi/ and examples/ are Apache-2.0; everything else is
+# AGPL-3.0-only. (ADR-012: the plugin ABI boundary doubles as the licensing
+# boundary — anything a third party links against or starts their own code from
+# lives on the Apache side, and an example plugin is exactly that.)
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
@@ -10,7 +13,7 @@ fail=0
 
 apache_zone() {
   case "$1" in
-    sdk/*|proto/*|kernel/plugins/abi/*) return 0 ;;
+    sdk/*|proto/*|kernel/plugins/abi/*|examples/*) return 0 ;;
     *) return 1 ;;
   esac
 }

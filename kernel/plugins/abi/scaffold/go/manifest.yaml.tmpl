@@ -1,0 +1,32 @@
+# {{.ID}} — a LastERP server plugin.
+#
+# This file is the contract an administrator reads before approving anything, so
+# everything the plugin can do is here, in one screen. Nothing is implicit: a
+# capability you do not list is a host function your module cannot even import.
+id: {{.ID}}
+version: 0.1.0
+# The host versions this plugin claims to run on. Checked at install.
+lasterp: ">={{.HostVersion}}"
+
+# Exported functions the host may call. An export missing from this list is
+# unreachable — the callable surface is declared, not discovered.
+functions: [hello]
+
+# Routes served under /ext/{{.ID}}/. Callers need a session and `plugin:invoke`.
+endpoints:
+  - {path: /hello, fn: hello, methods: [GET]}
+
+# Uncomment what this plugin actually needs. Each line is something an
+# administrator has to agree to, and an approval can never grant more than the
+# approver holds themselves.
+#
+# capabilities:
+#   objects:
+#     - {type: Contact, access: read}
+#   secrets: [my_api_key]
+#   http:
+#     - {host: api.example.com, methods: [POST]}
+#
+# hooks:
+#   - {event: Contact.before_create, fn: validate, mode: sync}
+#   - {event: Contact.changed, fn: react, mode: async}

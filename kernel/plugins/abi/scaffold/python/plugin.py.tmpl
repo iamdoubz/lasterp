@@ -1,0 +1,42 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# {{.ID}} — targets {{.ABIVersion}}.
+#
+# Build:  extism-py plugin.py -o plugin.wasm
+#
+# Every host function takes one JSON object and returns
+# {"ok": True, "result": ...} or {"ok": False, "error": ...}. A function your
+# manifest did not ask for is not importable at all.
+import json
+
+import extism
+
+
+@extism.import_fn("extism:host/user", "lasterp_log")
+def _lasterp_log(offset: int) -> int: ...
+
+
+def _call(fn, req):
+    offset = extism.memory.alloc(json.dumps(req).encode()).offset
+    return json.loads(extism.memory.find(fn(offset)).bytes().decode())
+
+
+def log(message: str) -> None:
+    """Write a line to the server's log, attributed to this plugin."""
+    _call(_lasterp_log, {"message": message})
+
+
+@extism.plugin_fn
+def hello() -> None:
+    # What an /ext route hands you — never the caller's request headers.
+    req = json.loads(extism.input_str())
+    log(f"{{.ID}}: hello, called by {req['caller']}")
+    extism.output_str(
+        json.dumps(
+            {
+                "status": 200,
+                "content_type": "application/json",
+                "body": json.dumps({"hello": req["caller"]}),
+            }
+        )
+    )

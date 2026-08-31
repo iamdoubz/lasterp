@@ -331,6 +331,13 @@ func (inv *invocation) crudFor(object, access string) (*metadata.CRUD, error) {
 	if object == "" {
 		return nil, errors.New("plugins: object is required")
 	}
+	// INV-F5: a module-owned document is written by its module's pipeline or
+	// not at all. The manifest could not have been approved for this (install
+	// refuses it), so reaching here means a module was added to the read-only
+	// set after an install — refuse rather than trust the older approval.
+	if access == "write" && inv.host.ReadOnly[object] {
+		return nil, fmt.Errorf("%w: %s is written only through its own module's pipeline", authz.ErrPermissionDenied, object)
+	}
 	if !manifestAllowsObject(inv.plugin.Manifest, object, access) {
 		return nil, fmt.Errorf("%w: %s does not declare %s access to %s",
 			authz.ErrPermissionDenied, inv.plugin.ID, access, object)
