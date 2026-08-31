@@ -96,7 +96,7 @@ func (r *Runner) RunOnce(ctx context.Context, tenant tenancy.ID, now time.Time) 
 		if job == nil {
 			return ran, nil
 		}
-		if err := r.run(ctx, tenant, job); err != nil {
+		if err := r.run(ctx, tenant, job, now); err != nil {
 			return ran, err
 		}
 		ran++
@@ -105,19 +105,19 @@ func (r *Runner) RunOnce(ctx context.Context, tenant tenancy.ID, now time.Time) 
 }
 
 // run executes one claimed job and records the outcome.
-func (r *Runner) run(ctx context.Context, tenant tenancy.ID, job *Job) error {
+func (r *Runner) run(ctx context.Context, tenant tenancy.ID, job *Job, now time.Time) error {
 	handler, ok := r.registry.lookup(job.Kind)
 	if !ok {
 		// Not a crash: a job whose kind is unregistered is what a rolling
 		// deploy looks like from the old binary, or an uninstalled plugin's
 		// leftover work. It retries, and if the kind never appears it becomes a
 		// dead letter naming the kind — which is the message an operator needs.
-		return Fail(ctx, r.db, tenant, job.ID, fmt.Errorf("%w: %s", ErrUnknownKind, job.Kind))
+		return Fail(ctx, r.db, tenant, job.ID, fmt.Errorf("%w: %s", ErrUnknownKind, job.Kind), now)
 	}
 
 	err := runGuarded(ctx, handler, tenant, job.Payload)
 	if err != nil {
-		return Fail(ctx, r.db, tenant, job.ID, err)
+		return Fail(ctx, r.db, tenant, job.ID, err, now)
 	}
 	return Complete(ctx, r.db, tenant, job.ID)
 }

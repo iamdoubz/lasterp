@@ -27,6 +27,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/iamdoubz/lasterp/kernel/jobs"
 )
 
 // Manifest is a plugin's declaration (docs/05 §Plugin manifest). It is the
@@ -199,9 +201,29 @@ type Capabilities struct {
 	// HTTP is the outbound allowlist (WP-3.2a). Empty means the sandbox has
 	// no network at all, which is every plugin's default.
 	HTTP []HTTPHost `yaml:"http"`
-	// Schedule is refused: no job runner until WP-3.3.
+	// Schedule is a list of 5-field cron expressions (WP-3.3b). Each becomes a
+	// job_schedules row owned by this plugin's principal, firing its first
+	// declared function. Parsed at install, so an expression that cannot fire
+	// is refused where the administrator can see it.
 	Schedule []string `yaml:"schedule"`
+	// Jobs unlocks `enqueue_job`: this plugin may queue its own functions to
+	// run outside a request.
+	//
+	// Its own field rather than a side effect of Schedule, because the two say
+	// different things. Schedule is "run me at 2am"; Jobs is "let me defer my
+	// own work", which is what a hook that must not block a write needs and
+	// which has nothing to do with cron. Folding them together would make an
+	// author write a fake cron expression to get deferral — and would make
+	// `schedule:` mean two things to whoever reviews it.
+	//
+	// Declaring Schedule implies Jobs: a plugin that runs on a timer already
+	// runs outside a request, so refusing it the queue would be a distinction
+	// without a difference (see AllowsJobs).
+	Jobs bool `yaml:"jobs"`
 }
+
+// AllowsJobs reports whether this plugin may enqueue background work.
+func (c Capabilities) AllowsJobs() bool { return c.Jobs || len(c.Schedule) > 0 }
 
 // HTTPHost is one outbound destination the plugin asks for.
 //
@@ -287,6 +309,19 @@ func (m *Manifest) Validate() error {
 		}
 	}
 
+	// Cron is parsed here rather than by the runner. A schedule the runner
+	// cannot read is a plugin that installs cleanly and never fires — the exact
+	// failure this whole Validate exists to prevent — and "can never fire" (the
+	// 30th of February) is as much a mistake as a syntax error.
+	for i, expr := range m.Capabilities.Schedule {
+		if err := jobs.ValidCron(expr); err != nil {
+			return fmt.Errorf("plugins: capabilities.schedule[%d]: %w", i, err)
+		}
+	}
+	if len(m.Capabilities.Schedule) > 0 && len(m.Functions) == 0 {
+		return errors.New("plugins: capabilities.schedule needs a function to call")
+	}
+
 	seenPath := map[string]bool{}
 	for i := range m.Endpoints {
 		e := &m.Endpoints[i]
@@ -308,7 +343,6 @@ func (m *Manifest) Validate() error {
 		what    string
 		owner   string
 	}{
-		{len(m.Capabilities.Schedule) > 0, "capabilities.schedule", "WP-3.3, which owns the job runner"},
 		{len(m.Overlays) > 0, "overlays", "WP-3.2c (tenant metadata overlays). Carrying an overlay file in a bundle is the easy half; applying one needs per-tenant schemas, which this host does not have yet — see docs/notes/WP-3.2-decisions.md §2b"},
 		{len(m.MCPTools) > 0, "mcp_tools", "WP-3.4 (MCP server)"},
 	} {

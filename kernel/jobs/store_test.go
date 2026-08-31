@@ -158,7 +158,7 @@ func TestFailRetriesThenDeadLetters(t *testing.T) {
 				if job.Attempts != attempt {
 					t.Fatalf("attempt %d: Attempts = %d", attempt, job.Attempts)
 				}
-				if err := Fail(ctx, db, tenant, id, fmt.Errorf("attempt %d exploded", attempt)); err != nil {
+				if err := Fail(ctx, db, tenant, id, fmt.Errorf("attempt %d exploded", attempt), now); err != nil {
 					t.Fatalf("Fail (attempt %d): %v", attempt, err)
 				}
 			}
@@ -311,7 +311,7 @@ func TestFailOnUnknownJob(t *testing.T) {
 	for dialect, db := range testDialects(t) {
 		t.Run(dialect, func(t *testing.T) {
 			tenant := mustCreateTenant(t, db)
-			if err := Fail(context.Background(), db, tenant, "nope", errors.New("x")); !errors.Is(err, ErrNotFound) {
+			if err := Fail(context.Background(), db, tenant, "nope", errors.New("x"), time.Now()); !errors.Is(err, ErrNotFound) {
 				t.Fatalf("Fail on an unknown job: err = %v, want ErrNotFound", err)
 			}
 		})

@@ -18,6 +18,7 @@ import (
 	"github.com/iamdoubz/lasterp/kernel/changefeed"
 	"github.com/iamdoubz/lasterp/kernel/identity"
 	"github.com/iamdoubz/lasterp/kernel/idgen"
+	"github.com/iamdoubz/lasterp/kernel/jobs"
 	"github.com/iamdoubz/lasterp/kernel/storage"
 	"github.com/iamdoubz/lasterp/kernel/tenancy"
 )
@@ -190,10 +191,19 @@ func Install(ctx context.Context, db *storage.DB, tenant tenancy.ID, manifestYAM
 		return nil, fmt.Errorf("plugins: install %s: %w", m.ID, err)
 	}
 
-	return &Installed{
+	installed := &Installed{
 		ID: m.ID, Version: m.Version, Manifest: m, Granted: perms, RoleID: role,
 		SHA256: digest, InstalledAt: now, InstalledBy: string(approver.UserID), module: module,
-	}, nil
+	}
+
+	// Schedules are created after the plugin row commits, and are derived from
+	// the manifest rather than accumulated: SyncSchedules deletes this
+	// principal's rows first, so reinstalling replaces its cron entries instead
+	// of doubling them (WP-3.3b).
+	if err := SyncSchedules(ctx, Host{DB: db}, tenant, installed, now); err != nil {
+		return nil, fmt.Errorf("plugins: install %s: %w", m.ID, err)
+	}
+	return installed, nil
 }
 
 // Uninstall removes a plugin and the authority that came with it. The role
@@ -209,6 +219,12 @@ func Uninstall(ctx context.Context, db *storage.DB, tenant tenancy.ID, id, actor
 	}
 	if err := authz.DeleteRole(ctx, db, tenant, p.RoleID); err != nil {
 		return fmt.Errorf("plugins: remove plugin role: %w", err)
+	}
+	// Schedules go with the plugin, for the same reason the role does: a cron
+	// row left behind is work that keeps firing for code that is gone, and it
+	// would fire under a reinstalled *different* plugin's id (WP-3.3b).
+	if err := jobs.DeleteSchedulesByOwner(ctx, db, tenant, p.Principal()); err != nil {
+		return fmt.Errorf("plugins: remove plugin schedules: %w", err)
 	}
 	err = tenancy.WithTenant(ctx, db, tenant, func(ctx context.Context, tx *sql.Tx) error {
 		for _, stmt := range []string{
