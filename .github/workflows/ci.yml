@@ -83,9 +83,27 @@ jobs:
       - run: pnpm install
       - run: go test ./...
       - run: pnpm --dir web run test
-      # Performance budgets (docs/09, WP-1.5 AC): interactive read p95 < 100ms,
-      # write p95 < 300ms, measured over a real HTTP listener against the
-      # fully-wired product handler. A regression fails the build.
+
+  # Performance budgets (docs/09, WP-1.5 AC): interactive read p95 < 100ms,
+  # write p95 < 300ms, measured over a real HTTP listener against the
+  # fully-wired product handler. A regression fails the build.
+  #
+  # **Its own job, on a fresh runner, deliberately.** This used to be the last
+  # step of `test`, where it measured fsync-bound SQLite writes on a machine
+  # that had just written the whole Go suite and the web suite to disk. That
+  # reported p50=5ms with p95=336ms and max=895ms — a *fast* median with a
+  # multi-hundred-millisecond tail, which is the signature of background
+  # writeback, not of a slow server. (Checked rather than assumed: the same test
+  # on the same commit under Go 1.26.5 and 1.26.7 gives p50≈23ms, p95≈28ms,
+  # max≈37ms on a quiet machine — the toolchain moved nothing.) A latency budget
+  # measured on a machine mid-flush measures the machine.
+  perf:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.7"
       - name: performance budget smoke
         run: go test -count=1 -tags perf ./internal/app
 
