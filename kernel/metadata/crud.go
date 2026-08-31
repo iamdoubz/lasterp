@@ -139,7 +139,7 @@ func (c *CRUD) Create(ctx context.Context, db *storage.DB, tenant tenancy.ID, re
 	// Authorization first, validation second, always: a 422 that names the
 	// legal values for a caller who is not allowed to write at all is a
 	// validity oracle (INV-T2). The same ordering holds in Update.
-	actor, err := authz.Authorize(ctx, db, c.schema.ObjectName, "create")
+	actor, grants, err := authz.AuthorizeGrants(ctx, db, c.schema.ObjectName, "create")
 	if err != nil {
 		return nil, err
 	}
@@ -153,6 +153,13 @@ func (c *CRUD) Create(ctx context.Context, db *storage.DB, tenant tenancy.ID, re
 	rec, err = c.runBefore(ctx, tenant, VerbCreate, rec, false)
 	if err != nil {
 		return nil, err
+	}
+	// Second stage of the gate (WP-3.3a): a conditional grant is judged against
+	// the record it is about. After the hook, not before, because an enrichment
+	// may set the very field the condition reads (`owner`, say) — and the row
+	// that gets written is the one the condition must have approved.
+	if !grants.Allow(rec) {
+		return nil, authz.ErrPermissionDenied
 	}
 
 	translations, _, err := c.translationsFrom(rec)
@@ -404,7 +411,7 @@ func (c *CRUD) List(ctx context.Context, db *storage.DB, tenant tenancy.ID) ([]R
 // every overlay field's current value so untouched ones survive the
 // re-marshal).
 func (c *CRUD) Update(ctx context.Context, db *storage.DB, tenant tenancy.ID, id string, changes Record) (Record, error) {
-	actor, err := authz.Authorize(ctx, db, c.schema.ObjectName, "update")
+	actor, grants, err := authz.AuthorizeGrants(ctx, db, c.schema.ObjectName, "update")
 	if err != nil {
 		return nil, err
 	}
@@ -433,6 +440,19 @@ func (c *CRUD) Update(ctx context.Context, db *storage.DB, tenant tenancy.ID, id
 		}
 		if current == nil {
 			return ErrRecordNotFound
+		}
+		// Second stage of the gate (WP-3.3a), inside the transaction that will
+		// do the writing: the row a condition approved is the row that gets
+		// updated, with no window between the check and the write.
+		//
+		// ponytail: the condition is evaluated against the *current* row only —
+		// Postgres RLS's USING half, not its WITH CHECK half. So a condition
+		// says which rows you may touch, not what they may become; a rule that
+		// stops an owner reassigning their record to someone else is a
+		// validation rule or a hook today. Add the post-state check here if a
+		// tenant needs the WITH CHECK semantics.
+		if !grants.Allow(current) {
+			return authz.ErrPermissionDenied
 		}
 
 		diff := make(map[string]map[string]any, len(changes))
@@ -524,7 +544,7 @@ func (c *CRUD) Update(ctx context.Context, db *storage.DB, tenant tenancy.ID, id
 // SoftDelete sets archived_at (docs/03: "Soft-delete only for CRUD
 // objects"), requiring the "delete" permission.
 func (c *CRUD) SoftDelete(ctx context.Context, db *storage.DB, tenant tenancy.ID, id string) error {
-	actor, err := authz.Authorize(ctx, db, c.schema.ObjectName, "delete")
+	actor, grants, err := authz.AuthorizeGrants(ctx, db, c.schema.ObjectName, "delete")
 	if err != nil {
 		return err
 	}
@@ -542,6 +562,10 @@ func (c *CRUD) SoftDelete(ctx context.Context, db *storage.DB, tenant tenancy.ID
 		}
 		if current == nil {
 			return ErrRecordNotFound
+		}
+		// Second stage of the gate (WP-3.3a), inside the writing transaction.
+		if !grants.Allow(current) {
+			return authz.ErrPermissionDenied
 		}
 
 		now := time.Now().UTC()

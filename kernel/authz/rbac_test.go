@@ -72,23 +72,6 @@ func TestGrantAndRevokePermission(t *testing.T) {
 	}
 }
 
-func TestGrantPermissionRejectsCondition(t *testing.T) {
-	for dialect, db := range testDialects(t) {
-		t.Run(dialect, func(t *testing.T) {
-			ctx := context.Background()
-			tenant := mustCreateTenant(t, db)
-			role, err := CreateRole(ctx, db, tenant, "clerk", false)
-			if err != nil {
-				t.Fatalf("CreateRole: %v", err)
-			}
-			err = GrantPermission(ctx, db, tenant, role, "invoice", "read", "record.owner == actor.id")
-			if !errors.Is(err, ErrConditionNotSupported) {
-				t.Fatalf("GrantPermission with condition: err = %v, want ErrConditionNotSupported", err)
-			}
-		})
-	}
-}
-
 // INV-T3: permission floors cannot be lowered by the tenant-facing API.
 func TestCorePermissionFloorCannotBeRevoked(t *testing.T) {
 	for dialect, db := range testDialects(t) {

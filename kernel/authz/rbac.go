@@ -17,14 +17,6 @@ import (
 // RoleID identifies a tenant-scoped role.
 type RoleID string
 
-// ErrConditionNotSupported is returned by GrantPermission for any
-// non-empty condition: role_permissions.condition is stored for
-// forward-compatibility with the CEL-based conditions described in
-// docs/08-SECURITY-MULTITENANCY.md, but evaluation isn't implemented yet
-// (docs/notes/WP-0.3-decisions.md) — rejecting outright avoids silently
-// granting an unconditional permission the caller meant to restrict.
-var ErrConditionNotSupported = errors.New("authz: conditional grants are not yet supported")
-
 // ErrCorePermissionFloor is returned when revoking a permission from a
 // core role — INV-T3: permission floors cannot be lowered by overlays or
 // tenant admins.
@@ -53,20 +45,27 @@ func CreateRole(ctx context.Context, db *storage.DB, tenant tenancy.ID, name str
 	return id, nil
 }
 
-// GrantPermission grants role the (object, action) permission,
-// unconditionally only — see ErrConditionNotSupported.
+// GrantPermission grants role the (object, action) permission.
+//
+// condition is an optional CEL expression over `record` and `actor` (docs/08
+// §AuthZ). It is compiled here and refused if it does not yield a boolean
+// (ErrConditionInvalid), or if it is attached to an action whose gate has no
+// record to judge (ErrConditionUnsupportedAction) — a rule the gate would never
+// consult is a permission that reads as narrower than it is. A condition can
+// only ever narrow the grant it sits on; see GrantSet.Allow (INV-T3).
 func GrantPermission(ctx context.Context, db *storage.DB, tenant tenancy.ID, role RoleID, object, action, condition string) error {
-	if condition != "" {
-		return ErrConditionNotSupported
-	}
 	if tenant == "" || role == "" || object == "" || action == "" {
 		return errors.New("authz: tenant, role, object and action are required")
 	}
+	if err := validateCondition(action, condition); err != nil {
+		return err
+	}
+	stored := sql.NullString{String: condition, Valid: condition != ""}
 	err := tenancy.WithTenant(ctx, db, tenant, func(ctx context.Context, tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, db.Rebind(`
 			INSERT INTO role_permissions (id, tenant_id, role_id, object, action, condition)
-			VALUES (?, ?, ?, ?, ?, NULL)`),
-			idgen.New(), string(tenant), string(role), object, action)
+			VALUES (?, ?, ?, ?, ?, ?)`),
+			idgen.New(), string(tenant), string(role), object, action, stored)
 		return err
 	})
 	if err != nil {
@@ -117,8 +116,15 @@ func AssignRole(ctx context.Context, db *storage.DB, tenant tenancy.ID, user ide
 	return nil
 }
 
-// Can reports whether actor holds a grant for (object, action) through
-// any assigned role.
+// Can reports whether actor holds an **unconditional** grant for
+// (object, action) through any assigned role.
+//
+// A conditional grant deliberately does not satisfy it. Can has no record, so a
+// condition over `record.*` cannot be evaluated here, and treating the grant as
+// sufficient anyway is exactly the widening INV-T3 forbids — it is the shape
+// the bug would actually take. Record-bearing callers use AuthorizeGrants or
+// AuthorizeRecord (condition.go); everyone else keeps WP-0.3's behaviour
+// unchanged, since before WP-3.3a no condition could be stored at all.
 func Can(ctx context.Context, db *storage.DB, actor Actor, object, action string) (bool, error) {
 	if !actor.valid() {
 		return false, ErrNoActor
@@ -128,7 +134,8 @@ func Can(ctx context.Context, db *storage.DB, actor Actor, object, action string
 		row := tx.QueryRowContext(ctx, db.Rebind(`
 			SELECT COUNT(*) FROM role_permissions rp
 			JOIN user_roles ur ON ur.role_id = rp.role_id AND ur.tenant_id = rp.tenant_id
-			WHERE rp.tenant_id = ? AND ur.user_id = ? AND rp.object = ? AND rp.action = ?`),
+			WHERE rp.tenant_id = ? AND ur.user_id = ? AND rp.object = ? AND rp.action = ?
+			  AND (rp.condition IS NULL OR rp.condition = '')`),
 			string(actor.TenantID), string(actor.UserID), object, action)
 		return row.Scan(&n)
 	})
@@ -149,6 +156,11 @@ func Can(ctx context.Context, db *storage.DB, actor Actor, object, action string
 // It is not an authorization decision and nothing may treat it as one: Can and
 // Authorize remain the only gates (INV-T2). This answers a question about
 // grants; a gate answers a question about one access.
+//
+// Like Can, it counts **unconditional** grants only. A conditionally-granted
+// object listed here would hand a replica the rows the condition denies —
+// INV-T1/T2 through the sync door — and the scope answer is object-level, so it
+// has nowhere to put a row predicate.
 func GrantedObjects(ctx context.Context, db *storage.DB, actor Actor, action string) ([]string, error) {
 	if !actor.valid() {
 		return nil, ErrNoActor
@@ -162,6 +174,7 @@ func GrantedObjects(ctx context.Context, db *storage.DB, actor Actor, action str
 			SELECT DISTINCT rp.object FROM role_permissions rp
 			JOIN user_roles ur ON ur.role_id = rp.role_id AND ur.tenant_id = rp.tenant_id
 			WHERE rp.tenant_id = ? AND ur.user_id = ? AND rp.action = ?
+			  AND (rp.condition IS NULL OR rp.condition = '')
 			ORDER BY rp.object`),
 			string(actor.TenantID), string(actor.UserID), action)
 		if err != nil {
