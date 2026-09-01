@@ -25,7 +25,7 @@ capabilities:                    # admin approves each at install
 hooks:
   - {event: "invoice.posted", fn: on_invoice_posted, mode: async}
   - {event: "invoice.before_post", fn: validate_commission, mode: sync, timeout_ms: 500}
-overlays: [./overlays/commission_entry.object.yaml]
+overlays: [Contact]                # object names; the bundle carries overlay.Contact.yaml
 mcp_tools: [{name: explain_commission, fn: explain_commission}]
 endpoints: [{path: /report, fn: http_report, methods: [GET]}]
 ```
@@ -52,7 +52,7 @@ endpoints: [{path: /report, fn: http_report, methods: [GET]}]
 
 - `lasterp dev` — hot-reloading local instance with seed data.
 - `lasterp plugin new --lang rust|go|ts|python` — **shipped (WP-3.2b)**: a starter project per language, with the host bindings written into the author's own tree rather than pulled from a separately published SDK (four release pipelines for forty lines of bindings apiece is not a trade worth making). All four render; **Go is the one CI compiles**, and the tutorial is written against it — [WP-3.2-decisions.md](notes/WP-3.2-decisions.md) §5.
-- `lasterp plugin bindings` — **shipped (WP-3.2b)**, Go only: typed structs generated from `GET /api/v1/meta/objects`, which is already per-tenant, so the output gains custom fields the day WP-3.2c lands overlays. Money generates as minor units plus a currency, never a float, in a plugin exactly as in the server.
+- `lasterp plugin bindings` — **shipped (WP-3.2b)**, Go only: typed structs generated from `GET /api/v1/meta/objects`, which is already per-tenant, and gains a tenant's custom fields now that WP-3.2c has landed overlays. Money generates as minor units plus a currency, never a float, in a plugin exactly as in the server.
 - `lasterp plugin keygen | pack | install` — **shipped (WP-3.2b)**: sign a bundle, and install one through the authenticated API as the person approving it.
 - `lasterp plugin test` — runs plugin against a golden in-memory instance; fixture recorder. *Not yet built.*
 - Registry — **shipped (WP-3.2b)**: a bundle is a gzipped tar of `manifest.yaml`, `plugin.wasm` and a detached `signature.json` (ed25519 over a digest of the *contents*, so repacking the same plugin keeps its identity), and a registry is that plus an `index.json` on any HTTPS host — there is no registry protocol to implement, because the security of an install comes from the signature and not from where the bytes were fetched. Trust is a **deployment file** of publisher keys ([docs/09](09-SCALABILITY-DEPLOYMENT.md#plugin-publisher-trust-wp-32b)); an unsigned or untrusted bundle is refused, not warned about. The original line read "signed bundles, semver, dependency solver, staged rollout"; WP-3.2b ships the first three narrowed to what has a consumer — a signed `.tar.gz` bundle (ed25519 over the content digest WP-3.1a already records), the `lasterp:` host-range check, and `lasterp plugin install <ref>` against an HTTP registry index; plugin→plugin dependencies and staged rollout are deferred by name in [WP-3.2-decisions.md](notes/WP-3.2-decisions.md) §4.

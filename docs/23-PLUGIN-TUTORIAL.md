@@ -208,9 +208,11 @@ built and driven end to end by CI:
 
 ## What is not here yet
 
-- **`overlays:`** — a plugin that ships its own object or adds a field to one.
-  It needs per-tenant metadata, which is **WP-3.2c**; the manifest refuses the
-  field by name until then.
+- **`overlays:` shipping a whole new object.** Adding a *field* to a shipped
+  object works from **WP-3.2c** (`overlays: [Contact]`, with
+  `overlay.Contact.yaml` beside the manifest). An overlay that defines an object
+  the host does not already have needs per-tenant DDL and a per-tenant route
+  table, and is refused by name.
 - **`schedule:` and `enqueue_job`** — scheduled work, with WP-3.3's job runner.
 - **`emit_event`** — writing the event store from a plugin, which needs its own
   design (INV-E territory).
