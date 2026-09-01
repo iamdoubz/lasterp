@@ -131,6 +131,16 @@ above it: an install that cannot be honoured in full does not happen (INV-T3). `
 the plugin's overlay rows in the same transaction as its plugin row, for the reason its role and its
 kv go: an overlay left behind is a schema change nobody can see the owner of.
 
-The bundle gains `overlays/*.yaml` entries, inside the existing entry cap and covered by the
-existing content digest — so a *swapped overlay* under a valid signature fails the same check a
-swapped module does.
+The bundle gains one entry per overlay, inside the existing entry cap and covered by the existing
+content digest — so a *swapped overlay* under a valid signature fails the same check a swapped
+module does.
+
+Three details of the carriage, each because the alternative is worse:
+
+- **`overlays:` lists object names, not file names.** It is the line an approving administrator
+  reads: "customizes Contact" is a decision they can make, "carries `overlays/a.yaml`" is not.
+- **The entry is `overlay.<Object>.yaml`, flat.** Not `overlays/<Object>.yaml`: `OpenBundle` refuses
+  any entry with a directory component, and that rule is worth more than the tidier layout — path
+  handling is where tar extractors grow their CVEs, and a bundle has no reason for a second level.
+- **The manifest, the entry name and the document's own `object:` must all agree.** An overlay whose
+  target can be changed by renaming a file is one the manifest's declaration does not actually bind.
