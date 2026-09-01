@@ -78,7 +78,7 @@ func trustedPublisher(t *testing.T) plugins.SigningKey {
 // installBundleOverHTTP packs and installs through the API the CLI uses.
 func installBundleOverHTTP(t *testing.T, e *env, key plugins.SigningKey, manifest string, module []byte) map[string]any {
 	t.Helper()
-	bundle, err := plugins.Pack([]byte(manifest), module, key.ID, key.Key)
+	bundle, err := plugins.Pack([]byte(manifest), module, nil, key.ID, key.Key)
 	if err != nil {
 		t.Fatalf("Pack: %v", err)
 	}

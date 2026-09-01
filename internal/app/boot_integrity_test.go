@@ -425,6 +425,9 @@ func fullGrants() map[string][]string {
 		// Automations (WP-3.3b): creating one is an authority grant, since it
 		// writes as its own principal on a rule the creator chose.
 		"Automation": {"manage"},
+		// Customizing the schema (WP-3.2c): its own grant, because editing one
+		// contact and adding a field to every contact are different powers.
+		"Overlay": {"manage"},
 	}
 }
 
