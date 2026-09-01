@@ -14,9 +14,21 @@ import (
 // changes (decision 5) — relabel/hide/UI-layout/workflow overlay
 // operations have no bearing on this WP's AC and are out of scope.
 type Overlay struct {
-	Layer       string
-	AddFields   []Field
-	Permissions Permissions
+	// Object is the shipped object this overlay targets. It lives *in* the
+	// document rather than in a filename or a route parameter so an exported
+	// overlay is self-describing — ADR-006's "customization packages,
+	// versionable in git" — and so a plugin bundle cannot retarget an approved
+	// overlay by renaming a file (WP-3.2c-decisions.md §5).
+	Object string `yaml:"object"`
+
+	// Layer is the ADR-006 layer this overlay belongs to. Set by whatever
+	// loaded it (the store stamps the column, a module stamps its own name);
+	// never read from the document, because a document that names its own
+	// position in the stack is a document that can lie about it.
+	Layer string `yaml:"-"`
+
+	AddFields   []Field     `yaml:"add_fields"`
+	Permissions Permissions `yaml:"permissions"`
 
 	// NarrowOptions restricts an existing enum field's option set to a subset
 	// of what the layers before it declared: field name → the allowed values.
@@ -25,7 +37,7 @@ type Overlay struct {
 	// AddFields is add-only by design (a name collision is ErrOverlayConflict),
 	// and making a collision mean "redefine" is the in-place metadata mutation
 	// ADR-006 explicitly rejects. There is no shape of this map that widens.
-	NarrowOptions map[string][]string
+	NarrowOptions map[string][]string `yaml:"narrow_options"`
 }
 
 // ErrOverlayConflict is returned when an overlay's new field collides
