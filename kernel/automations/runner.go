@@ -14,6 +14,8 @@ import (
 	"github.com/iamdoubz/lasterp/kernel/expr"
 	"github.com/iamdoubz/lasterp/kernel/identity"
 	"github.com/iamdoubz/lasterp/kernel/jobs"
+	"github.com/iamdoubz/lasterp/kernel/outbound"
+	"github.com/iamdoubz/lasterp/kernel/secrets"
 	"github.com/iamdoubz/lasterp/kernel/storage"
 	"github.com/iamdoubz/lasterp/kernel/tenancy"
 )
@@ -23,6 +25,15 @@ const FeedBatch = 100
 
 // JobKind is the queue kind a scheduled automation runs under.
 const JobKind = "automation.run"
+
+// WebhookJobKind is the queue kind an outbound webhook runs under.
+//
+// Queued rather than called from the sweep, which is the argument call_plugin
+// already makes and this inherits: a five-second dial to a dead host inside
+// RunOnce sits in front of every other automation in the tenant. The queue also
+// supplies the retries, backoff and dead letters a webhook actually wants
+// (docs/notes/WP-3.3c-decisions.md §4).
+const WebhookJobKind = "automation.webhook"
 
 // Objects is the record access an automation's actions need.
 //
@@ -54,10 +65,16 @@ type Runner struct {
 	db      *storage.DB
 	objects Objects
 	plugins Plugins
+	// keys and policy are what a webhook needs: the vault holds the
+	// destination's URL and the deployment holds the outbound posture. Taken as
+	// values rather than behind an interface because kernel/outbound is a
+	// package of functions — there is no construction here to keep out.
+	keys   secrets.KeySource
+	policy outbound.Policy
 }
 
-func NewRunner(db *storage.DB, objects Objects, plugins Plugins) *Runner {
-	return &Runner{db: db, objects: objects, plugins: plugins}
+func NewRunner(db *storage.DB, objects Objects, plugins Plugins, keys secrets.KeySource, policy outbound.Policy) *Runner {
+	return &Runner{db: db, objects: objects, plugins: plugins, keys: keys, policy: policy}
 }
 
 // RunOnce delivers one pass of feed-triggered automations for a tenant and
@@ -213,6 +230,17 @@ func (r *Runner) act(ctx context.Context, tenant tenancy.ID, d *Definition, reco
 			if err := r.plugins.Enqueue(ctx, tenant, a.Plugin, a.Fn, arg); err != nil {
 				return fmt.Errorf("action %d (call_plugin): %w", i, err)
 			}
+		case ActionWebhook:
+			payload, err := json.Marshal(WebhookPayload{
+				AutomationID: d.ID, Destination: a.Destination,
+				Body: webhookBody(d, a, recordID),
+			})
+			if err != nil {
+				return err
+			}
+			if _, err := jobs.Enqueue(ctx, r.db, tenant, WebhookJobKind, payload, time.Now().UTC(), ""); err != nil {
+				return fmt.Errorf("action %d (webhook): %w", i, err)
+			}
 		default:
 			// Unreachable: Validate refuses an unknown type at parse time. Kept
 			// as a refusal rather than a silent skip, because a definition that
@@ -233,6 +261,83 @@ func (r *Runner) act(ctx context.Context, tenant tenancy.ID, d *Definition, reco
 // spurious rewrites here.
 func sameScalar(a, b any) bool {
 	return fmt.Sprint(a) == fmt.Sprint(b)
+}
+
+// webhookBody is the envelope every webhook carries, merged with the action's
+// literal `body:`.
+//
+// No record fields. Which fields of a record may leave the tenant is a
+// data-egress policy and this WP does not design one, so a receiver that needs
+// the record gets its id and has an API (docs/notes/WP-3.3c-decisions.md §3).
+// The envelope's own keys are refused in `body:` at parse time, so this merge
+// cannot be shadowed.
+func webhookBody(d *Definition, a *Action, recordID string) map[string]any {
+	out := map[string]any{
+		"automation": d.ID,
+		"object":     d.Trigger.Object,
+		"record_id":  recordID,
+		"at":         time.Now().UTC().Format(time.RFC3339),
+	}
+	for k, v := range a.Body {
+		out[k] = v
+	}
+	return out
+}
+
+// WebhookPayload is what a queued webhook carries.
+type WebhookPayload struct {
+	AutomationID string         `json:"automation_id"`
+	Destination  string         `json:"destination"`
+	Body         map[string]any `json:"body"`
+}
+
+// WebhookHandler makes the outbound call.
+//
+// The automation is re-read first: a webhook queued by an automation that has
+// since been deleted or disabled must not still call out, because deleting one
+// is how an administrator revokes it and a queue that outlives the revocation
+// is a revocation that did not happen.
+func (r *Runner) WebhookHandler() jobs.Handler {
+	return func(ctx context.Context, tenant tenancy.ID, payload []byte) error {
+		var p WebhookPayload
+		if err := json.Unmarshal(payload, &p); err != nil {
+			return fmt.Errorf("automations: webhook payload is not readable: %w", err)
+		}
+		stored, err := Get(ctx, r.db, tenant, p.AutomationID)
+		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				return nil
+			}
+			return err
+		}
+		if !stored.Enabled {
+			return nil
+		}
+		body, err := json.Marshal(p.Body)
+		if err != nil {
+			return err
+		}
+		ref := "webhook:" + p.Destination
+		resp, err := outbound.Send(ctx, r.db, r.keys, tenant, r.policy,
+			outbound.Caller{Object: "automation", ID: p.AutomationID, Actor: PrincipalFor(p.AutomationID)},
+			p.Destination, body)
+		if err != nil {
+			// Recorded *and* returned: the run log is where an operator looks
+			// for "did my webhook fire", and the returned error is what makes
+			// the queue retry and eventually dead-letter it.
+			_ = recordRun(ctx, r.db, tenant, p.AutomationID, ref, OutcomeFailed, err.Error())
+			return err
+		}
+		if resp.Status >= 400 {
+			// A 4xx/5xx is a delivery that did not happen as far as the
+			// receiver is concerned. The status is recorded; the body is not,
+			// because a receiver may echo what it was sent.
+			err := fmt.Errorf("automations: webhook to %s returned %d", p.Destination, resp.Status)
+			_ = recordRun(ctx, r.db, tenant, p.AutomationID, ref, OutcomeFailed, err.Error())
+			return err
+		}
+		return nil
+	}
 }
 
 // SchedulePayload is what a scheduled automation's queued job carries.

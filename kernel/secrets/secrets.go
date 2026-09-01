@@ -51,10 +51,11 @@ func (Value) String() string { return "[REDACTED]" }
 func (Value) MarshalJSON() ([]byte, error) { return []byte(`"[REDACTED]"`), nil }
 
 // Reader identifies who is reading a secret: a first-party module, a plugin, an
-// agent. Get refuses an empty one, so no read is anonymous (INV-T4).
+// automation, an agent. Get refuses an empty one, so no read is anonymous
+// (INV-T4).
 type Reader struct {
-	Kind string // "module", "plugin", "agent"
-	ID   string // "oidc", "com.acme.commission-calc", …
+	Kind string // "module", "plugin", "automation", "agent"
+	ID   string // "oidc", "com.acme.commission-calc", "notify-ops", …
 }
 
 func (r Reader) String() string { return r.Kind + ":" + r.ID }

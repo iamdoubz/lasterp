@@ -79,7 +79,13 @@ lasterp secrets rotate -tenant acme          # re-wraps that tenant's data keys
 
 Rotation re-wraps the data keys and never touches the payloads, so it is cheap and re-runnable; a crashed run is resumed by running it again. One tenant per invocation.
 
-## Plugin outbound HTTP (WP-3.2a)
+## Outbound HTTP (WP-3.2a, generalised in WP-3.3c)
+
+Everything this server sends to a host outside it leaves through `kernel/outbound`: one
+client, one dialer, one guard, whether the caller is a plugin or an automation. The two
+environment variables below govern **both** — they keep their `PLUGIN_` names because
+renaming a deployment's environment is a migration nobody asked for, and their subject is
+the deployment's outbound posture rather than plugins specifically.
 
 A plugin reaches the network only through `lasterp_http_request`, only to the hosts its manifest declared and an administrator approved, and every call writes an `audit_log` row naming the plugin, the method and the destination (no headers, no bodies — a plugin's bearer token must not become the longest-lived copy of that credential). Redirects are not followed and the scheme is always `https`.
 
@@ -100,6 +106,31 @@ export LASTERP_PLUGIN_HTTP_CA_FILE=/etc/lasterp/internal-ca.pem
 ```
 
 There is no "skip verification" knob, and there will not be one.
+
+### Automation webhooks (WP-3.3c)
+
+An automation has no manifest, so the thing an administrator approves is a **destination**:
+a named row carrying the host this deployment may call and a pointer to the vaulted URL.
+
+```sh
+# 1. the URL is a credential — for a Slack-style webhook the *path* is the secret
+curl -XPUT .../api/v1/secrets/ops-slack-url  -d '{"value":"https://hooks.example.com/services/T0/B0/xxx"}'
+# 2. the destination records only the reviewable half
+curl -XPUT .../api/v1/webhooks/destinations/ops-slack      -d '{"host":"hooks.example.com","secret_name":"ops-slack-url"}'
+```
+
+Then an automation names it — `{type: webhook, destination: ops-slack}` — and never a URL.
+
+**Two permissions, deliberately.** `Webhook:manage` registers destinations: it decides
+where this deployment may call out at all. `Webhook:send` is what an automation's creator
+must hold for the automation to be granted it, bounded by their own authority (INV-T3, the
+same rule a plugin install follows). Folded into one, anybody who can write an automation
+would pick the host.
+
+No route returns a destination's URL, for the reason no route returns a secret's value. The
+send is queued, so a dead receiver costs a job retry rather than the tenant's whole
+automation sweep, and it is audited exactly once per call — method, host and the path's
+first segment, before the socket opens.
 
 ## Plugin publisher trust (WP-3.2b)
 

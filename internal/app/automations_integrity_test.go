@@ -54,7 +54,7 @@ func runAutomations(t *testing.T, db *storage.DB, tenant tenancy.ID) int {
 	host := pluginHost(db, mustCRUDObjects(t), nil)
 	runner := automations.NewRunner(db,
 		crudObjectsAdapter{db: db, cruds: host.Objects},
-		pluginEnqueueAdapter{db: db})
+		pluginEnqueueAdapter{db: db}, host.Keys, host.HTTP)
 	n, err := runner.RunOnce(context.Background(), tenant)
 	if err != nil {
 		t.Fatalf("RunOnce: %v", err)
@@ -191,13 +191,16 @@ func TestAutomationRoutesRequireTheirPermission(t *testing.T) {
 				}
 			}
 
-			// A definition this engine cannot honour is the caller's mistake.
-			status, body := e.postAutomation(t, "id: bad\nname: Bad\ntrigger:\n  object: Contact\nactions:\n  - {type: webhook}\n")
+			// A definition this engine cannot honour is the caller's mistake,
+			// and the refusal names the WP that owns the action rather than
+			// accepting it as a silent no-op. `webhook` was the example here
+			// and shipped in WP-3.3c; `email` still waits on a mailer.
+			status, body := e.postAutomation(t, "id: bad\nname: Bad\ntrigger:\n  object: Contact\nactions:\n  - {type: email}\n")
 			if status != http.StatusUnprocessableEntity {
 				t.Fatalf("malformed automation = %d, want 422", status)
 			}
 			detail, _ := body["detail"].(string)
-			if !strings.Contains(detail, "WP-3.3c") {
+			if !strings.Contains(detail, "outbound mail") {
 				t.Fatalf("the refusal does not name the owner of the deferred action: %v", body)
 			}
 		})

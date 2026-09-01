@@ -49,6 +49,7 @@ func actions(db *storage.DB, reg *capability.Registry, objects []*metadata.Effec
 	out = append(out, secretActions(db, keys)...)
 	out = append(out, pluginActions(db, dispatcher, trust, objects)...)
 	out = append(out, automationActions(db)...)
+	out = append(out, webhookActions(db, keys)...)
 	out = append(out, overlayActions(db, objects)...)
 	return append(out, []api.Action{
 		// --- Invoice (bespoke, NOT generic CRUD: posting pipeline is the only
