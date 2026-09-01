@@ -220,35 +220,8 @@ func TestAllowlistIsEnforcedOnTheResolvedAddress(t *testing.T) {
 	}
 }
 
-func TestNonPublicAddressesAreRefused(t *testing.T) {
-	guard := dialGuard(false)
-	for _, addr := range []string{
-		"127.0.0.1:443",          // loopback
-		"10.1.2.3:443",           // RFC1918
-		"192.168.0.5:443",        // RFC1918
-		"169.254.169.254:443",    // the cloud metadata service
-		"100.64.7.7:443",         // carrier-grade NAT
-		"192.0.0.170:443",        // IETF protocol assignments
-		"198.18.0.1:443",         // benchmarking
-		"[::1]:443",              // IPv6 loopback
-		"[fd00::1]:443",          // IPv6 unique-local
-		"[fe80::1]:443",          // IPv6 link-local
-		"[::ffff:127.0.0.1]:443", // IPv4-mapped loopback
-		"[64:ff9b::7f00:1]:443",  // NAT64-embedded loopback
-		"[64:ff9b::a01:203]:443", // NAT64-embedded RFC1918
-	} {
-		if err := guard("tcp", addr, nil); err == nil {
-			t.Errorf("%s was allowed", addr)
-		}
-	}
-	// Non-vacuity: a public address is not refused, or the guard is simply
-	// "no".
-	for _, addr := range []string{"93.184.216.34:443", "[2606:2800:220:1::1]:443"} {
-		if err := guard("tcp", addr, nil); err != nil {
-			t.Errorf("%s was refused: %v", addr, err)
-		}
-	}
-}
+// The dial guard's own table moved to kernel/outbound with the guard itself
+// (WP-3.3c): there is one guard, and it is tested where it lives.
 
 // TestRedirectIsNotFollowed closes the one-hop allowlist bypass: the plugin
 // gets the 3xx and may re-request inside its own allowlist, but the host never
