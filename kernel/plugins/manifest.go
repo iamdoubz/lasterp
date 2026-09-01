@@ -55,9 +55,19 @@ type Manifest struct {
 	// `/ext/<id>/` (WP-3.2a).
 	Endpoints []Endpoint `yaml:"endpoints"`
 
+	// Overlays names the shipped objects this plugin customizes (WP-3.2c). One
+	// entry per object; the bundle carries the document for each as a flat
+	// `overlay.<Object>.yaml` entry, and the document names the same object
+	// again. Three places agree or the bundle is refused — an overlay that can
+	// be retargeted by renaming a file is one an administrator did not approve.
+	//
+	// Object names, not file names, because this is the line the approving
+	// administrator reads: "customizes Contact" is a decision they can make,
+	// "carries overlays/a.yaml" is not.
+	Overlays []string `yaml:"overlays"`
+
 	// Declared-but-unimplemented surfaces. Parsed so install can refuse them by
 	// name (see Validate); each lands with a named WP.
-	Overlays []string         `yaml:"overlays"`
 	MCPTools []map[string]any `yaml:"mcp_tools"`
 }
 
@@ -338,12 +348,22 @@ func (m *Manifest) Validate() error {
 	// the failure mode where an author ships a plugin that "installs fine" and
 	// never fires, and the same mechanism could one day drop a capability an
 	// administrator thought they were reviewing.
+	seenOverlay := map[string]bool{}
+	for _, object := range m.Overlays {
+		if object == "" {
+			return errors.New("plugins: overlays entries are object names; one is empty")
+		}
+		if seenOverlay[object] {
+			return fmt.Errorf("plugins: overlays declares %s twice; one object has one overlay per plugin", object)
+		}
+		seenOverlay[object] = true
+	}
+
 	for _, unsupported := range []struct {
 		present bool
 		what    string
 		owner   string
 	}{
-		{len(m.Overlays) > 0, "overlays", "WP-3.2c (tenant metadata overlays). Carrying an overlay file in a bundle is the easy half; applying one needs per-tenant schemas, which this host does not have yet — see docs/notes/WP-3.2-decisions.md §2b"},
 		{len(m.MCPTools) > 0, "mcp_tools", "WP-3.4 (MCP server)"},
 	} {
 		if unsupported.present {

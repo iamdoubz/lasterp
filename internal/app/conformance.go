@@ -48,8 +48,13 @@ type FieldConformance struct {
 // SchemaConformance is what `lasterp doctor` reports about stored data, as
 // opposed to Posture, which reports about the connection.
 type SchemaConformance struct {
-	// Checked is how many (object, enum field) pairs were scanned, so a clean
-	// report is distinguishable from a report that scanned nothing.
+	// Checked is how many (tenant, object, enum field) triples were scanned, so
+	// a clean report is distinguishable from a report that scanned nothing.
+	//
+	// Per tenant rather than per object since WP-3.2c: the effective schema is
+	// the tenant's, so two tenants of the same object can have different enum
+	// fields with different option sets, and one number covering both would be
+	// counting something that no longer exists.
 	Checked int `json:"checked_fields"`
 	// Findings is empty when every stored value conforms.
 	Findings []FieldConformance `json:"findings,omitempty"`
@@ -97,19 +102,25 @@ func DiagnoseSchemaConformance(ctx context.Context, db *storage.DB) (SchemaConfo
 		return out, nil
 	}
 
-	for _, s := range schemas {
-		for _, f := range s.Fields {
-			// Overlay fields live in the custom_fields JSON blob, which has no
-			// column to group by. Scanning them needs a JSON path expression
-			// per dialect; there is no authoring path that can produce one yet
-			// (Merge is called with zero overlays everywhere), so the honest
-			// move is to skip and say so rather than ship untested SQL.
-			if f.Type != metadata.FieldEnum || f.FromOverlay {
+	// The schema is resolved per tenant, not once (WP-3.2c). Two things depend
+	// on it, and each is a class of violation an object-level scan cannot see:
+	// a tenant that *narrowed* a core enum has rows outside its own set and
+	// inside core's, and a tenant whose overlay *added* an enum has a field the
+	// core object does not mention at all.
+	for _, core := range schemas {
+		for _, tenant := range tenants {
+			eff, err := metadata.Resolve(ctx, db, tenant, core)
+			if err != nil {
+				out.Note = strings.TrimSpace(fmt.Sprintf("%s %s was not scanned for tenant %s: %v.",
+					out.Note, core.ObjectName, tenant, err))
 				continue
 			}
-			out.Checked++
-			for _, tenant := range tenants {
-				findings, err := nonConformingValues(ctx, db, tenant, s.ObjectName, f)
+			for _, f := range eff.Fields {
+				if f.Type != metadata.FieldEnum {
+					continue
+				}
+				out.Checked++
+				findings, err := nonConformingValues(ctx, db, tenant, core.ObjectName, f)
 				if err != nil {
 					return SchemaConformance{}, err
 				}
@@ -135,14 +146,23 @@ func DiagnoseSchemaConformance(ctx context.Context, db *storage.DB) (SchemaConfo
 
 // nonConformingValues groups one tenant's out-of-set values for one enum field.
 func nonConformingValues(ctx context.Context, db *storage.DB, tenant tenancy.ID, object string, f metadata.Field) ([]FieldConformance, error) {
-	// The column name comes from a schema this process validated (field names
-	// are checked by Field.validate), never from request input, and the option
-	// list is bound as parameters. Table and column cannot be parameterized in
-	// any dialect.
+	// The field name comes from a schema this process validated — Field.validate
+	// bounds it to `^[a-z][a-z0-9_]*$`, which is what makes interpolating it
+	// safe now that an overlay can supply one — and the option list is bound as
+	// parameters. Table and column cannot be parameterized in any dialect.
+	//
+	// An overlay field has no column of its own: it lives in the custom_fields
+	// blob (ADR-006), so it is read through the dialect's JSON accessor. Same
+	// query otherwise — a value outside the option set is the same finding
+	// wherever it is stored.
+	expr := f.Name
+	if f.FromOverlay {
+		expr = jsonFieldExpr(db.Dialect, f.Name)
+	}
 	placeholders := strings.TrimSuffix(strings.Repeat("?, ", len(f.Options)), ", ")
 	query := fmt.Sprintf(
 		`SELECT %s, COUNT(*) FROM %s WHERE tenant_id = ? AND %s IS NOT NULL AND %s NOT IN (%s) GROUP BY %s`,
-		f.Name, metadata.TableName(object), f.Name, f.Name, placeholders, f.Name)
+		expr, metadata.TableName(object), expr, expr, placeholders, expr)
 
 	args := make([]any, 0, len(f.Options)+1)
 	args = append(args, string(tenant))
@@ -177,18 +197,36 @@ func nonConformingValues(ctx context.Context, db *storage.DB, tenant tenancy.ID,
 	return out, nil
 }
 
-// registeredCRUDSchemas returns the effective schema of every core-layer object
+// jsonFieldExpr renders "read this key out of the custom_fields blob, as text"
+// in the dialect's own spelling. Both return SQL NULL for an absent key, which
+// is what makes the caller's `IS NOT NULL` filter mean "the row has a value for
+// this overlay field" in either.
+//
+// The name is an identifier by construction (fieldNameRE), so there is nothing
+// to escape; binding it as a parameter would work on both dialects but split one
+// readable statement across four positional arguments that must stay in order.
+func jsonFieldExpr(dialect storage.Dialect, name string) string {
+	if dialect == storage.Postgres {
+		return fmt.Sprintf(`(custom_fields::jsonb ->> '%s')`, name)
+	}
+	return fmt.Sprintf(`json_extract(custom_fields, '$.%s')`, name)
+}
+
+// registeredCRUDSchemas returns the *core* definition of every core-layer object
 // that has a generated table, at its highest registered version, plus a note
 // for each object whose stored definition this binary cannot parse.
 //
+// Core, not effective: the effective schema is per tenant since WP-3.2c, so the
+// merge happens in the caller's tenant loop where the overlays are known.
+//
 // An unparseable definition is reported, never fatal: the caller is a
 // diagnostic, and one stale row must not take the whole report offline.
-func registeredCRUDSchemas(ctx context.Context, db *storage.DB) ([]*metadata.EffectiveSchema, []string, error) {
+func registeredCRUDSchemas(ctx context.Context, db *storage.DB) ([]*metadata.Object, []string, error) {
 	names, err := registeredObjectNames(ctx, db)
 	if err != nil {
 		return nil, nil, err
 	}
-	var out []*metadata.EffectiveSchema
+	var out []*metadata.Object
 	var unparsed []string
 	for _, name := range names {
 		stored, err := metadata.LoadObjectSchema(ctx, db, "", metadata.LayerCore, name)
@@ -208,12 +246,7 @@ func registeredCRUDSchemas(ctx context.Context, db *storage.DB) ([]*metadata.Eff
 			// data is the event log.
 			continue
 		}
-		eff, err := metadata.Merge(object)
-		if err != nil {
-			unparsed = append(unparsed, fmt.Sprintf("%s v%d was not scanned: %v", name, stored.Version, err))
-			continue
-		}
-		out = append(out, eff)
+		out = append(out, object)
 	}
 	return out, unparsed, nil
 }

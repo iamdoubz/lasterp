@@ -21,6 +21,7 @@ import (
 	"strings"
 
 	"github.com/iamdoubz/lasterp/kernel/authz"
+	"github.com/iamdoubz/lasterp/kernel/metadata"
 	"github.com/iamdoubz/lasterp/kernel/storage"
 	"github.com/iamdoubz/lasterp/kernel/tenancy"
 )
@@ -56,6 +57,19 @@ const (
 	bundleModule    = "plugin.wasm"
 	bundleSignature = "signature.json"
 
+	// overlayPrefix/overlaySuffix bracket an overlay entry: the document for
+	// object X is `overlay.X.yaml`.
+	//
+	// Flat, not `overlays/X.yaml`, because OpenBundle refuses any entry with a
+	// directory component and that rule is worth more than the tidier layout:
+	// path handling is where tar extractors grow their CVEs, and a bundle has
+	// no reason to need a second level.
+	overlayPrefix = "overlay."
+	overlaySuffix = ".yaml"
+	// maxOverlayBytes caps one overlay document — the same order as the
+	// manifest, for a document of the same kind.
+	maxOverlayBytes = 1 << 20
+
 	// SignatureAlgo is the only algorithm this host verifies. One algorithm,
 	// because a negotiable one is a downgrade attack with extra steps.
 	SignatureAlgo = "ed25519"
@@ -84,7 +98,12 @@ type Signature struct {
 type Bundle struct {
 	ManifestYAML []byte
 	Module       []byte
-	Signature    Signature
+	// Overlays is the overlay document for each object the manifest declares,
+	// keyed by object name. Covered by Digest like everything else, so a
+	// swapped overlay under a valid signature fails the check a swapped module
+	// fails — which is the property the format exists for.
+	Overlays  map[string][]byte
+	Signature Signature
 	// Digest is computed from the contents, never read from the file. A digest
 	// a bundle asserts about itself is not evidence.
 	Digest string
@@ -95,8 +114,15 @@ type Bundle struct {
 
 // Pack builds a signed bundle. It is the publishing half, used by
 // `lasterp plugin pack` and by the tests; the server never packs.
-func Pack(manifestYAML, module []byte, keyID string, priv ed25519.PrivateKey) ([]byte, error) {
-	if _, err := ParseManifest(manifestYAML); err != nil {
+//
+// overlays holds one document per object the manifest declares in `overlays:`,
+// keyed by object name. The manifest and the map must agree exactly — packing a
+// document nobody declared, or declaring one that is not carried, produces a
+// bundle that install would refuse, and failing at pack time is where the author
+// can still fix it.
+func Pack(manifestYAML, module []byte, overlays map[string][]byte, keyID string, priv ed25519.PrivateKey) ([]byte, error) {
+	m, err := ParseManifest(manifestYAML)
+	if err != nil {
 		return nil, err
 	}
 	if !isWASM(module) {
@@ -105,8 +131,14 @@ func Pack(manifestYAML, module []byte, keyID string, priv ed25519.PrivateKey) ([
 	if keyID == "" || len(priv) != ed25519.PrivateKeySize {
 		return nil, fmt.Errorf("%w: a key id and an ed25519 private key are required", ErrBundle)
 	}
+	if err := overlaysMatchManifest(m, overlays); err != nil {
+		return nil, err
+	}
 
 	files := map[string][]byte{bundleManifest: manifestYAML, bundleModule: module}
+	for object, doc := range overlays {
+		files[overlayPrefix+object+overlaySuffix] = doc
+	}
 	digest := contentDigest(files)
 	sig := Signature{
 		KeyID:  keyID,
@@ -211,14 +243,77 @@ func OpenBundle(data []byte) (*Bundle, error) {
 		}
 	}
 
+	m, err := ParseManifest(b.ManifestYAML)
+	if err != nil {
+		return nil, err
+	}
+	if b.Overlays, err = overlaysFromFiles(files); err != nil {
+		return nil, err
+	}
+	// The manifest is the document an administrator approves, so what the
+	// bundle carries must be exactly what the manifest declared — an extra
+	// overlay entry is a schema change nobody agreed to, and a missing one is a
+	// plugin that installs and does not do what it said.
+	if err := overlaysMatchManifest(m, b.Overlays); err != nil {
+		return nil, err
+	}
+
 	// Computed from what is actually here, never read from the document.
-	b.Digest = contentDigest(map[string][]byte{
-		bundleManifest: b.ManifestYAML,
-		bundleModule:   b.Module,
-	})
+	digested := map[string][]byte{bundleManifest: b.ManifestYAML, bundleModule: b.Module}
+	for object, doc := range b.Overlays {
+		digested[overlayPrefix+object+overlaySuffix] = doc
+	}
+	b.Digest = contentDigest(digested)
 	sum := sha256.Sum256(b.Module)
 	b.ModuleSHA256 = hex.EncodeToString(sum[:])
 	return b, nil
+}
+
+// overlaysFromFiles pulls the overlay entries out of an opened archive.
+func overlaysFromFiles(files map[string][]byte) (map[string][]byte, error) {
+	out := map[string][]byte{}
+	for name, body := range files {
+		if !strings.HasPrefix(name, overlayPrefix) || !strings.HasSuffix(name, overlaySuffix) {
+			continue
+		}
+		object := strings.TrimSuffix(strings.TrimPrefix(name, overlayPrefix), overlaySuffix)
+		if object == "" {
+			return nil, fmt.Errorf("%w: %q names no object", ErrBundle, name)
+		}
+		if len(body) > maxOverlayBytes {
+			return nil, fmt.Errorf("%w: %q is over the size limit", ErrBundle, name)
+		}
+		// The document names its object too, and the two must agree: an
+		// overlay whose target could be changed by renaming its file is one
+		// the manifest's declaration does not actually bind.
+		ov, err := metadata.ParseOverlay(body)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %s: %w", ErrBundle, name, err)
+		}
+		if ov.Object != object {
+			return nil, fmt.Errorf("%w: %s carries an overlay for %q", ErrBundle, name, ov.Object)
+		}
+		out[object] = body
+	}
+	return out, nil
+}
+
+// overlaysMatchManifest checks the carried documents against `overlays:`, in
+// both directions.
+func overlaysMatchManifest(m *Manifest, overlays map[string][]byte) error {
+	declared := map[string]bool{}
+	for _, object := range m.Overlays {
+		declared[object] = true
+		if len(overlays[object]) == 0 {
+			return fmt.Errorf("%w: the manifest declares an overlay for %s and the bundle carries none", ErrBundle, object)
+		}
+	}
+	for object := range overlays {
+		if !declared[object] {
+			return fmt.Errorf("%w: the bundle carries an overlay for %s, which the manifest does not declare", ErrBundle, object)
+		}
+	}
+	return nil
 }
 
 // Verify checks the signature against the deployment's trusted publishers.
@@ -259,7 +354,7 @@ func (b *Bundle) Verify(trust TrustStore) error {
 // install is still attributable (INV-T4), and the module's hash is still
 // recorded. The bundle adds one gate in front: bytes nobody this deployment
 // trusts has signed do not get to be a plugin.
-func InstallBundle(ctx context.Context, db *storage.DB, tenant tenancy.ID, data []byte, trust TrustStore, approver authz.Actor) (*Installed, error) {
+func InstallBundle(ctx context.Context, db *storage.DB, tenant tenancy.ID, data []byte, trust TrustStore, objects map[string]*metadata.Object, approver authz.Actor) (*Installed, error) {
 	b, err := OpenBundle(data)
 	if err != nil {
 		return nil, err
@@ -267,7 +362,8 @@ func InstallBundle(ctx context.Context, db *storage.DB, tenant tenancy.ID, data 
 	if err := b.Verify(trust); err != nil {
 		return nil, err
 	}
-	return Install(ctx, db, tenant, b.ManifestYAML, b.Module, approver)
+	return Install(ctx, db, tenant, b.ManifestYAML, b.Module,
+		Customizations{Documents: b.Overlays, Objects: objects}, approver)
 }
 
 // contentDigest is the bundle's identity: SHA-256 over a canonical list of

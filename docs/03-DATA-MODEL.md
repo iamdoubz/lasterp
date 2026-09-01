@@ -58,6 +58,39 @@ From one definition the engine generates: DDL + migrations, Go structs + validat
 
 `options`, `order`, `group` and `widget` change no column, nullability or index, so a schema version that only touches them plans no DDL — the version advances and no statement runs.
 
+### Overlays: the customization layer (WP-3.2c)
+
+A tenant's schema is `core ⊕ module ⊕ plugin ⊕ tenant` (ADR-006), assembled on
+every request. An overlay is a document of its own, not an edited object:
+
+```yaml
+object: Contact          # the shipped object this overlay targets
+add_fields:
+  - {name: loyalty_tier, type: enum, options: [bronze, silver, gold]}
+narrow_options:
+  kind: [customer]       # a subset of core's set — never a superset (INV-T3)
+permissions:
+  read: [crm.viewer, crm.exec]   # a superset of core's roles — never a subset
+```
+
+- **Adding a field alters no table.** Overlay fields live in the generated
+  table's fixed `custom_fields` blob, because the physical table is shared by
+  every tenant — so a customization for one tenant plans no migration and
+  changes nothing for any other (INV-T1).
+- **Field names are identifiers** (`^[a-z][a-z0-9_]*$`), enforced from WP-3.2c
+  because a field name is now input rather than repo-authored YAML.
+- **The stack order is load-bearing**: narrowing composes monotonically only
+  because each layer sees what the one before it left, so the tenant
+  administrator narrows last.
+- **Reachable as an API** like everything else: `GET /api/v1/meta/overlays`,
+  `PUT|DELETE /api/v1/meta/overlays/{object}` under `Overlay:manage`. Plugin
+  layers are read-only there — a plugin's overlay arrives with its bundle
+  (`overlay.<Object>.yaml`, inside the signature) and leaves with its uninstall.
+- **Not yet: a fully custom object.** ADR-006's "fully custom objects get
+  generated tables" needs per-tenant DDL and a per-tenant route table; an
+  overlay naming an unregistered object is refused by name
+  ([WP-3.2c decisions §2](notes/WP-3.2c-decisions.md)).
+
 ## Layer 2: Kernel tables (fixed, hand-designed)
 
 ```sql

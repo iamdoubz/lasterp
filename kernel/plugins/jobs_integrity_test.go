@@ -88,7 +88,7 @@ func TestScheduledPluginJobRuns(t *testing.T) {
 			admin := scheduleApprover(t, db, tenant)
 
 			p, err := Install(ctx, db, tenant, []byte(scheduledManifest("0 2 * * *", "note")),
-				corpusModule(t, "hooks"), admin)
+				corpusModule(t, "hooks"), Customizations{}, admin)
 			if err != nil {
 				t.Fatalf("Install: %v", err)
 			}
@@ -153,7 +153,7 @@ func TestScheduledPluginJobRetriesAndDeadLetters(t *testing.T) {
 			tenant := newTenant(t, db)
 			admin := scheduleApprover(t, db, tenant)
 			if _, err := Install(ctx, db, tenant, []byte(scheduledManifest("0 2 * * *", "boom")),
-				corpusModule(t, "hooks"), admin); err != nil {
+				corpusModule(t, "hooks"), Customizations{}, admin); err != nil {
 				t.Fatalf("Install: %v", err)
 			}
 
@@ -212,7 +212,7 @@ func TestUninstallRemovesSchedules(t *testing.T) {
 			now := time.Now().UTC()
 
 			if _, err := Install(ctx, db, tenant, []byte(scheduledManifest("0 2 * * *", "note")),
-				corpusModule(t, "hooks"), admin); err != nil {
+				corpusModule(t, "hooks"), Customizations{}, admin); err != nil {
 				t.Fatalf("Install: %v", err)
 			}
 			list, err := jobs.ListSchedules(ctx, db, tenant)

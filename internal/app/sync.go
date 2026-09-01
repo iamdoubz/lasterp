@@ -57,27 +57,37 @@ func syncActions(db *storage.DB, objects []*metadata.EffectiveSchema, reg *capab
 // all (event-sourced streams — a replica of a stream is a different shape, and
 // WP-2.2-decisions.md §9 defers it).
 type resolver struct {
-	db      *storage.DB
-	cruds   map[string]*metadata.CRUD
+	db *storage.DB
+	// cores is the *core* object behind each CRUD-capable schema, not a
+	// prebuilt engine: the engine is per tenant, because a replica hydrates
+	// through the same effective schema the API writes through, so a custom
+	// field reaches the device the moment the snapshot does (WP-3.2c).
+	cores   map[string]*metadata.Object
 	checker capability.GatewayChecker
+	schemas metadata.DBResolver
 }
 
 func newResolver(db *storage.DB, objects []*metadata.EffectiveSchema, reg *capability.Registry) *resolver {
-	cruds := make(map[string]*metadata.CRUD, len(objects))
+	cores := make(map[string]*metadata.Object, len(objects))
 	for _, s := range objects {
-		crud, err := metadata.NewCRUD(s)
-		if err != nil {
+		if _, err := metadata.NewCRUD(s); err != nil {
 			continue // event-sourced: no CRUD surface
 		}
-		cruds[s.ObjectName] = crud
+		core := s.Object
+		cores[s.ObjectName] = &core
 	}
-	return &resolver{db: db, cruds: cruds, checker: capability.GatewayChecker{Reg: reg, DB: db}}
+	return &resolver{
+		db: db, cores: cores,
+		checker: capability.GatewayChecker{Reg: reg, DB: db},
+		schemas: metadata.DBResolver{DB: db},
+	}
 }
 
-// crudFor returns the engine for object, or nil when the object is unknown,
-// event-sourced, or belongs to a module this tenant has disabled.
+// crudFor returns the engine for object as this tenant sees it, or nil when the
+// object is unknown, event-sourced, or belongs to a module this tenant has
+// disabled.
 func (res *resolver) crudFor(r *http.Request, tenant tenancy.ID, object string) (*metadata.CRUD, error) {
-	crud, ok := res.cruds[object]
+	core, ok := res.cores[object]
 	if !ok {
 		return nil, nil
 	}
@@ -88,7 +98,11 @@ func (res *resolver) crudFor(r *http.Request, tenant tenancy.ID, object string) 
 	if !enabled {
 		return nil, nil
 	}
-	return crud, nil
+	eff, err := res.schemas.Resolve(r.Context(), tenant, core)
+	if err != nil {
+		return nil, err
+	}
+	return metadata.NewCRUD(eff)
 }
 
 func readChanges(db *storage.DB, res *resolver) api.HandlerFunc {

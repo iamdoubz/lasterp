@@ -39,7 +39,7 @@ func TestBundleInstallRefusesWhatItCannotVerify(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewSigningKey: %v", err)
 			}
-			strangerBundle, err := plugins.Pack([]byte(manifest), module, stranger.ID, stranger.Key)
+			strangerBundle, err := plugins.Pack([]byte(manifest), module, nil, stranger.ID, stranger.Key)
 			if err != nil {
 				t.Fatalf("Pack: %v", err)
 			}
@@ -84,7 +84,7 @@ func TestBundleInstallStillNeedsPermissionAndGrants(t *testing.T) {
 			if _, err := plugins.NewPlugin(dir, "go", "com.acme.afternoon"); err != nil {
 				t.Fatalf("plugin new: %v", err)
 			}
-			bundle, err := plugins.Pack([]byte(readFile(t, dir+"/manifest.yaml")), buildWasm(t, dir), key.ID, key.Key)
+			bundle, err := plugins.Pack([]byte(readFile(t, dir+"/manifest.yaml")), buildWasm(t, dir), nil, key.ID, key.Key)
 			if err != nil {
 				t.Fatalf("Pack: %v", err)
 			}
@@ -124,7 +124,7 @@ func TestPluginMayReadAnInvoiceAndNeverWriteOne(t *testing.T) {
 			writer := strings.Replace(
 				readFile(t, "../../examples/plugins/commission-calc/manifest.yaml"),
 				"{type: Invoice, access: read}", "{type: Invoice, access: write}", 1)
-			bundle, err := plugins.Pack([]byte(writer), module, key.ID, key.Key)
+			bundle, err := plugins.Pack([]byte(writer), module, nil, key.ID, key.Key)
 			if err != nil {
 				t.Fatalf("Pack: %v", err)
 			}

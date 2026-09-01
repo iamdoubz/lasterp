@@ -78,8 +78,14 @@ func metaActions(db *storage.DB, objects []*metadata.EffectiveSchema, reg *capab
 // the calling tenant. Filtering here rather than letting the client discover
 // 403s per object keeps the navigation honest: a disabled module simply has no
 // screens.
+//
+// Each surviving object is resolved against the tenant's overlays (WP-3.2c), so
+// a custom field reaches the renderer — and `lasterp plugin bindings`, which
+// generates typed accessors from this endpoint — without either of them knowing
+// overlays exist.
 func listMetaObjects(db *storage.DB, objects []*metadata.EffectiveSchema, reg *capability.Registry) api.HandlerFunc {
 	checker := capability.GatewayChecker{Reg: reg, DB: db}
+	resolver := metadata.DBResolver{DB: db}
 	return func(w http.ResponseWriter, r *http.Request, tenant tenancy.ID) {
 		out := make([]metaObject, 0, len(objects))
 		for _, s := range objects {
@@ -91,7 +97,13 @@ func listMetaObjects(db *storage.DB, objects []*metadata.EffectiveSchema, reg *c
 			if !enabled {
 				continue
 			}
-			out = append(out, toMetaObject(s))
+			core := s.Object
+			eff, err := resolver.Resolve(r.Context(), tenant, &core)
+			if err != nil {
+				fail(w, r, err)
+				return
+			}
+			out = append(out, toMetaObject(eff))
 		}
 		sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 		writeJSON(w, http.StatusOK, map[string]any{"data": out})

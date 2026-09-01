@@ -234,7 +234,7 @@ func TestParseMetaObjectsReadsTheEndpointEnvelope(t *testing.T) {
 
 func TestRegistryResolvesAndFetches(t *testing.T) {
 	key := testSigningKey(t)
-	bundle, err := Pack([]byte(helloWith("echo")), corpusModule(t, "hello"), key.ID, key.Key)
+	bundle, err := Pack([]byte(helloWith("echo")), corpusModule(t, "hello"), nil, key.ID, key.Key)
 	if err != nil {
 		t.Fatalf("Pack: %v", err)
 	}

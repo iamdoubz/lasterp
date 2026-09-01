@@ -121,10 +121,10 @@ func on_invoice_changed() int32 { //nolint:revive // the exported name is the ma
 		return 0
 	}
 	var invoice struct {
-		Status     string  `json:"status"`
-		Currency   string  `json:"currency"`
-		NetMinor   float64 `json:"net_minor"`
-		ContactID  string  `json:"contact_id"`
+		Status    string  `json:"status"`
+		Currency  string  `json:"currency"`
+		NetMinor  float64 `json:"net_minor"`
+		ContactID string  `json:"contact_id"`
 	}
 	if err := json.Unmarshal(got.Result, &invoice); err != nil {
 		pdk.SetError(err)
@@ -165,10 +165,10 @@ func report() int32 {
 		total = "0"
 	}
 	body, err := json.Marshal(map[string]any{
-		"currency":            currency,
-		"commission_minor":    json.RawMessage(total),
-		"basis_points":        commissionBasisPoints,
-		"requested_by":        req.Caller,
+		"currency":         currency,
+		"commission_minor": json.RawMessage(total),
+		"basis_points":     commissionBasisPoints,
+		"requested_by":     req.Caller,
 	})
 	if err != nil {
 		pdk.SetError(err)

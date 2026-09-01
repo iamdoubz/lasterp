@@ -10,6 +10,7 @@ package metadata
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -138,6 +139,18 @@ type Field struct {
 	FromOverlay bool `yaml:"-"`
 }
 
+// fieldNameRE bounds a field name to a lower snake_case identifier.
+//
+// It was a convention until WP-3.2c and is a rule from it, because that WP is
+// where field names stop being repo-authored YAML and start being *input*: a
+// tenant administrator or a plugin bundle now supplies them. A field name is
+// interpolated into SQL as a column name in GenerateDDL and in the doctor's
+// conformance scan — the option list beside it is parameterized, but an
+// identifier cannot be — so nothing but the shape of the name stands between an
+// overlay and a crafted column reference. Every shipped schema already conforms;
+// this makes conforming the only option.
+var fieldNameRE = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+
 // Permissions maps an action (e.g. "read", "create", "update", "delete")
 // to the roles allowed to perform it.
 type Permissions map[string][]string
@@ -187,6 +200,9 @@ func (o *Object) Validate() error {
 func (f Field) validate() error {
 	if f.Name == "" {
 		return fmt.Errorf("%w: field name is required", ErrInvalidObject)
+	}
+	if !fieldNameRE.MatchString(f.Name) {
+		return fmt.Errorf("%w: field name %q must be lower snake_case (%s)", ErrInvalidObject, f.Name, fieldNameRE)
 	}
 	if reservedFieldNames[f.Name] {
 		return fmt.Errorf("%w: field name %q is reserved (it collides with the translation keys)", ErrInvalidObject, f.Name)

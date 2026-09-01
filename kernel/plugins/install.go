@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/iamdoubz/lasterp/kernel/identity"
 	"github.com/iamdoubz/lasterp/kernel/idgen"
 	"github.com/iamdoubz/lasterp/kernel/jobs"
+	"github.com/iamdoubz/lasterp/kernel/metadata"
 	"github.com/iamdoubz/lasterp/kernel/storage"
 	"github.com/iamdoubz/lasterp/kernel/tenancy"
 )
@@ -64,6 +66,52 @@ func (p Installed) Actor(tenant tenancy.ID) authz.Actor {
 	return authz.Actor{TenantID: tenant, UserID: identity.UserID(p.Principal())}
 }
 
+// Customizations is the schema half of an install: the overlay documents the
+// bundle carries, and the shipped objects they are allowed to customize.
+//
+// The zero value is a plugin that customizes nothing, which is every plugin
+// written before WP-3.2c.
+type Customizations struct {
+	// Documents is one overlay YAML per object, keyed by object name — exactly
+	// what the manifest's `overlays:` declared and the bundle carried.
+	Documents map[string][]byte
+
+	// Objects bounds what may be overlaid: the shipped objects whose write path
+	// resolves the tenant's effective schema — the gateway's generic-CRUD set.
+	//
+	// It is deliberately *not* the plugin host's wider object map. A plugin may
+	// read an Invoice (WP-3.2b), but invoicing's posting pipeline builds its own
+	// schema rather than resolving the tenant's, so a custom field on an Invoice
+	// would be a field nothing could ever write. Refusing it by name beats
+	// installing a customization that silently does nothing
+	// (WP-3.2c-decisions.md §2).
+	Objects map[string]*metadata.Object
+}
+
+// overlays returns the parsed-and-checked overlays, in a deterministic order.
+// An object the manifest declared that this host does not serve as generic
+// CRUD is refused here, by name.
+func (c Customizations) overlays(m *Manifest) ([]string, error) {
+	objects := append([]string(nil), m.Overlays...)
+	sort.Strings(objects)
+	for _, object := range objects {
+		if _, ok := c.Objects[object]; !ok {
+			return nil, fmt.Errorf("%w: this host does not expose %s as a customizable object, so an overlay on it could never be written to",
+				ErrOverlayRefused, object)
+		}
+		if len(c.Documents[object]) == 0 {
+			return nil, fmt.Errorf("%w: the manifest declares an overlay for %s and none was supplied; an overlay travels in a signed bundle (overlay.%s.yaml), not in a bare manifest install",
+				ErrOverlayRefused, object, object)
+		}
+	}
+	return objects, nil
+}
+
+// ErrOverlayRefused is returned when an install carries an overlay this host
+// will not apply — an unknown target, a missing document, or a merge the core
+// schema forbids (INV-T3).
+var ErrOverlayRefused = errors.New("plugins: overlay refused")
+
 // Install stores a plugin and grants it exactly the authority its manifest
 // requests — no more, and never more than the approver holds.
 //
@@ -81,11 +129,15 @@ func (p Installed) Actor(tenant tenancy.ID) authz.Actor {
 // manifestYAML is stored verbatim rather than re-marshalled from the parsed
 // struct: the record of what an administrator approved should be the document
 // they read, not this host's reformatting of it.
-func Install(ctx context.Context, db *storage.DB, tenant tenancy.ID, manifestYAML, module []byte, approver authz.Actor) (*Installed, error) {
+func Install(ctx context.Context, db *storage.DB, tenant tenancy.ID, manifestYAML, module []byte, cust Customizations, approver authz.Actor) (*Installed, error) {
 	if tenant == "" || approver.TenantID == "" || approver.UserID == "" {
 		return nil, errors.New("plugins: tenant and an approving actor are required")
 	}
 	m, err := ParseManifest(manifestYAML)
+	if err != nil {
+		return nil, err
+	}
+	overlaid, err := cust.overlays(m)
 	if err != nil {
 		return nil, err
 	}
@@ -125,6 +177,18 @@ func Install(ctx context.Context, db *storage.DB, tenant tenancy.ID, manifestYAM
 	}
 	if len(missing) > 0 {
 		return nil, fmt.Errorf("%w: %s", ErrCapabilityNotHeld, strings.Join(missing, ", "))
+	}
+
+	// INV-T3 again, on the schema rather than on the roles: every overlay is
+	// merged against the live core object and this tenant's other layers before
+	// anything is written. An overlay that would widen an option set or lower a
+	// permission floor refuses the install, exactly as an unheld capability
+	// does — an install that cannot be honoured in full does not happen.
+	for _, object := range overlaid {
+		if err := metadata.CheckOverlay(ctx, db, tenant, cust.Objects[object],
+			metadata.LayerPlugin, m.ID, cust.Documents[object]); err != nil {
+			return nil, fmt.Errorf("%w: %s: %w", ErrOverlayRefused, object, err)
+		}
 	}
 
 	if _, err := Get(ctx, db, tenant, m.ID); err == nil {
@@ -184,8 +248,18 @@ func Install(ctx context.Context, db *storage.DB, tenant tenancy.ID, manifestYAM
 				return err
 			}
 		}
+		// The schema change lands in the same transaction as the plugin row.
+		// Neither is any use without the other: an overlay whose plugin failed
+		// to install is a field with no owner, and a plugin whose overlay
+		// failed is one that installed and does not do what it declared.
+		for _, object := range overlaid {
+			if err := metadata.SaveOverlayTx(ctx, db, tx, tenant, object,
+				metadata.LayerPlugin, m.ID, cust.Documents[object], string(approver.UserID)); err != nil {
+				return err
+			}
+		}
 		return recordAudit(ctx, tx, db, tenant, m.ID, "install", string(approver.UserID),
-			map[string]any{"version": m.Version, "sha256": digest, "granted": perms})
+			map[string]any{"version": m.Version, "sha256": digest, "granted": perms, "overlays": overlaid})
 	})
 	if err != nil {
 		return nil, fmt.Errorf("plugins: install %s: %w", m.ID, err)
@@ -239,6 +313,13 @@ func Uninstall(ctx context.Context, db *storage.DB, tenant tenancy.ID, id, actor
 			if _, err := tx.ExecContext(ctx, db.Rebind(stmt), string(tenant), id); err != nil {
 				return err
 			}
+		}
+		// The schema changes go with the plugin, for the reason the role and
+		// the kv do (WP-3.2c): an overlay left behind is a field nobody can
+		// find the owner of, and a reinstall under the same id would inherit a
+		// customization this administrator never approved.
+		if err := metadata.DeleteOverlaysBySourceTx(ctx, db, tx, tenant, id); err != nil {
+			return err
 		}
 		return recordAudit(ctx, tx, db, tenant, id, "uninstall", actor, nil)
 	})
