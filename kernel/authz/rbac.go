@@ -181,14 +181,19 @@ func GrantedObjects(ctx context.Context, db *storage.DB, actor Actor, action str
 			return err
 		}
 		defer func() { _ = rows.Close() }()
+		var list []string
 		for rows.Next() {
 			var object string
 			if err := rows.Scan(&object); err != nil {
 				return err
 			}
-			objects = append(objects, object)
+			list = append(list, object)
 		}
-		return rows.Err()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		objects = list
+		return nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("authz: list granted objects: %w", err)
@@ -238,14 +243,19 @@ func RolesFor(ctx context.Context, db *storage.DB, actor Actor) ([]string, error
 			return err
 		}
 		defer func() { _ = rows.Close() }()
+		var list []string
 		for rows.Next() {
 			var name string
 			if err := rows.Scan(&name); err != nil {
 				return err
 			}
-			names = append(names, name)
+			list = append(list, name)
 		}
-		return rows.Err()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		names = list
+		return nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("authz: list roles: %w", err)

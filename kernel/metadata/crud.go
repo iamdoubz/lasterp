@@ -304,14 +304,19 @@ func (c *CRUD) ListPage(ctx context.Context, db *storage.DB, tenant tenancy.ID, 
 		}
 		defer func() { _ = rows.Close() }()
 
+		var list []Record
 		for rows.Next() {
 			rec, err := scanRecord(rows, c.schema)
 			if err != nil {
 				return err
 			}
-			records = append(records, rec)
+			list = append(list, rec)
 		}
-		return rows.Err()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		records = list
+		return nil
 	})
 	if err != nil {
 		return nil, err
@@ -356,14 +361,19 @@ func (c *CRUD) GetMany(ctx context.Context, db *storage.DB, tenant tenancy.ID, i
 		}
 		defer func() { _ = rows.Close() }()
 
+		var list []Record
 		for rows.Next() {
 			rec, err := scanRecord(rows, c.schema)
 			if err != nil {
 				return err
 			}
-			records = append(records, rec)
+			list = append(list, rec)
 		}
-		return rows.Err()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		records = list
+		return nil
 	})
 	if err != nil {
 		return nil, err
@@ -388,14 +398,19 @@ func (c *CRUD) List(ctx context.Context, db *storage.DB, tenant tenancy.ID) ([]R
 		}
 		defer func() { _ = rows.Close() }()
 
+		var list []Record
 		for rows.Next() {
 			rec, err := scanRecord(rows, c.schema)
 			if err != nil {
 				return err
 			}
-			records = append(records, rec)
+			list = append(list, rec)
 		}
-		return rows.Err()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		records = list
+		return nil
 	})
 	if err != nil {
 		return nil, err

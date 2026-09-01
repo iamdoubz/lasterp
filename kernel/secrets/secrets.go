@@ -231,6 +231,7 @@ func List(ctx context.Context, db *storage.DB, tenant tenancy.ID) ([]Metadata, e
 			return err
 		}
 		defer func() { _ = rows.Close() }()
+		var list []Metadata
 		for rows.Next() {
 			var m Metadata
 			var createdAt, updatedAt storage.Time
@@ -238,9 +239,13 @@ func List(ctx context.Context, db *storage.DB, tenant tenancy.ID) ([]Metadata, e
 				return err
 			}
 			m.CreatedAt, m.UpdatedAt = createdAt.Time, updatedAt.Time
-			out = append(out, m)
+			list = append(list, m)
 		}
-		return rows.Err()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		out = list
+		return nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("secrets: list: %w", err)

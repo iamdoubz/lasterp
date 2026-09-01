@@ -317,6 +317,7 @@ func List(ctx context.Context, db *storage.DB, tenant tenancy.ID) ([]Installed, 
 			return err
 		}
 		defer func() { _ = rows.Close() }()
+		var list []Installed
 		for rows.Next() {
 			var p Installed
 			var manifestYAML, grantedJSON, roleID string
@@ -339,9 +340,13 @@ func List(ctx context.Context, db *storage.DB, tenant tenancy.ID) ([]Installed, 
 				return err
 			}
 			p.RoleID, p.InstalledAt = authz.RoleID(roleID), installedAt.Time
-			out = append(out, p)
+			list = append(list, p)
 		}
-		return rows.Err()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		out = list
+		return nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("plugins: list: %w", err)

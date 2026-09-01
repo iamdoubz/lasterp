@@ -46,14 +46,19 @@ func Rotate(ctx context.Context, db *storage.DB, src KeySource, tenant tenancy.I
 			return err
 		}
 		defer func() { _ = rows.Close() }()
+		var list []string
 		for rows.Next() {
 			var name string
 			if err := rows.Scan(&name); err != nil {
 				return err
 			}
-			stale = append(stale, name)
+			list = append(list, name)
 		}
-		return rows.Err()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		stale = list
+		return nil
 	})
 	if err != nil {
 		return 0, fmt.Errorf("secrets: rotate: list: %w", err)

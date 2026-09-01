@@ -418,14 +418,19 @@ func auditActorsFor(t *testing.T, e *env, object string) []string {
 			return err
 		}
 		defer func() { _ = rows.Close() }()
+		var list []string
 		for rows.Next() {
 			var actor string
 			if err := rows.Scan(&actor); err != nil {
 				return err
 			}
-			out = append(out, actor)
+			list = append(list, actor)
 		}
-		return rows.Err()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		out = list
+		return nil
 	})
 	if err != nil {
 		t.Fatalf("read audit actors: %v", err)
