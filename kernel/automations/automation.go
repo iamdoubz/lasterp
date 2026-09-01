@@ -26,6 +26,7 @@ import (
 
 	"github.com/iamdoubz/lasterp/kernel/expr"
 	"github.com/iamdoubz/lasterp/kernel/jobs"
+	"github.com/iamdoubz/lasterp/kernel/outbound"
 )
 
 // Trigger kinds.
@@ -38,13 +39,24 @@ const (
 const (
 	ActionFieldUpdate = "field_update"
 	ActionCallPlugin  = "call_plugin"
+	ActionWebhook     = "webhook"
 )
+
+// webhookEnvelope are the keys the engine puts in every webhook body. An
+// action's own `body:` may not override them: a receiver that trusts
+// `record_id` should not be told a different one by whoever wrote the rule.
+var webhookEnvelope = map[string]bool{"automation": true, "object": true, "record_id": true, "at": true}
 
 // Verbs an object trigger may subscribe to.
 var triggerVerbs = map[string]bool{"create": true, "update": true, "delete": true}
 
 // idRE bounds an automation id: it becomes a principal name and an audit actor.
 var idRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,127}$`)
+
+// destinationRE bounds a destination id. Deliberately the same shape
+// kernel/outbound bounds it with: a definition naming something that could
+// never be registered should fail where its author can see it.
+var destinationRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,127}$`)
 
 // fieldRE bounds a field name a field_update may set.
 var fieldRE = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
@@ -94,6 +106,21 @@ type Action struct {
 	// Plugin and Fn are call_plugin's target.
 	Plugin string `yaml:"plugin"`
 	Fn     string `yaml:"fn"`
+	// Destination is webhook's target: the id of a row an administrator
+	// registered under `Webhook:manage`, never a URL.
+	//
+	// Never a URL for two reasons. The path of a webhook is itself a credential
+	// (WP-3.2b), and this document is handed to anyone holding
+	// `Automation:manage` by `GET /api/v1/automations/{id}`; and a rule that
+	// names its own host is a rule whose author chose where the server calls
+	// out, which is the SSRF primitive WP-3.3c exists to avoid
+	// (docs/notes/WP-3.3c-decisions.md §1-2).
+	Destination string `yaml:"destination"`
+	// Body is merged into the fixed envelope the engine sends. Literals only,
+	// for field_update's reason and a stronger one: which fields of a record
+	// may leave the tenant is a data-egress policy, and there is no field
+	// selector here because nobody has designed one (§3).
+	Body map[string]any `yaml:"body"`
 }
 
 // deferredActions are named in docs/05's action table and are not implemented.
@@ -103,7 +130,6 @@ type Action struct {
 var deferredActions = map[string]string{
 	"email":            "the WP that ships outbound mail — there is no mailer in the tree to build it on",
 	"approval_request": "WP-3.4, which needs the approval-gate object anyway",
-	"webhook":          "WP-3.3c: the audited outbound client is shaped around a plugin manifest's allowlist, and an automation needs that allowlist generalised — a design, not a line here (docs/notes/WP-3.3-decisions.md §5a)",
 }
 
 // ErrDeferredAction is returned for an action named in the docs but not built.
@@ -200,6 +226,26 @@ func (a *Action) validate(d *Definition) error {
 		if a.Plugin == "" || a.Fn == "" {
 			return errors.New("call_plugin needs a plugin and a fn")
 		}
+	case ActionWebhook:
+		if !destinationRE.MatchString(a.Destination) {
+			return fmt.Errorf("webhook needs a registered destination id, not %q", a.Destination)
+		}
+		if len(a.Body) > 32 {
+			return errors.New("webhook body is limited to 32 keys")
+		}
+		for k, v := range a.Body {
+			if webhookEnvelope[k] {
+				return fmt.Errorf("webhook body may not override %q, which the engine sets", k)
+			}
+			switch v.(type) {
+			case string, bool, int, int64, float64, nil:
+			default:
+				// Literals only. A nested structure here is the first step
+				// towards an expression, and an expression is a second
+				// evaluation surface with a second set of bindings.
+				return fmt.Errorf("webhook body value for %q must be a literal", k)
+			}
+		}
 	case "":
 		return errors.New("an action needs a type")
 	default:
@@ -251,6 +297,12 @@ func (d *Definition) Permissions() [][2]string {
 			// Running someone else's sandboxed code is its own power, and it is
 			// the same tuple a human needs to call `/ext/` (WP-3.2a).
 			add("plugin", "invoke")
+		case ActionWebhook:
+			// Making this server talk to the outside world is its own power,
+			// separate from registering where it may talk to (`Webhook:manage`).
+			// Save's INV-T3 bound then refuses a creator who does not hold it,
+			// and grants the automation exactly this and nothing more.
+			add(outbound.ObjectWebhook, outbound.ActionSend)
 		}
 	}
 	return out

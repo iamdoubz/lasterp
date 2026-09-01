@@ -14,6 +14,7 @@ import (
 	"github.com/iamdoubz/lasterp/kernel/changefeed"
 	"github.com/iamdoubz/lasterp/kernel/identity"
 	"github.com/iamdoubz/lasterp/kernel/idgen"
+	"github.com/iamdoubz/lasterp/kernel/outbound"
 	"github.com/iamdoubz/lasterp/kernel/storage"
 	"github.com/iamdoubz/lasterp/kernel/tenancy"
 )
@@ -59,6 +60,15 @@ func Save(ctx context.Context, db *storage.DB, tenant tenancy.ID, yamlDef []byte
 	// silently granting less produces an automation that "saved fine" and then
 	// fails every pass for reasons nobody can see.
 	if err := grantAuthority(ctx, db, tenant, d, approver); err != nil {
+		return nil, err
+	}
+	// The other half of the webhook bound: `Webhook:send` says this creator may
+	// make the server call out, and a registered destination says *where* it
+	// may call. Refused here rather than at run time, for the reason every
+	// other refusal in this function is: an automation that "saved fine" and
+	// then fails every firing is one whose reason nobody can see
+	// (docs/notes/WP-3.3c-decisions.md §1).
+	if err := checkDestinations(ctx, db, tenant, d); err != nil {
 		return nil, err
 	}
 
@@ -346,6 +356,28 @@ func Runs(ctx context.Context, db *storage.DB, tenant tenancy.ID, automationID s
 		return nil, fmt.Errorf("automations: list runs: %w", err)
 	}
 	return out, nil
+}
+
+// ErrUnknownDestination is returned when a webhook action names a destination
+// this tenant has not registered.
+var ErrUnknownDestination = errors.New("automations: webhook names a destination this tenant has not registered")
+
+// checkDestinations refuses a definition whose webhook actions point at
+// destinations that do not exist. Registering one is `Webhook:manage`, which is
+// deliberately not the same power as writing an automation.
+func checkDestinations(ctx context.Context, db *storage.DB, tenant tenancy.ID, d *Definition) error {
+	for i := range d.Actions {
+		if d.Actions[i].Type != ActionWebhook {
+			continue
+		}
+		if _, err := outbound.GetDestination(ctx, db, tenant, d.Actions[i].Destination); err != nil {
+			if errors.Is(err, outbound.ErrNoDestination) {
+				return fmt.Errorf("%w: %s", ErrUnknownDestination, d.Actions[i].Destination)
+			}
+			return err
+		}
+	}
+	return nil
 }
 
 // ErrCapabilityNotHeld is returned when a definition needs authority the person

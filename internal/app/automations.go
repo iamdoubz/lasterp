@@ -111,8 +111,15 @@ func StartAutomationRunner(ctx context.Context, db *storage.DB, host plugins.Hos
 		// the read-only ones refuse its writes at the same gate they refuse a
 		// plugin's.
 		crudObjectsAdapter{db: db, cruds: host.Objects},
-		pluginEnqueueAdapter{db: db})
+		pluginEnqueueAdapter{db: db},
+		// A webhook needs the vault (the destination's URL) and the
+		// deployment's outbound posture. Both already hang off the plugin
+		// host, which is the composition root's one place for them — a second
+		// copy is a second answer to "may this deployment reach its own
+		// network".
+		host.Keys, host.HTTP)
 	registry.Register(automations.JobKind, runner.JobHandler())
+	registry.Register(automations.WebhookJobKind, runner.WebhookHandler())
 
 	onError := func(err error) { log.Printf("automation runner: %v", err) }
 	stopJobs := jobs.Start(ctx, db, registry, "lasterp", every, onError)
