@@ -10,6 +10,7 @@ import (
 	"github.com/iamdoubz/lasterp/kernel/authz"
 	"github.com/iamdoubz/lasterp/kernel/capability"
 	"github.com/iamdoubz/lasterp/kernel/identity"
+	"github.com/iamdoubz/lasterp/kernel/outbound"
 	"github.com/iamdoubz/lasterp/kernel/storage"
 	"github.com/iamdoubz/lasterp/kernel/tenancy"
 )
@@ -65,6 +66,11 @@ var adminGrants = map[string][]string{
 	// edits one contact, `Overlay:manage` adds a field to every contact in
 	// the tenant. Different blast radius, different grant.
 	"Overlay": {"manage"},
+	// Outbound is two powers (WP-3.3c), for the reason plugins are: `manage`
+	// decides where this deployment may call out at all, `send` merely makes a
+	// rule that uses a destination somebody already approved. An automation can
+	// never be granted more than its creator holds, so this is the ceiling.
+	outbound.ObjectWebhook: {outbound.ActionManage, outbound.ActionSend},
 }
 
 // ErrTenantExists is returned when the tenant is already provisioned, so
