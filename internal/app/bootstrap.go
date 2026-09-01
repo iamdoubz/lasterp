@@ -61,6 +61,10 @@ var adminGrants = map[string][]string{
 	// the first administrator's own grants above are the ceiling.
 	"plugin":     {"manage", "invoke"},
 	"Automation": {"manage"},
+	// Customizing the schema is its own power (WP-3.2c): `Contact:update`
+	// edits one contact, `Overlay:manage` adds a field to every contact in
+	// the tenant. Different blast radius, different grant.
+	"Overlay": {"manage"},
 }
 
 // ErrTenantExists is returned when the tenant is already provisioned, so
