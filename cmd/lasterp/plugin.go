@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -101,6 +102,34 @@ func pluginKeygen(args []string) error {
 	return nil
 }
 
+// readOverlays loads the overlay document for each object the manifest declares
+// in `overlays:`, from `overlay.<Object>.yaml` beside the manifest — the same
+// flat name the bundle carries, so an author can read a packed bundle's file
+// list and recognise their own directory (WP-3.2c).
+func readOverlays(manifestYAML []byte, dir string) (map[string][]byte, error) {
+	m, err := plugins.ParseManifest(manifestYAML)
+	if err != nil {
+		return nil, err
+	}
+	if len(m.Overlays) == 0 {
+		return nil, nil
+	}
+	out := make(map[string][]byte, len(m.Overlays))
+	for _, object := range m.Overlays {
+		name := filepath.Join(dir, "overlay."+object+".yaml")
+		// #nosec G304,G703 -- the author's own overlay, on the author's own
+		// machine, named by their own manifest. `plugin pack` is local file
+		// work that touches no deployment; there is no untrusted principal on
+		// this path to traverse away from.
+		doc, err := os.ReadFile(name)
+		if err != nil {
+			return nil, fmt.Errorf("plugin pack: the manifest declares an overlay for %s: %w", object, err)
+		}
+		out[object] = doc
+	}
+	return out, nil
+}
+
 // pluginPack builds a signed bundle from a manifest and a module.
 func pluginPack(args []string) error {
 	fs := flag.NewFlagSet("plugin pack", flag.ExitOnError)
@@ -123,7 +152,11 @@ func pluginPack(args []string) error {
 	if err != nil {
 		return err
 	}
-	bundle, err := plugins.Pack(manifestYAML, module, key.ID, key.Key)
+	overlays, err := readOverlays(manifestYAML, filepath.Dir(*manifestPath))
+	if err != nil {
+		return err
+	}
+	bundle, err := plugins.Pack(manifestYAML, module, overlays, key.ID, key.Key)
 	if err != nil {
 		return err
 	}

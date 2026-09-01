@@ -94,7 +94,7 @@ func approver(t *testing.T, db *storage.DB, tenant tenancy.ID, grants ...[2]stri
 
 func install(t *testing.T, db *storage.DB, tenant tenancy.ID, manifest string, module []byte, act authz.Actor) *Installed {
 	t.Helper()
-	p, err := Install(context.Background(), db, tenant, []byte(manifest), module, act)
+	p, err := Install(context.Background(), db, tenant, []byte(manifest), module, Customizations{}, act)
 	if err != nil {
 		t.Fatalf("Install: %v", err)
 	}
@@ -115,8 +115,13 @@ func TestManifestRefusesWhatThisHostCannotHonour(t *testing.T) {
 		// plugin that "installs fine" and silently never fires is the failure
 		// mode, and the same silence could one day drop a capability an
 		// administrator believed they were reviewing.
-		"hooks":    "id: com.acme.x\nversion: 1.0.0\nfunctions: [run]\nhooks: [{event: invoice.posted, fn: run}]\n",
-		"overlays": "id: com.acme.x\nversion: 1.0.0\nfunctions: [run]\noverlays: [./x.object.yaml]\n",
+		"hooks": "id: com.acme.x\nversion: 1.0.0\nfunctions: [run]\nhooks: [{event: invoice.posted, fn: run}]\n",
+		// `overlays` was on this list until WP-3.2c, which shipped the
+		// per-tenant schemas it was waiting on. It is still refused when
+		// malformed, for the reason the crons below are: a duplicate entry is a
+		// second overlay on one object that only one of can win.
+		"empty overlay":     "id: com.acme.x\nversion: 1.0.0\nfunctions: [run]\noverlays: [\"\"]\n",
+		"duplicate overlay": "id: com.acme.x\nversion: 1.0.0\nfunctions: [run]\noverlays: [Contact, Contact]\n",
 		// `capabilities.http` was on this list until WP-3.2a, which shipped the
 		// audited client ADR-007 required, and `capabilities.schedule` until
 		// WP-3.3b, which shipped the job runner it was waiting on. Both are
@@ -179,7 +184,7 @@ func TestInstallRefusesCapabilitiesTheApproverDoesNotHold(t *testing.T) {
 			weak := approver(t, db, tenant, [2]string{"Contact", "read"})
 
 			_, err := Install(context.Background(), db, tenant, []byte(helloManifest),
-				corpusModule(t, "hello"), weak)
+				corpusModule(t, "hello"), Customizations{}, weak)
 			if !errors.Is(err, ErrCapabilityNotHeld) {
 				t.Fatalf("Install = %v, want ErrCapabilityNotHeld", err)
 			}
@@ -267,11 +272,11 @@ func TestInstallRefusesNonWASMAndOversizeModules(t *testing.T) {
 	admin := approver(t, db, tenant, [2]string{"Widget", "read"})
 
 	if _, err := Install(context.Background(), db, tenant, []byte(helloManifest),
-		[]byte("#!/bin/sh\nrm -rf /\n"), admin); err == nil {
+		[]byte("#!/bin/sh\nrm -rf /\n"), Customizations{}, admin); err == nil {
 		t.Error("installed something that is not a WebAssembly binary")
 	}
 	if _, err := Install(context.Background(), db, tenant, []byte(helloManifest),
-		make([]byte, MaxModuleBytes+1), admin); err == nil {
+		make([]byte, MaxModuleBytes+1), Customizations{}, admin); err == nil {
 		t.Error("installed a module over the size cap")
 	}
 }

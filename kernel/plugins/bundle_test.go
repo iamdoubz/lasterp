@@ -27,7 +27,7 @@ import (
 func testBundle(t *testing.T, manifest string) ([]byte, SigningKey, TrustStore) {
 	t.Helper()
 	key := testSigningKey(t)
-	bundle, err := Pack([]byte(manifest), corpusModule(t, "hello"), key.ID, key.Key)
+	bundle, err := Pack([]byte(manifest), corpusModule(t, "hello"), nil, key.ID, key.Key)
 	if err != nil {
 		t.Fatalf("Pack: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestBundleRoundTripsAndVerifies(t *testing.T) {
 	// The digest is over content, not over tar bytes, so packing the same
 	// inputs twice produces the same identity — which is what makes a
 	// signature over it mean "this plugin" rather than "this archive".
-	again, err := Pack([]byte(manifest), corpusModule(t, "hello"), key.ID, key.Key)
+	again, err := Pack([]byte(manifest), corpusModule(t, "hello"), nil, key.ID, key.Key)
 	if err != nil {
 		t.Fatalf("Pack again: %v", err)
 	}
@@ -218,7 +218,7 @@ func TestInstallBundleGoesThroughEveryInstallGate(t *testing.T) {
 			tenant := newTenant(t, db)
 
 			// Untrusted: refused before anything is stored.
-			if _, err := InstallBundle(ctx, db, tenant, bundle, TrustStore{}, helloApprover(t, db, tenant)); !errors.Is(err, ErrUntrusted) {
+			if _, err := InstallBundle(ctx, db, tenant, bundle, TrustStore{}, nil, helloApprover(t, db, tenant)); !errors.Is(err, ErrUntrusted) {
 				t.Fatalf("untrusted install: err = %v, want ErrUntrusted", err)
 			}
 			if _, err := Get(ctx, db, tenant, "com.acme.hello"); !errors.Is(err, ErrNotFound) {
@@ -228,13 +228,13 @@ func TestInstallBundleGoesThroughEveryInstallGate(t *testing.T) {
 			// Trusted, but the approver lacks a capability the manifest asks
 			// for: still refused, by the WP-3.1a rule rather than by this one.
 			thin := approver(t, db, tenant, [2]string{"Widget", "read"})
-			if _, err := InstallBundle(ctx, db, tenant, bundle, trust, thin); !errors.Is(err, ErrCapabilityNotHeld) {
+			if _, err := InstallBundle(ctx, db, tenant, bundle, trust, nil, thin); !errors.Is(err, ErrCapabilityNotHeld) {
 				t.Fatalf("thin approver: err = %v, want ErrCapabilityNotHeld", err)
 			}
 
 			// Trusted and fully granted: installed, with the module's own hash
 			// recorded — the identity the signature attaches to.
-			p, err := InstallBundle(ctx, db, tenant, bundle, trust, helloApprover(t, db, tenant))
+			p, err := InstallBundle(ctx, db, tenant, bundle, trust, nil, helloApprover(t, db, tenant))
 			if err != nil {
 				t.Fatalf("InstallBundle: %v", err)
 			}

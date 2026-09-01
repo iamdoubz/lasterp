@@ -41,17 +41,21 @@ const (
 // "everything is an API" applies, and an install is an approval decision that
 // has to be attributable to a person (INV-T4). Bundle signing and registries
 // are WP-3.2 — this installs a module a human already has.
-func pluginActions(db *storage.DB, dispatcher *plugins.Dispatcher, trust plugins.TrustStore) []api.Action {
+func pluginActions(db *storage.DB, dispatcher *plugins.Dispatcher, trust plugins.TrustStore, objects []*metadata.EffectiveSchema) []api.Action {
+	// What a bundle's overlays may customize (WP-3.2c). The gateway's
+	// generic-CRUD set, not the plugin host's wider read-only map — see
+	// customizableObjects.
+	cores := customizableObjects(objects)
 	return []api.Action{
 		{Method: "GET", Path: "/api/v1/plugins", Object: objectPlugin,
 			Summary: "List installed plugins and the authority each was granted",
 			Handler: listPlugins(db, dispatcher)},
 		{Method: "POST", Path: "/api/v1/plugins", Object: objectPlugin, Write: true,
 			Summary: "Install a plugin, approving the capabilities its manifest requests",
-			Handler: installPlugin(db, dispatcher)},
+			Handler: installPlugin(db, dispatcher, cores)},
 		{Method: "POST", Path: "/api/v1/plugins/bundle", Object: objectPlugin, Write: true,
 			Summary: "Install a plugin from a signed bundle, approving the capabilities its manifest requests",
-			Handler: installBundle(db, dispatcher, trust)},
+			Handler: installBundle(db, dispatcher, trust, cores)},
 		{Method: "DELETE", Path: "/api/v1/plugins/{id}", Object: objectPlugin, Write: true,
 			Summary: "Uninstall a plugin and revoke the authority it was granted",
 			Handler: uninstallPlugin(db, dispatcher)},
@@ -195,7 +199,7 @@ func listPlugins(db *storage.DB, dispatcher *plugins.Dispatcher) api.HandlerFunc
 // Authorize is the permission (INV-T2) and the actor it returns is both the
 // attribution (INV-T4) and the ceiling — kernel/plugins refuses any capability
 // this actor does not itself hold (INV-T3).
-func installPlugin(db *storage.DB, dispatcher *plugins.Dispatcher) api.HandlerFunc {
+func installPlugin(db *storage.DB, dispatcher *plugins.Dispatcher, cores map[string]*metadata.Object) api.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request, tenant tenancy.ID) {
 		actor, err := authz.Authorize(r.Context(), db, objectPlugin, actionManage)
 		if err != nil {
@@ -219,7 +223,10 @@ func installPlugin(db *storage.DB, dispatcher *plugins.Dispatcher) api.HandlerFu
 			writeProblem(w, http.StatusUnprocessableEntity, "plugin refused", err.Error(), r.URL.Path)
 			return
 		}
-		p, err := plugins.Install(r.Context(), db, tenant, []byte(body.Manifest), module, actor)
+		p, err := plugins.Install(r.Context(), db, tenant, []byte(body.Manifest), module,
+			// No documents: an overlay travels in a signed bundle, so a
+			// manifest that declares one is refused on this route by name.
+			plugins.Customizations{Objects: cores}, actor)
 		if err != nil {
 			if errors.Is(err, plugins.ErrCapabilityNotHeld) {
 				// 403, not 422: this is an authorization answer. The
@@ -325,7 +332,7 @@ func callPlugin(db *storage.DB, host plugins.Host) api.HandlerFunc {
 // deployment trusts that publisher". Collapsing them into one endpoint with an
 // optional signature would make the unsigned path look like a degraded version
 // of the signed one, when it is a different decision.
-func installBundle(db *storage.DB, dispatcher *plugins.Dispatcher, trust plugins.TrustStore) api.HandlerFunc {
+func installBundle(db *storage.DB, dispatcher *plugins.Dispatcher, trust plugins.TrustStore, cores map[string]*metadata.Object) api.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request, tenant tenancy.ID) {
 		actor, err := authz.Authorize(r.Context(), db, objectPlugin, actionManage)
 		if err != nil {
@@ -350,7 +357,7 @@ func installBundle(db *storage.DB, dispatcher *plugins.Dispatcher, trust plugins
 				return
 			}
 		}
-		p, err := plugins.InstallBundle(r.Context(), db, tenant, data, trust, actor)
+		p, err := plugins.InstallBundle(r.Context(), db, tenant, data, trust, cores, actor)
 		if err != nil {
 			switch {
 			case errors.Is(err, plugins.ErrUntrusted):
