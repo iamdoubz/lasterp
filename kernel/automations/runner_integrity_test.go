@@ -18,6 +18,7 @@ import (
 	"github.com/iamdoubz/lasterp/kernel/changefeed"
 	"github.com/iamdoubz/lasterp/kernel/identity"
 	"github.com/iamdoubz/lasterp/kernel/idgen"
+	"github.com/iamdoubz/lasterp/kernel/outbound"
 	"github.com/iamdoubz/lasterp/kernel/storage"
 	"github.com/iamdoubz/lasterp/kernel/tenancy"
 )
@@ -166,7 +167,7 @@ actions:
 			publish(t, db, tenant, "Invoice", "big", "user-1")
 			publish(t, db, tenant, "Invoice", "small", "user-1")
 
-			r := NewRunner(db, objects, &fakePlugins{})
+			r := NewRunner(db, objects, &fakePlugins{}, nil, outbound.Policy{})
 			fired, err := r.RunOnce(ctx, tenant)
 			if err != nil {
 				t.Fatalf("RunOnce: %v", err)
@@ -235,7 +236,7 @@ actions:
 `)
 			publish(t, db, tenant, "Invoice", "x", "user-1")
 
-			r := NewRunner(db, objects, &fakePlugins{})
+			r := NewRunner(db, objects, &fakePlugins{}, nil, outbound.Policy{})
 			total := 0
 			for pass := 0; pass < 10; pass++ {
 				n, err := r.RunOnce(ctx, tenant)
@@ -291,7 +292,7 @@ actions:
 `)
 			publish(t, db, tenant, "Invoice", "x", "user-1")
 
-			fired, err := NewRunner(db, objects, &fakePlugins{}).RunOnce(ctx, tenant)
+			fired, err := NewRunner(db, objects, &fakePlugins{}, nil, outbound.Policy{}).RunOnce(ctx, tenant)
 			if err != nil {
 				t.Fatalf("RunOnce: %v", err)
 			}
@@ -328,7 +329,7 @@ actions:
 `)
 			publish(t, db, tenant, "Invoice", "x", "user-1")
 
-			fired, err := NewRunner(db, objects, &fakePlugins{}).RunOnce(ctx, tenant)
+			fired, err := NewRunner(db, objects, &fakePlugins{}, nil, outbound.Policy{}).RunOnce(ctx, tenant)
 			if err != nil {
 				t.Fatalf("RunOnce: %v", err)
 			}
@@ -368,7 +369,7 @@ actions:
     set:
       followup: true
 `)
-			fired, err := NewRunner(db, objects, &fakePlugins{}).RunOnce(ctx, tenant)
+			fired, err := NewRunner(db, objects, &fakePlugins{}, nil, outbound.Policy{}).RunOnce(ctx, tenant)
 			if err != nil {
 				t.Fatalf("RunOnce: %v", err)
 			}
@@ -379,7 +380,7 @@ actions:
 			// Non-vacuity: a change *after* the save does fire it.
 			objects.records["Invoice/new"] = map[string]any{"status": "posted"}
 			publish(t, db, tenant, "Invoice", "new", "user-1")
-			fired, err = NewRunner(db, objects, &fakePlugins{}).RunOnce(ctx, tenant)
+			fired, err = NewRunner(db, objects, &fakePlugins{}, nil, outbound.Policy{}).RunOnce(ctx, tenant)
 			if err != nil {
 				t.Fatalf("RunOnce: %v", err)
 			}
@@ -411,7 +412,7 @@ actions:
       followup: true
 `)
 			publish(t, db, tenant, "Contact", "c", "user-1")
-			fired, err := NewRunner(db, objects, &fakePlugins{}).RunOnce(ctx, tenant)
+			fired, err := NewRunner(db, objects, &fakePlugins{}, nil, outbound.Policy{}).RunOnce(ctx, tenant)
 			if err != nil {
 				t.Fatalf("RunOnce: %v", err)
 			}
@@ -420,7 +421,7 @@ actions:
 			}
 
 			publish(t, db, tenant, "Invoice", "i", "user-1")
-			fired, err = NewRunner(db, objects, &fakePlugins{}).RunOnce(ctx, tenant)
+			fired, err = NewRunner(db, objects, &fakePlugins{}, nil, outbound.Policy{}).RunOnce(ctx, tenant)
 			if err != nil {
 				t.Fatalf("RunOnce: %v", err)
 			}
@@ -465,7 +466,7 @@ actions:
 `)
 			publish(t, db, tenant, "Invoice", "x", "user-1")
 
-			if _, err := NewRunner(db, broken, plugins).RunOnce(ctx, tenant); err != nil {
+			if _, err := NewRunner(db, broken, plugins, nil, outbound.Policy{}).RunOnce(ctx, tenant); err != nil {
 				t.Fatalf("RunOnce returned a pass-level error for one automation's failure: %v", err)
 			}
 			runs, err := Runs(ctx, db, tenant, "breaks", 0)

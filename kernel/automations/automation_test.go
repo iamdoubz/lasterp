@@ -37,15 +37,14 @@ func TestParseValid(t *testing.T) {
 	}
 }
 
-// docs/05's action table lists email, webhook and approval_request. None is
-// built. Each is refused at parse time naming its owner, never accepted and
+// docs/05's action table lists email, webhook and approval_request. `webhook`
+// landed in WP-3.3c; the other two are not built. Each is refused at parse time naming its owner, never accepted and
 // silently skipped — the rule the plugin manifest already follows, because an
 // administrator who writes one and gets a no-op has been lied to.
 func TestParseRefusesDeferredActionsByName(t *testing.T) {
 	for action, wantOwner := range map[string]string{
 		"email":            "outbound mail",
 		"approval_request": "WP-3.4",
-		"webhook":          "WP-3.3c",
 	} {
 		t.Run(action, func(t *testing.T) {
 			src := "id: a\nname: A\ntrigger:\n  object: Invoice\nactions:\n  - type: " + action + "\n"

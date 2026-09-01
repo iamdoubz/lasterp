@@ -428,6 +428,9 @@ func fullGrants() map[string][]string {
 		// Customizing the schema (WP-3.2c): its own grant, because editing one
 		// contact and adding a field to every contact are different powers.
 		"Overlay": {"manage"},
+		// Outbound (WP-3.3c): deciding where this deployment may call out and
+		// making a rule that does are different powers, so both are named.
+		"Webhook": {"manage", "send"},
 	}
 }
 
