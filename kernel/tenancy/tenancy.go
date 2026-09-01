@@ -100,9 +100,12 @@ func FromContext(ctx context.Context) (ID, bool) {
 //
 // The pointer form of the same bug had `claimed` set by an attempt whose commit
 // then failed; the retry found nothing to do, returned nil, and the caller got
-// a job it did not hold (kernel/jobs.Claim). Sixteen read paths still carry the
-// slice form — see docs/notes/WP-3.3d-retry-aliasing.md, which is fixing them
-// and adding the gate that keeps them fixed.
+// a job it did not hold (kernel/jobs.Claim). Sixteen read paths carried the
+// slice form until WP-3.3d fixed them
+// (docs/notes/WP-3.3d-retry-aliasing.md). The rule is now enforced rather than
+// described: TestNoWithTenantCallbackAccumulatesIntoAnEnclosingSlice parses
+// every callback in the tree and fails on an append whose target is declared
+// outside the closure.
 func WithTenant(ctx context.Context, db *storage.DB, tenant ID, fn func(ctx context.Context, tx *sql.Tx) error) error {
 	const busyRetryBudget = 30 * time.Second
 
