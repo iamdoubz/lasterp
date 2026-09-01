@@ -265,6 +265,7 @@ func DeadLetters(ctx context.Context, db *storage.DB, tenant tenancy.ID, plugin 
 			return err
 		}
 		defer func() { _ = rows.Close() }()
+		var list []DeadLetter
 		for rows.Next() {
 			var d DeadLetter
 			var failedAt storage.Time
@@ -273,9 +274,13 @@ func DeadLetters(ctx context.Context, db *storage.DB, tenant tenancy.ID, plugin 
 				return err
 			}
 			d.FailedAt = failedAt.Time
-			out = append(out, d)
+			list = append(list, d)
 		}
-		return rows.Err()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		out = list
+		return nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("plugins: list dead letters: %w", err)

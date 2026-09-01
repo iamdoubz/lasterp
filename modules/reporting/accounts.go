@@ -33,14 +33,19 @@ func loadAccounts(ctx context.Context, db *storage.DB, tenant tenancy.ID) ([]Acc
 			return err
 		}
 		defer func() { _ = rows.Close() }()
+		var list []Account
 		for rows.Next() {
 			var a Account
 			if err := rows.Scan(&a.ID, &a.Code, &a.Name, &a.Type, &a.Currency); err != nil {
 				return err
 			}
-			out = append(out, a)
+			list = append(list, a)
 		}
-		return rows.Err()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		out = list
+		return nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("reporting: load accounts: %w", err)

@@ -201,14 +201,19 @@ func assertAuditActions(t *testing.T, db *storage.DB, tenant tenancy.ID, object,
 		}
 		defer func() { _ = rows.Close() }()
 
+		var list []string
 		for rows.Next() {
 			var action string
 			if err := rows.Scan(&action); err != nil {
 				return err
 			}
-			gotActions = append(gotActions, action)
+			list = append(list, action)
 		}
-		return rows.Err()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		gotActions = list
+		return nil
 	})
 	if err != nil {
 		t.Fatalf("query audit_log: %v", err)

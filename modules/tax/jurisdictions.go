@@ -70,14 +70,19 @@ func ListJurisdictions(ctx context.Context, db *storage.DB, tenant tenancy.ID) (
 			return err
 		}
 		defer func() { _ = rows.Close() }()
+		var list []Jurisdiction
 		for rows.Next() {
 			var j Jurisdiction
 			if err := rows.Scan(&j.Code, &j.Name, &j.Country, &j.Level); err != nil {
 				return err
 			}
-			out = append(out, j)
+			list = append(list, j)
 		}
-		return rows.Err()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		out = list
+		return nil
 	})
 	return out, err
 }

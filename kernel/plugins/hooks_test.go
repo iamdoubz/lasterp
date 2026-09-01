@@ -475,14 +475,19 @@ func pluginAudit(t *testing.T, db *storage.DB, tenant tenancy.ID, id string) []m
 			return err
 		}
 		defer func() { _ = rows.Close() }()
+		var list []map[string]string
 		for rows.Next() {
 			var action, actor string
 			if err := rows.Scan(&action, &actor); err != nil {
 				return err
 			}
-			out = append(out, map[string]string{"action": action, "actor": actor})
+			list = append(list, map[string]string{"action": action, "actor": actor})
 		}
-		return rows.Err()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		out = list
+		return nil
 	})
 	if err != nil {
 		t.Fatalf("read plugin audit: %v", err)

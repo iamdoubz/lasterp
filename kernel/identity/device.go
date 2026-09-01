@@ -96,14 +96,19 @@ func ListDevices(ctx context.Context, db *storage.DB, tenant tenancy.ID) ([]Devi
 			return err
 		}
 		defer func() { _ = rows.Close() }()
+		var list []Device
 		for rows.Next() {
 			d, err := scanDevice(rows)
 			if err != nil {
 				return err
 			}
-			devices = append(devices, d)
+			list = append(list, d)
 		}
-		return rows.Err()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		devices = list
+		return nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("identity: list devices: %w", err)

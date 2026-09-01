@@ -148,14 +148,23 @@ func Read(ctx context.Context, db *storage.DB, tenant tenancy.ID, after int64, l
 		}
 		defer func() { _ = rows.Close() }()
 
+		// Built locally and assigned once, because WithTenant re-runs this whole
+		// callback on SQLITE_BUSY: a slice captured from the enclosing scope keeps
+		// the failed attempt's rows and hands the caller the same committed entry
+		// twice, which is exactly what INV-S5 promises it will not do (WP-3.3d).
+		var list []Change
 		for rows.Next() {
 			c, err := scanChange(rows)
 			if err != nil {
 				return err
 			}
-			changes = append(changes, c)
+			list = append(list, c)
 		}
-		return rows.Err()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		changes = list
+		return nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("changefeed: read: %w", err)

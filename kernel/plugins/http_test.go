@@ -427,16 +427,21 @@ func auditRows(t *testing.T, db *storage.DB, tenant tenancy.ID, action string) [
 			return err
 		}
 		defer func() { _ = rows.Close() }()
+		var list []auditRow
 		for rows.Next() {
 			var r auditRow
 			if err := rows.Scan(&r.action, &r.object, &r.actor, &r.changes); err != nil {
 				return err
 			}
 			if action == "" || r.action == action {
-				out = append(out, r)
+				list = append(list, r)
 			}
 		}
-		return rows.Err()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		out = list
+		return nil
 	})
 	if err != nil {
 		t.Fatalf("read audit log: %v", err)

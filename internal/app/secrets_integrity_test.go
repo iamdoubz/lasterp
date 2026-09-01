@@ -438,14 +438,19 @@ func vaultAudit(t *testing.T, e *env) []map[string]string {
 			return err
 		}
 		defer func() { _ = rows.Close() }()
+		var list []map[string]string
 		for rows.Next() {
 			var action, actor, changes string
 			if err := rows.Scan(&action, &actor, &changes); err != nil {
 				return err
 			}
-			out = append(out, map[string]string{"action": action, "actor": actor, "changes": changes})
+			list = append(list, map[string]string{"action": action, "actor": actor, "changes": changes})
 		}
-		return rows.Err()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		out = list
+		return nil
 	})
 	if err != nil {
 		t.Fatalf("read vault audit rows: %v", err)

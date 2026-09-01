@@ -157,14 +157,19 @@ func nonConformingValues(ctx context.Context, db *storage.DB, tenant tenancy.ID,
 			return err
 		}
 		defer func() { _ = rows.Close() }()
+		var list []FieldConformance
 		for rows.Next() {
 			finding := FieldConformance{Object: object, Field: f.Name, Tenant: string(tenant)}
 			if err := rows.Scan(&finding.Value, &finding.Count); err != nil {
 				return err
 			}
-			out = append(out, finding)
+			list = append(list, finding)
 		}
-		return rows.Err()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		out = list
+		return nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("app: scan %s.%s for tenant %s: %w", object, f.Name, tenant, err)

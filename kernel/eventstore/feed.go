@@ -38,14 +38,22 @@ func ReadFeed(ctx context.Context, db *storage.DB, tenant tenancy.ID, afterCurso
 		}
 		defer func() { _ = rows.Close() }()
 
+		// Local, assigned once: a WithTenant retry that kept the failed attempt's
+		// rows would fold a duplicated event into a projection, and INV-E5 says
+		// rebuild(events) is a pure function of the log (WP-3.3d).
+		var list []Event
 		for rows.Next() {
 			e, err := scanEvent(rows)
 			if err != nil {
 				return err
 			}
-			events = append(events, e)
+			list = append(list, e)
 		}
-		return rows.Err()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		events = list
+		return nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("eventstore: read feed: %w", err)
@@ -81,6 +89,7 @@ func LoadStream(ctx context.Context, db *storage.DB, tenant tenancy.ID, stream S
 		}
 		defer func() { _ = rows.Close() }()
 
+		var list []Event
 		for rows.Next() {
 			e, err := scanEvent(rows)
 			if err != nil {
@@ -90,9 +99,13 @@ func LoadStream(ctx context.Context, db *storage.DB, tenant tenancy.ID, stream S
 			if err != nil {
 				return err
 			}
-			events = append(events, e)
+			list = append(list, e)
 		}
-		return rows.Err()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		events = list
+		return nil
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("eventstore: load stream: %w", err)
