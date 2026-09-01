@@ -57,7 +57,7 @@ Clients hold a SQLite replica of the data they're entitled to (shaped by "sync s
 - **Server plugins:** WASM (Extism) — any language, capability-scoped, resource-limited.
 - **UI plugins:** ES modules loaded into defined slots, iframe-sandboxed for untrusted ones.
 - **Connectors:** declarative + WASM transform hooks for third-party systems.
-- **Automations:** user-defined workflows (trigger → condition → action) stored as metadata.
+- **Automations:** user-defined workflows (trigger → condition → action) stored as data — a YAML definition a tenant can export, version and re-import (ADR-006). Shipped in WP-3.3b: object triggers ride the change feed with a per-automation cursor, schedule triggers ride the job queue, conditions are CEL in the same closed environment an RBAC grant uses (ADR-022), and every action runs as `automation:<id>` through the ordinary gate and audit.
 
 ### 6. AI as first-class actor
 Built-in MCP server exposes every module's operations as tools with the caller's permissions. Agent sessions are principals with roles, budgets, approval gates, and a dedicated audit trail. pgvector powers semantic search over all objects. See [06-AI-INTEGRATION.md](06-AI-INTEGRATION.md).

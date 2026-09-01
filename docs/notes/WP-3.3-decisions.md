@@ -137,9 +137,32 @@ through the same CRUD, the same authorization gate, the same validation and the 
 (INV-T2/T4, and INV-X3's rule in advance of WP-3.4). An automation does not react to its own
 writes, by the actor-suppression WP-3.1b already built into the feed runner.
 
-**Actions shipped in 3.3b:** `field_update` (through `CRUD.Update`, re-validated — INV-T5),
-`webhook` (through WP-3.2a's audited outbound client, per-automation allowlist), and
+**Actions shipped in 3.3b:** `field_update` (through `CRUD.Update`, re-validated — INV-T5) and
 `call_plugin` (an enqueued job invoking a declared plugin function).
+
+## 5a. `webhook` moved out of 3.3b — corrected in build
+
+§5 above listed `webhook` among the actions 3.3b would ship, "through WP-3.2a's audited
+outbound client, per-automation allowlist". Building it showed that parenthetical was carrying
+the whole design. WP-3.2a's client is shaped around a *plugin manifest*: the allowlist is
+`manifest.Capabilities.HTTP`, the audit row is keyed to a plugin id and principal, and the
+dialer guard reads its policy from the installed plugin. An automation has none of those. Using
+it means generalising the allowlist to something an automation can own, deciding who approves
+an automation's outbound destinations and against what authority — an administrator's own
+grants, as with a plugin install? — and giving the audit row a principal shape that covers
+both.
+
+That is a design, and a security-surface one: an automation is easier to create than a plugin
+install, so "which hosts may an automation reach" is a question with a different answer.
+Shipping it as a line item inside this WP is how an outbound surface acquires an allowlist
+nobody reviewed.
+
+So `webhook` is **refused at parse time naming WP-3.3c**, alongside `email` and
+`approval_request`, rather than half-built. The decision that was wrong was the estimate in §5,
+not the plan; recording it here rather than quietly dropping the promise.
+
+**Named deferral:** *`webhook`* → **WP-3.3c**, together with the generalised outbound allowlist
+it needs. Roadmap entry added.
 
 **Named deferral:** *`email` and `approval_request` actions.* docs/05's table lists both. There
 is no mailer in the tree and no approval object; building either as a line item inside an

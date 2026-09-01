@@ -74,6 +74,35 @@ func FromContext(ctx context.Context) (ID, bool) {
 // slower CI runner). Any other error, including the caller's own business
 // errors (e.g. eventstore's ErrVersionConflict), propagates immediately
 // without retrying.
+//
+// # The callback may run more than once
+//
+// That retry re-runs **the whole of fn**, so fn must be idempotent with respect
+// to everything it touches *outside* the transaction. The database rolls back;
+// a variable fn captured from the enclosing scope does not.
+//
+// The shape that gets this wrong is a read that accumulates:
+//
+//	var out []Thing
+//	err := tenancy.WithTenant(ctx, db, tenant, func(...) error {
+//	        for rows.Next() { out = append(out, ...) }  // WRONG: survives rollback
+//	        return rows.Err()
+//	})
+//
+// A BUSY partway through the scan retries the callback and the caller receives
+// the first attempt's rows plus the second's. Build into a local and assign
+// once, after the last thing that can fail:
+//
+//	var list []Thing
+//	for rows.Next() { list = append(list, ...) }
+//	if err := rows.Err(); err != nil { return err }
+//	out = list
+//
+// The pointer form of the same bug had `claimed` set by an attempt whose commit
+// then failed; the retry found nothing to do, returned nil, and the caller got
+// a job it did not hold (kernel/jobs.Claim). Sixteen read paths still carry the
+// slice form — see docs/notes/WP-3.3d-retry-aliasing.md, which is fixing them
+// and adding the gate that keeps them fixed.
 func WithTenant(ctx context.Context, db *storage.DB, tenant ID, fn func(ctx context.Context, tx *sql.Tx) error) error {
 	const busyRetryBudget = 30 * time.Second
 

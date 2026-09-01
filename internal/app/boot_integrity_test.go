@@ -422,6 +422,9 @@ func fullGrants() map[string][]string {
 		// Plugins (WP-3.1a): installing untrusted code and running it are
 		// different powers.
 		"plugin": {"manage", "invoke"},
+		// Automations (WP-3.3b): creating one is an authority grant, since it
+		// writes as its own principal on a rule the creator chose.
+		"Automation": {"manage"},
 	}
 }
 

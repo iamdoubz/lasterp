@@ -117,11 +117,16 @@ func TestManifestRefusesWhatThisHostCannotHonour(t *testing.T) {
 		// administrator believed they were reviewing.
 		"hooks":    "id: com.acme.x\nversion: 1.0.0\nfunctions: [run]\nhooks: [{event: invoice.posted, fn: run}]\n",
 		"overlays": "id: com.acme.x\nversion: 1.0.0\nfunctions: [run]\noverlays: [./x.object.yaml]\n",
-		// `capabilities.http` was on this list until WP-3.2a, which shipped
-		// the audited client ADR-007 required. A malformed http block is
-		// still refused — see endpoints_test.go.
-		"schedule": "id: com.acme.x\nversion: 1.0.0\nfunctions: [run]\ncapabilities:\n  schedule: [\"0 2 * * *\"]\n",
-		"mcp":      "id: com.acme.x\nversion: 1.0.0\nfunctions: [run]\nmcp_tools: [{name: x, fn: run}]\n",
+		// `capabilities.http` was on this list until WP-3.2a, which shipped the
+		// audited client ADR-007 required, and `capabilities.schedule` until
+		// WP-3.3b, which shipped the job runner it was waiting on. Both are
+		// still refused when malformed: a cron expression that cannot parse —
+		// or one that parses and can never fire, like the 30th of February —
+		// installs a plugin that silently never runs, which is the same failure
+		// this table exists to prevent.
+		"bad cron":      "id: com.acme.x\nversion: 1.0.0\nfunctions: [run]\ncapabilities:\n  schedule: [\"0 2 * *\"]\n",
+		"unfiring cron": "id: com.acme.x\nversion: 1.0.0\nfunctions: [run]\ncapabilities:\n  schedule: [\"0 0 30 2 *\"]\n",
+		"mcp":           "id: com.acme.x\nversion: 1.0.0\nfunctions: [run]\nmcp_tools: [{name: x, fn: run}]\n",
 	}
 	for name, yaml := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -448,5 +453,52 @@ func swap(t *testing.T, db *storage.DB, tenant tenancy.ID, id string, module []b
 	})
 	if err != nil {
 		t.Fatalf("swap module: %v", err)
+	}
+}
+
+// A valid `schedule:` is accepted now that WP-3.3b owns the job runner — the
+// positive half of the refusal table above, so lifting the refusal is proven to
+// have opened the path rather than merely stopped complaining.
+func TestManifestAcceptsASchedule(t *testing.T) {
+	m, err := ParseManifest([]byte(
+		"id: com.acme.x\nversion: 1.0.0\nfunctions: [run]\ncapabilities:\n  schedule: [\"0 2 * * *\"]\n"))
+	if err != nil {
+		t.Fatalf("ParseManifest with a schedule: %v", err)
+	}
+	if len(m.Capabilities.Schedule) != 1 {
+		t.Fatalf("schedule = %v, want one expression", m.Capabilities.Schedule)
+	}
+	// Declaring a schedule implies the queue: a plugin that runs on a timer
+	// already runs outside a request, so refusing it enqueue_job would be a
+	// distinction without a difference.
+	if !m.Capabilities.AllowsJobs() {
+		t.Fatal("a scheduled plugin is not allowed to enqueue; schedule must imply jobs")
+	}
+}
+
+// capabilities.jobs stands on its own: deferral has nothing to do with cron,
+// and folding them together would make an author write a fake schedule to get
+// it.
+func TestJobsCapabilityIsIndependentOfSchedule(t *testing.T) {
+	m, err := ParseManifest([]byte(
+		"id: com.acme.x\nversion: 1.0.0\nfunctions: [run]\ncapabilities:\n  jobs: true\n"))
+	if err != nil {
+		t.Fatalf("ParseManifest with jobs: %v", err)
+	}
+	if !m.Capabilities.AllowsJobs() {
+		t.Fatal("capabilities.jobs did not allow enqueueing")
+	}
+	if len(m.Capabilities.Schedule) != 0 {
+		t.Fatal("jobs should not imply a schedule")
+	}
+
+	// And a plugin that declares neither gets neither — INV-X1: what the
+	// manifest does not request is absent from the sandbox.
+	plain, err := ParseManifest([]byte("id: com.acme.x\nversion: 1.0.0\nfunctions: [run]\n"))
+	if err != nil {
+		t.Fatalf("ParseManifest: %v", err)
+	}
+	if plain.Capabilities.AllowsJobs() {
+		t.Fatal("a plugin declaring neither jobs nor schedule may not enqueue")
 	}
 }

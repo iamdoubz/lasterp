@@ -112,6 +112,9 @@ func hostFunctions(p *Installed) []extism.HostFunction {
 	if len(p.Manifest.Capabilities.HTTP) > 0 {
 		fns = append(fns, jsonHostFn("lasterp_http_request", hostHTTPRequest))
 	}
+	if p.Manifest.Capabilities.AllowsJobs() {
+		fns = append(fns, jsonHostFn("lasterp_enqueue_job", hostEnqueueJob))
+	}
 	return fns
 }
 

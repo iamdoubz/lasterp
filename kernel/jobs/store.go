@@ -281,7 +281,14 @@ func Complete(ctx context.Context, db *storage.DB, tenant tenancy.ID, id string)
 // The queue moves on either way. A head that retries forever blocks everything
 // behind it, which is the stall INV-S4 counts as a silent drop — and the same
 // call WP-3.1b made for hook deliveries.
-func Fail(ctx context.Context, db *storage.DB, tenant tenancy.ID, id string, cause error) error {
+//
+// now is the caller's clock, as it is for Claim, and the two must be the same
+// one. When Fail read time.Now() while Claim took a parameter, a retry's run_at
+// was computed on a different timeline from the claim that would pick it up —
+// so a job could be retried to exhaustion inside a single pass, turning a
+// three-attempt backoff into three immediate failures. One clock per caller is
+// what keeps the backoff meaning what it says.
+func Fail(ctx context.Context, db *storage.DB, tenant tenancy.ID, id string, cause error, now time.Time) error {
 	msg := "unknown"
 	if cause != nil {
 		msg = cause.Error()
@@ -289,7 +296,7 @@ func Fail(ctx context.Context, db *storage.DB, tenant tenancy.ID, id string, cau
 	if len(msg) > 2000 {
 		msg = msg[:2000]
 	}
-	now := time.Now().UTC()
+	now = now.UTC()
 	err := tenancy.WithTenant(ctx, db, tenant, func(ctx context.Context, tx *sql.Tx) error {
 		var kind, payload string
 		var attempts int
@@ -402,4 +409,29 @@ func DeadLetters(ctx context.Context, db *storage.DB, tenant tenancy.ID, kind st
 		return nil, fmt.Errorf("jobs: list dead letters: %w", err)
 	}
 	return out, nil
+}
+
+// CountPending reports how many jobs of a kind are queued and not yet done.
+//
+// owner, when non-empty, is matched against the dedupe-key prefix and the
+// payload — callers that need a per-producer allowance (kernel/plugins caps a
+// plugin's queued work) pass their own id. It is a cheap COUNT rather than an
+// exact accounting: the number is an allowance check, not a balance.
+func CountPending(ctx context.Context, db *storage.DB, tenant tenancy.ID, kind, owner string) (int, error) {
+	var n int
+	err := tenancy.WithTenant(ctx, db, tenant, func(ctx context.Context, tx *sql.Tx) error {
+		n = 0 // reset per attempt: WithTenant retries this callback
+		filter, args := "", []any{string(tenant), kind, StatusDone}
+		if owner != "" {
+			filter = " AND payload LIKE ?"
+			args = append(args, "%"+owner+"%")
+		}
+		return tx.QueryRowContext(ctx, db.Rebind(
+			`SELECT COUNT(*) FROM jobs WHERE tenant_id = ? AND kind = ? AND status <> ?`+filter),
+			args...).Scan(&n)
+	})
+	if err != nil {
+		return 0, fmt.Errorf("jobs: count pending: %w", err)
+	}
+	return n, nil
 }

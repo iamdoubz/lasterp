@@ -171,3 +171,19 @@ func (s *Cron) matchesDay(t time.Time) bool {
 	}
 	return dom || dow
 }
+
+// ValidCron reports whether src is a usable schedule: parseable, and able to
+// fire at least once. Exported for callers that validate a schedule before
+// storing it — kernel/plugins checks a manifest's `schedule:` at install, so a
+// plugin whose cron can never fire is refused rather than installed silently
+// inert.
+func ValidCron(src string) error {
+	c, err := ParseCron(src)
+	if err != nil {
+		return err
+	}
+	if c.Next(time.Now().UTC()).IsZero() {
+		return fmt.Errorf("jobs: %q can never fire", src)
+	}
+	return nil
+}

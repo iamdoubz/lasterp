@@ -59,7 +59,8 @@ var adminGrants = map[string][]string{
 	// approves what it may touch, `invoke` merely runs something already
 	// approved. An install can never grant more than the approver holds, so
 	// the first administrator's own grants above are the ceiling.
-	"plugin": {"manage", "invoke"},
+	"plugin":     {"manage", "invoke"},
+	"Automation": {"manage"},
 }
 
 // ErrTenantExists is returned when the tenant is already provisioned, so
