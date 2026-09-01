@@ -68,6 +68,18 @@ type CapabilityChecker interface {
 	Enabled(ctx context.Context, tenant tenancy.ID, object string) (enabled bool, capability string, err error)
 }
 
+// SchemaResolver returns an object's schema as one tenant sees it: core plus
+// that tenant's stored overlays (ADR-006, WP-3.2c). It is the gateway's
+// customization seam — kernel/api owns the choke point, kernel/metadata owns
+// the overlay store — satisfied structurally by metadata.DBResolver.
+//
+// Nil means "no tenant has customized anything", which is the behaviour of
+// every deployment before WP-3.2c and of every test that wires a gateway by
+// hand: routes then serve the boot schema, exactly as they always did.
+type SchemaResolver interface {
+	Resolve(ctx context.Context, tenant tenancy.ID, core *metadata.Object) (*metadata.EffectiveSchema, error)
+}
+
 // Action is a non-CRUD gateway route: a lifecycle verb (post invoice, reverse
 // entry, close/reopen period), a read of an event-sourced object, or a
 // reference-data / capability admin write. The composition root
@@ -154,6 +166,10 @@ type Config struct {
 	// write (WP-3.1b). Nil ⇒ no dispatch, which is the behaviour of any
 	// deployment with no plugin host wired.
 	Hooks metadata.Hooks
+	// Schemas, when set, resolves each request's object schema against the
+	// calling tenant's overlays (WP-3.2c). Nil ⇒ every tenant gets the boot
+	// schema, which is what every deployment before overlays existed got.
+	Schemas SchemaResolver
 	// Now overrides the clock (rate limiter, timestamps) for tests.
 	Now func() time.Time
 }
@@ -169,6 +185,7 @@ type Gateway struct {
 	objects []*metadata.EffectiveSchema
 	actions []Action
 	hooks   metadata.Hooks
+	schemas SchemaResolver
 }
 
 // defaultRateLimit is applied when Config.RateLimit is the zero value: a
@@ -196,6 +213,7 @@ func NewGateway(cfg Config) *Gateway {
 		objects: cfg.Objects,
 		actions: cfg.Actions,
 		hooks:   cfg.Hooks,
+		schemas: cfg.Schemas,
 	}
 	if cfg.DB != nil {
 		g.idem = &idempotencyStore{db: cfg.DB, now: now}
@@ -234,25 +252,71 @@ func (g *Gateway) handleNotFound(w http.ResponseWriter, r *http.Request) {
 }
 
 // registerObject wires the five REST routes for one object onto the mux.
+//
+// The *routes* are registered once, from the boot schema list, because an
+// overlay adds fields to a shipped object and never a new object — a fully
+// custom object needs per-tenant DDL and is not built here
+// (WP-3.2c-decisions.md §2). The *engine* behind them is per request, so the
+// fields those routes accept and return are the calling tenant's.
 func (g *Gateway) registerObject(schema *metadata.EffectiveSchema) {
-	crud, err := metadata.NewCRUD(schema)
+	engine, err := g.engineFor(schema)
 	if err != nil {
 		// Non-CRUD (event-sourced) objects have no REST CRUD surface yet;
 		// skip rather than fail the whole gateway.
 		return
 	}
-	if g.hooks != nil {
-		crud = crud.WithHooks(g.hooks)
-	}
 	base := "/api/v1/" + resourcePath(schema.ObjectName)
 	object := schema.ObjectName
 	gate := func(h apiHandler) http.HandlerFunc { return g.guard(g.capabilityGate(object, h)) }
 
-	g.mux.HandleFunc("GET "+base, gate(g.handleList(crud)))
-	g.mux.HandleFunc("POST "+base, gate(g.handleWrite(g.doCreate(crud), false)))
-	g.mux.HandleFunc("GET "+base+"/{id}", gate(g.handleGet(crud)))
-	g.mux.HandleFunc("PATCH "+base+"/{id}", gate(g.handleWrite(g.doUpdate(crud), false)))
-	g.mux.HandleFunc("DELETE "+base+"/{id}", gate(g.handleWrite(g.doDelete(crud), false)))
+	g.mux.HandleFunc("GET "+base, gate(g.handleList(engine)))
+	g.mux.HandleFunc("POST "+base, gate(g.handleWrite(g.doCreate(engine), false)))
+	g.mux.HandleFunc("GET "+base+"/{id}", gate(g.handleGet(engine)))
+	g.mux.HandleFunc("PATCH "+base+"/{id}", gate(g.handleWrite(g.doUpdate(engine), false)))
+	g.mux.HandleFunc("DELETE "+base+"/{id}", gate(g.handleWrite(g.doDelete(engine), false)))
+}
+
+// crudSource hands a handler the CRUD engine for its object as the calling
+// tenant sees it.
+type crudSource func(r *http.Request, tenant tenancy.ID) (*metadata.CRUD, error)
+
+// engineFor builds one object's crudSource, or errors for an object with no
+// CRUD surface at all. With no resolver configured it closes over a single
+// engine built at boot; with one, it resolves per request.
+//
+// Resolving per request is cheap on purpose: NewCRUD is a struct wrap, so the
+// only cost is the resolver's read, which is one indexed SELECT against a table
+// that is empty for a tenant that has customized nothing (see metadata.Resolve
+// for why there is no cache in front of it).
+func (g *Gateway) engineFor(schema *metadata.EffectiveSchema) (crudSource, error) {
+	withHooks := func(c *metadata.CRUD) *metadata.CRUD {
+		if g.hooks != nil {
+			return c.WithHooks(g.hooks)
+		}
+		return c
+	}
+	boot, err := metadata.NewCRUD(schema)
+	if err != nil {
+		return nil, err
+	}
+	if g.schemas == nil {
+		boot = withHooks(boot)
+		return func(*http.Request, tenancy.ID) (*metadata.CRUD, error) { return boot, nil }, nil
+	}
+	// The *core* object, not the boot effective schema: merging overlays onto
+	// an already-merged schema would stack a layer twice.
+	core := schema.Object
+	return func(r *http.Request, tenant tenancy.ID) (*metadata.CRUD, error) {
+		eff, err := g.schemas.Resolve(r.Context(), tenant, &core)
+		if err != nil {
+			return nil, err
+		}
+		crud, err := metadata.NewCRUD(eff)
+		if err != nil {
+			return nil, err
+		}
+		return withHooks(crud), nil
+	}, nil
 }
 
 // registerAction wires one non-CRUD Action onto the mux through the same
@@ -427,8 +491,13 @@ func setRateLimitHeaders(w http.ResponseWriter, d decision) {
 
 // --- read handlers ---
 
-func (g *Gateway) handleList(crud *metadata.CRUD) apiHandler {
+func (g *Gateway) handleList(src crudSource) apiHandler {
 	return func(w http.ResponseWriter, r *http.Request, tenant tenancy.ID) {
+		crud, err := src(r, tenant)
+		if err != nil {
+			writeProblem(w, problemForError(err, r.URL.Path))
+			return
+		}
 		records, err := crud.List(r.Context(), g.db, tenant)
 		if err != nil {
 			writeProblem(w, problemForError(err, r.URL.Path))
@@ -441,8 +510,13 @@ func (g *Gateway) handleList(crud *metadata.CRUD) apiHandler {
 	}
 }
 
-func (g *Gateway) handleGet(crud *metadata.CRUD) apiHandler {
+func (g *Gateway) handleGet(src crudSource) apiHandler {
 	return func(w http.ResponseWriter, r *http.Request, tenant tenancy.ID) {
+		crud, err := src(r, tenant)
+		if err != nil {
+			writeProblem(w, problemForError(err, r.URL.Path))
+			return
+		}
 		rec, err := crud.Get(r.Context(), g.db, tenant, r.PathValue("id"))
 		if err != nil {
 			writeProblem(w, problemForError(err, r.URL.Path))
@@ -459,8 +533,13 @@ func (g *Gateway) handleGet(crud *metadata.CRUD) apiHandler {
 // idempotency reservation is finalized (2xx) or discarded.
 type writeExec func(w http.ResponseWriter, r *http.Request, tenant tenancy.ID)
 
-func (g *Gateway) doCreate(crud *metadata.CRUD) writeExec {
+func (g *Gateway) doCreate(src crudSource) writeExec {
 	return func(w http.ResponseWriter, r *http.Request, tenant tenancy.ID) {
+		crud, err := src(r, tenant)
+		if err != nil {
+			writeProblem(w, problemForError(err, r.URL.Path))
+			return
+		}
 		rec, ok := decodeRecord(w, r)
 		if !ok {
 			return
@@ -474,8 +553,13 @@ func (g *Gateway) doCreate(crud *metadata.CRUD) writeExec {
 	}
 }
 
-func (g *Gateway) doUpdate(crud *metadata.CRUD) writeExec {
+func (g *Gateway) doUpdate(src crudSource) writeExec {
 	return func(w http.ResponseWriter, r *http.Request, tenant tenancy.ID) {
+		crud, err := src(r, tenant)
+		if err != nil {
+			writeProblem(w, problemForError(err, r.URL.Path))
+			return
+		}
 		rec, ok := decodeRecord(w, r)
 		if !ok {
 			return
@@ -489,8 +573,13 @@ func (g *Gateway) doUpdate(crud *metadata.CRUD) writeExec {
 	}
 }
 
-func (g *Gateway) doDelete(crud *metadata.CRUD) writeExec {
+func (g *Gateway) doDelete(src crudSource) writeExec {
 	return func(w http.ResponseWriter, r *http.Request, tenant tenancy.ID) {
+		crud, err := src(r, tenant)
+		if err != nil {
+			writeProblem(w, problemForError(err, r.URL.Path))
+			return
+		}
 		if err := crud.SoftDelete(r.Context(), g.db, tenant, r.PathValue("id")); err != nil {
 			writeProblem(w, problemForError(err, r.URL.Path))
 			return

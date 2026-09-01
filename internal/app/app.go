@@ -202,8 +202,13 @@ func gatewayConfig(ctx context.Context, db *storage.DB) (api.Config, error) {
 	}
 
 	return api.Config{
-		DB:            db,
-		Objects:       objects,
+		DB:      db,
+		Objects: objects,
+		// Every CRUD route now serves the calling tenant's *effective* schema:
+		// core plus the overlays that tenant (or a plugin it installed) stored.
+		// ADR-006's customization layer had nowhere to live until WP-3.2c, so
+		// Merge was only ever called with zero overlays.
+		Schemas:       metadata.DBResolver{DB: db},
 		Hooks:         dispatcher,
 		Actions:       actions(db, reg, objects, translator, sso, keys, dispatcher, trust),
 		Authenticator: sessionAuthenticator(db),

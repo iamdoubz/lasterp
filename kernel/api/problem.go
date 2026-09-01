@@ -78,6 +78,24 @@ func problemForError(err error, instance string) Problem {
 		return Problem{Status: http.StatusConflict, Title: "id already exists", Detail: "the supplied id is already taken", Instance: instance}
 	case errors.Is(err, metadata.ErrRecordNotFound):
 		return Problem{Status: http.StatusNotFound, Title: "record not found", Instance: instance}
+	case errors.Is(err, metadata.ErrOverlayConflict),
+		errors.Is(err, metadata.ErrOptionSetWidened),
+		errors.Is(err, metadata.ErrPermissionFloorLowered),
+		errors.Is(err, metadata.ErrOverlayTarget):
+		// A stored overlay no longer merges onto the object it customizes, so
+		// this tenant has no effective schema to serve. SaveOverlay refuses a
+		// document that cannot merge, so reaching here means the *core* object
+		// moved underneath one — ADR-006's upgrade-time conflict, arriving at
+		// runtime because there is no upgrade report yet.
+		//
+		// A 500 with a type, not a 422: the request is well formed and the
+		// caller can do nothing about it. The detail names the overlay and the
+		// field, because an administrator staring at a bare 500 has no way to
+		// find which of their customizations broke.
+		return Problem{
+			Type: "schema-overlay-invalid", Status: http.StatusInternalServerError,
+			Title: "tenant schema cannot be assembled", Detail: err.Error(), Instance: instance,
+		}
 	case errors.Is(err, authz.ErrPermissionDenied):
 		return Problem{Status: http.StatusForbidden, Title: "permission denied", Instance: instance}
 	case errors.Is(err, authz.ErrNoActor):
