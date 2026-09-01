@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -80,6 +81,9 @@ func NewCRUD(schema *EffectiveSchema) (*CRUD, error) {
 // nulling one is refused — because that is a write of an invalid value, not the
 // absence of a write.
 func (c *CRUD) validated(rec Record, partial bool) (Record, error) {
+	if err := c.refuseUnknownFields(rec); err != nil {
+		return nil, err
+	}
 	out := cloneRecord(rec)
 	for _, f := range c.schema.Fields {
 		v, present := rec[f.Name]
@@ -99,6 +103,38 @@ func (c *CRUD) validated(rec Record, partial bool) (Record, error) {
 		out[f.Name] = normalized
 	}
 	return out, nil
+}
+
+// refuseUnknownFields rejects a write naming a field the effective schema does
+// not declare.
+//
+// It was harmless to ignore one while every tenant shared one schema: an
+// unknown key was a client typo, and dropping it lost nothing anybody had. From
+// WP-3.2c the schema is the *tenant's*, so an unknown key is just as likely to
+// be a field another tenant declared, or one this tenant has just removed — and
+// the old behaviour returned it in the response body having stored nothing,
+// which tells the caller their value was saved when it was not. That is the
+// worst of the three possible answers.
+//
+// The reserved keys are the write surface that is not a field: the caller-chosen
+// id (recordID) and the translations map (INV-T5 checks its contents
+// separately, in localized.go).
+func (c *CRUD) refuseUnknownFields(rec Record) error {
+	var unknown []string
+	for name := range rec {
+		if name == "id" || name == TranslationsKey {
+			continue
+		}
+		if fieldIndex(c.schema.Fields, name) < 0 {
+			unknown = append(unknown, name)
+		}
+	}
+	if len(unknown) == 0 {
+		return nil
+	}
+	sort.Strings(unknown)
+	return fmt.Errorf("%w: %s has no field %s", ErrValidation,
+		c.schema.ObjectName, strings.Join(unknown, ", "))
 }
 
 // recordID resolves the primary key for a new row: the caller's, when it
